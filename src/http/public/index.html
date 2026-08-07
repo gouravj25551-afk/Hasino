@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hasino</title>
+<link rel="stylesheet" href="/brand.css">
+</head>
+<body>
+
+<div class="topbar">
+  <a class="lockup" href="#/browse"><span class="wordmark">has<span class="i">i</span>no</span></a>
+  <nav>
+    <a href="#/browse" data-nav="browse">Browse</a>
+    <a href="#/bookings" data-nav="bookings">My bookings</a>
+  </nav>
+  <span class="spacer"></span>
+  <label class="field" style="min-width:190px">
+    <span>Signed in as (dev)</span>
+    <select id="who"></select>
+  </label>
+  <a class="btn sm" href="/business">Salon panel →</a>
+</div>
+
+<div class="banner">
+  No login and no payments — <b>DEV_AUTH</b> mode. Bookings made here are unpaid and hold a real chair.
+</div>
+
+<div class="wrap" id="view"></div>
+
+<script>
+const $  = (s, r = document) => r.querySelector(s);
+const el = (t, cls, txt) => { const n = document.createElement(t); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
+const rupees = p => '₹' + (p / 100).toLocaleString('en-IN');
+const time = (iso, tz) => new Date(iso).toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' });
+const dateLong = (iso, tz) => new Date(iso).toLocaleDateString('en-GB', { timeZone: tz, weekday: 'short', day: 'numeric', month: 'short' });
+
+let me = null;
+const cart = new Set();
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { 'content-type': 'application/json', ...(me ? { 'x-dev-user': me } : {}), ...(opts.headers || {}) },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(body.error || res.statusText), { body, status: res.status });
+  return body;
+}
+
+/* ---------- identity (there is no login yet) ---------- */
+async function initIdentity() {
+  const sel = $('#who');
+  try {
+    const { customers } = await api('/api/dev/identities');
+    if (!customers.length) { sel.innerHTML = '<option>none seeded</option>'; return; }
+    me = localStorage.getItem('hasino.me') || customers[0].dev_token;
+    if (!customers.some(c => c.dev_token === me)) me = customers[0].dev_token;
+    sel.innerHTML = '';
+    for (const c of customers) {
+      const o = el('option', null, `${c.name || 'Customer'} · ${c.phone}`);
+      o.value = c.dev_token;
+      if (c.dev_token === me) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.onchange = () => { me = sel.value; localStorage.setItem('hasino.me', me); render(); };
+  } catch {
+    sel.innerHTML = '<option>unavailable</option>';
+  }
+}
+
+/* ---------- router ---------- */
+const routes = [
+  [/^#\/browse$/,        browseView],
+  [/^#\/salon\/([\w-]+)$/, salonView],
+  [/^#\/bookings$/,      bookingsView],
+];
+
+function render() {
+  const hash = location.hash || '#/browse';
+  for (const a of document.querySelectorAll('[data-nav]')) a.removeAttribute('aria-current');
+  const key = hash.startsWith('#/bookings') ? 'bookings' : 'browse';
+  $(`[data-nav="${key}"]`)?.setAttribute('aria-current', 'page');
+
+  for (const [re, fn] of routes) {
+    const m = hash.match(re);
+    if (m) return void fn(...m.slice(1)).catch(showError);
+  }
+  location.hash = '#/browse';
+}
+
+function showError(err) {
+  $('#view').innerHTML = '';
+  const box = el('div', 'out bad', `${err.status || ''} ${err.body?.code || ''}\n${err.message}`);
+  $('#view').append(box);
+}
+
+/* ---------- browse ---------- */
+async function browseView() {
+  const view = $('#view');
+  view.innerHTML = '';
+  view.append(el('h1', null, 'Salons near you'));
+  view.append(el('p', 'sub', 'Pick a salon, choose your services, book a slot.'));
+
+  const search = el('input');
+  search.placeholder = 'Search by name or area…';
+  search.style.maxWidth = '380px';
+  view.append(search);
+
+  const grid = el('div', 'grid cards');
+  grid.style.marginTop = '18px';
+  view.append(grid);
+
+  const draw = async q => {
+    const { salons } = await api('/api/salons' + (q ? '?q=' + encodeURIComponent(q) : ''));
+    grid.innerHTML = '';
+    if (!salons.length) { grid.append(el('div', 'empty', 'No salons found.')); return; }
+    for (const s of salons) {
+      const card = el('button', 'tile');
+      card.type = 'button';
+      card.append(el('h3', null, s.name));
+      card.append(el('div', 'meta', s.address));
+      const row = el('div', 'row');
+      row.style.marginTop = '10px';
+      if (s.fromPrice != null) row.append(el('span', 'pill brand', 'from ' + rupees(s.fromPrice)));
+      row.append(el('span', 'pill', s.rating ? `★ ${s.rating} (${s.reviewCount})` : 'no reviews yet'));
+      card.append(row);
+      card.onclick = () => { location.hash = `#/salon/${s.id}`; };
+      grid.append(card);
+    }
+  };
+
+  let t;
+  search.oninput = () => { clearTimeout(t); t = setTimeout(() => draw(search.value.trim()), 220); };
+  await draw('');
+}
+
+/* ---------- salon detail + booking ---------- */
+async function salonView(salonId) {
+  const view = $('#view');
+  view.innerHTML = '';
+  cart.clear();
+
+  const salon = await api('/api/salons/' + salonId);
+
+  const back = el('a', 'btn sm', '← All salons');
+  back.href = '#/browse';
+  view.append(back);
+
+  const head = el('div', 'panel');
+  head.style.marginTop = '14px';
+  head.append(el('h1', null, salon.name));
+  head.append(el('div', 'meta', salon.address));
+  view.append(head);
+
+  const svcPanel = el('div', 'panel');
+  svcPanel.append(el('h2', null, 'Services'));
+  const list = el('div', 'list');
+  svcPanel.append(list);
+  view.append(svcPanel);
+
+  for (const sv of salon.services) {
+    const row = el('label', 'item');
+    row.style.cursor = 'pointer';
+    const cb = el('input');
+    cb.type = 'checkbox';
+    cb.style.width = '17px';
+    const grow = el('div', 'grow');
+    grow.append(el('div', null, sv.name));
+    grow.append(el('div', 'meta', sv.category));
+    row.append(cb, grow, el('span', 'pill', sv.durationMin + ' min'), el('strong', null, rupees(sv.price)));
+    cb.onchange = () => { cb.checked ? cart.add(sv.serviceId) : cart.delete(sv.serviceId); refresh(); };
+    list.append(row);
+  }
+
+  const slotPanel = el('div', 'panel');
+  view.append(slotPanel);
+  const result = el('div');
+  view.append(result);
+
+  async function refresh() {
+    result.innerHTML = '';
+    slotPanel.innerHTML = '';
+    if (!cart.size) {
+      slotPanel.append(el('div', 'empty', 'Select at least one service to see available times.'));
+      return;
+    }
+
+    slotPanel.append(el('h2', null, 'Pick a time'));
+    const picked = salon.services.filter(s => cart.has(s.serviceId));
+    const total = picked.reduce((a, s) => a + s.price, 0);
+
+    const avail = await api(`/api/salons/${salon.id}/availability`, {
+      method: 'POST', body: JSON.stringify({ serviceIds: [...cart] }),
+    });
+
+    const bar = el('div', 'row');
+    bar.style.marginBottom = '14px';
+    bar.append(el('span', 'pill brand', picked.length + ' service' + (picked.length > 1 ? 's' : '')));
+    bar.append(el('span', 'pill', avail.requiredMin + ' min in the chair'));
+    bar.append(el('strong', null, rupees(total)));
+    slotPanel.append(bar);
+
+    let day = avail.days.find(d => d.state === 'full') || avail.days[0];
+
+    const strip = el('div', 'strip');
+    slotPanel.append(strip);
+    const slotBox = el('div');
+    slotBox.style.marginTop = '12px';
+    slotPanel.append(slotBox);
+
+    function drawDays() {
+      strip.innerHTML = '';
+      for (const d of avail.days) {
+        const dt = new Date(d.date + 'T00:00:00Z');
+        const dead = d.state === 'closed' || d.state === 'none';
+        const b = el('button', 'day');
+        b.type = 'button';
+        b.disabled = dead;
+        b.append(el('div', 'dow', ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getUTCDay()]));
+        b.append(el('div', 'num', String(dt.getUTCDate())));
+        const label = d.state === 'closed' ? (d.closedReason === 'holiday' ? 'holiday' : 'closed')
+                    : d.state === 'none' ? 'full'
+                    : d.state === 'partial' ? 'partial'
+                    : d.full.length + ' slots';
+        const st = el('div', 'st', label);
+        st.style.color = d.state === 'full' ? 'var(--ok)' : d.state === 'partial' ? 'var(--warn)' : 'var(--dim)';
+        b.append(st);
+        b.setAttribute('aria-label', `${d.date}, ${label}`);
+        b.setAttribute('aria-pressed', String(day.date === d.date));
+        if (!dead) b.onclick = () => { day = d; drawDays(); drawSlots(); };
+        strip.append(b);
+      }
+    }
+
+    function drawSlots() {
+      slotBox.innerHTML = '';
+      if (day.state === 'closed') {
+        slotBox.append(el('div', 'empty', day.closedReason === 'holiday' ? 'Closed — holiday.' : 'Closed on this day.'));
+        return;
+      }
+      if (day.full.length) {
+        const wrap = el('div', 'slots');
+        for (const iso of day.full) {
+          const b = el('button', 'slot', time(iso, avail.timezone));
+          b.type = 'button';
+          b.onclick = () => book(iso, avail.timezone);
+          wrap.append(b);
+        }
+        slotBox.append(wrap);
+        return;
+      }
+      /* Fallback view — spec §2. Only shown when nothing fits the whole cart. */
+      if (day.partial.length) {
+        const box = el('div', 'note');
+        box.append(el('div', null, 'Nothing on this day fits everything you picked.'));
+        for (const p of day.partial) {
+          box.append(el('div', null, `${time(p.at, avail.timezone)} — only ${p.suggest.name} would fit (${p.freeMin} min free)`));
+        }
+        const next = avail.days.find(d => d.state === 'full');
+        if (next) box.append(el('div', null, `Full booking available on ${next.date}.`));
+        slotBox.append(box);
+        return;
+      }
+      slotBox.append(el('div', 'empty', 'No availability on this day.'));
+    }
+
+    drawDays();
+    drawSlots();
+
+    async function book(iso, tz) {
+      // Build the outcome first, redraw the slots, THEN render it — refresh()
+      // clears `result`, so appending before it wipes the confirmation.
+      let box;
+      let ok = false;
+      try {
+        const b = await api('/api/bookings', {
+          method: 'POST',
+          body: JSON.stringify({ salonId: salon.id, serviceIds: [...cart], startAt: iso }),
+        });
+        ok = true;
+        box = el('div', 'out ok');
+        box.textContent =
+          `Booked ✓  ${dateLong(b.startAt, tz)}  ${time(b.startAt, tz)}–${time(b.endAt, tz)}\n` +
+          `${rupees(b.amount)} — UNPAID, payments are not implemented\n` +
+          `Holds ${b.slots.length} slot${b.slots.length > 1 ? 's' : ''} of the salon's capacity`;
+      } catch (err) {
+        box = el('div', 'out bad', `${err.status} ${err.body?.code || ''}\n${err.message}`);
+      }
+
+      await refresh();
+      result.append(box);
+      if (ok) {
+        const go = el('a', 'btn sm', 'See my bookings →');
+        go.href = '#/bookings';
+        go.style.marginTop = '10px';
+        go.style.display = 'inline-block';
+        result.append(go);
+      }
+    }
+  }
+
+  refresh();
+}
+
+/* ---------- my bookings ---------- */
+const STATUS_PILL = {
+  booked: 'brand', verified: 'brand', in_progress: 'warn', completed: 'ok',
+  no_show: 'bad', cancelled_by_salon: 'bad', cancelled_by_customer: 'bad', rescheduled: '',
+};
+
+async function bookingsView() {
+  const view = $('#view');
+  view.innerHTML = '';
+  view.append(el('h1', null, 'My bookings'));
+  view.append(el('p', 'sub', 'Your 6-digit code appears 15 minutes before your slot. Show it at the salon.'));
+
+  const { bookings } = await api('/api/me/bookings');
+  if (!bookings.length) {
+    view.append(el('div', 'empty', 'No bookings yet.'));
+    return;
+  }
+
+  const list = el('div', 'list');
+  for (const b of bookings) {
+    const item = el('div', 'item');
+    const when = el('div');
+    when.append(el('div', 'when', time(b.startAt, 'Asia/Kolkata') + '–' + time(b.endAt, 'Asia/Kolkata')));
+    when.append(el('div', 'meta', dateLong(b.startAt, 'Asia/Kolkata')));
+    item.append(when);
+
+    const grow = el('div', 'grow');
+    grow.append(el('div', null, b.salonName));
+    grow.append(el('div', 'meta', b.services.join(', ') || '—'));
+    item.append(grow);
+
+    if (b.verifyCode) {
+      const code = el('span', 'pill ok', 'code ' + b.verifyCode);
+      code.style.fontFamily = 'var(--mono)';
+      item.append(code);
+    }
+    if (b.refundStatus !== 'none') item.append(el('span', 'pill warn', 'refund ' + b.refundStatus));
+    item.append(el('strong', null, rupees(b.amount)));
+    item.append(el('span', 'pill ' + (STATUS_PILL[b.status] ?? ''), b.status.replace(/_/g, ' ')));
+    list.append(item);
+  }
+  view.append(list);
+}
+
+window.addEventListener('hashchange', render);
+initIdentity().then(render);
+</script>
+</body>
+</html>
