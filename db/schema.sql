@@ -1,8 +1,8 @@
 -- Hasino — salon booking marketplace
 -- Schema per build spec §5.
 --
--- Deviations from the spec are marked [DEVIATION] with a reason. There are
--- three, all small; see README "Where this deviates from the spec".
+-- Deviations from the spec are marked [DEVIATION] with a reason; see README
+-- "Where this deviates from the spec" for the original three plus later ones.
 
 BEGIN;
 
@@ -18,12 +18,21 @@ CREATE TABLE IF NOT EXISTS users (
   firebase_uid   text UNIQUE,
   name           text,
   email          text,
+  avatar_url     text,       -- [DEVIATION 5] Google sign-in's `picture` claim
   role           text NOT NULL DEFAULT 'customer'
                  CHECK (role IN ('customer','business','admin')),
   no_show_count  smallint NOT NULL DEFAULT 0,
   blocked_until  timestamptz,
-  created_at     timestamptz NOT NULL DEFAULT now()
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now()   -- [DEVIATION 5]
 );
+
+-- [DEVIATION 5] users.avatar_url, users.updated_at
+--   Google sign-in (build order: Google auth) refreshes name/email/photo on
+--   every sign-in so a changed Google profile picture or display name is
+--   reflected here, not frozen at first login. avatar_url holds the token's
+--   `picture` claim; updated_at records when that last happened. See
+--   db/migrations/001_users_profile_fields.sql.
 
 -- ---------- salons ----------
 CREATE TABLE IF NOT EXISTS salons (
@@ -41,6 +50,7 @@ CREATE TABLE IF NOT EXISTS salons (
   rzp_access_token text,          -- encrypt at rest
   rzp_kyc_status   text NOT NULL DEFAULT 'pending',
   strike_count     smallint NOT NULL DEFAULT 0,
+  cover_url        text,                                    -- [DEVIATION 6]
   created_at       timestamptz NOT NULL DEFAULT now()
 );
 
@@ -51,6 +61,27 @@ CREATE TABLE IF NOT EXISTS salons (
 --   the one module the spec says everything rests on. One column now.
 
 CREATE INDEX IF NOT EXISTS salons_geo_idx ON salons (lat, lng) WHERE status = 'active';
+
+-- [DEVIATION 6] salons.cover_url, salon_photos, favorites
+--   The customer marketplace UI needs salon imagery and a way to save
+--   favorites; the spec's schema has neither. cover_url is the card/hero
+--   image; salon_photos is the gallery. Seeded only from scripts/seed-demo.ts
+--   — never hardcoded in application code — so a salon with no photos
+--   renders a placeholder instead of a borrowed stock image.
+CREATE TABLE IF NOT EXISTS salon_photos (
+  id       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  salon_id uuid NOT NULL REFERENCES salons(id) ON DELETE CASCADE,
+  url      text NOT NULL,
+  sort     smallint NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS salon_photos_salon_idx ON salon_photos (salon_id, sort);
+
+CREATE TABLE IF NOT EXISTS favorites (
+  user_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  salon_id   uuid NOT NULL REFERENCES salons(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, salon_id)
+);
 
 -- ---------- services ----------
 CREATE TABLE IF NOT EXISTS services (      -- global master list, admin-managed

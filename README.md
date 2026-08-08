@@ -3,8 +3,9 @@
 Salon booking marketplace. Build-order steps 2 and 3 (availability engine,
 booking create), the schema they run on, and a read-and-book HTTP API over them.
 
-Firebase Auth is implemented, so the API is deployable. **Payments are not** —
-bookings hold a real chair without money attached. See [DEPLOY.md](DEPLOY.md).
+Firebase Auth is implemented — including Google sign-in with the one-time
+phone-link step — so the API is deployable. **Payments are not** — bookings
+hold a real chair without money attached. See [DEPLOY.md](DEPLOY.md).
 
 ## Run it
 
@@ -15,6 +16,10 @@ DATABASE_URL=postgres://localhost:5432/hasino_dev npm run db:seed
 DATABASE_URL=postgres://localhost:5432/hasino_dev DEV_AUTH=true npm start
 ```
 
+`db/schema.sql` is the whole schema, so a fresh database needs nothing else.
+For a database that already has data, apply `db/migrations/*.sql` in order
+instead — each is idempotent and safe to re-run.
+
 Two surfaces:
 
 | | |
@@ -22,9 +27,10 @@ Two surfaces:
 | `localhost:3000` | **Customer** — browse, pick services, book, my bookings |
 | `localhost:3000/business` | **Salon panel** — services, timings, today's bookings, insights |
 
-Both are served only when `DEV_AUTH=true`; with auth off they return a JSON
-route listing. There is no login, so each has a dev identity picker in the
-top-right — the customer app switches customer, the panel switches salon.
+Both pages are served regardless of `DEV_AUTH` — production visitors sign in
+with real Google auth via Firebase. `DEV_AUTH=true` additionally exposes an
+`x-dev-user` header bypass and a dev identity picker in the top-right, so the
+local consoles work without a Firebase project.
 
 ```bash
 npm run smoke   # 27 end-to-end checks against a running server
@@ -34,7 +40,7 @@ These are web surfaces standing in for what the spec plans as React Native
 (customer) and Next.js (business). The API underneath is the same either way.
 
 ```bash
-npm test        # 44 tests
+npm test        # 46 tests
 npm run typecheck
 ```
 
@@ -51,16 +57,21 @@ Authenticated routes take `Authorization: Bearer <Firebase ID token>`. Browsing
 is public. Under `DEV_AUTH=true` an `x-dev-user` header naming a `firebase_uid`
 stands in, so the local consoles work without a Firebase project.
 
+`GET /api/config` serves the client Firebase config (apiKey, authDomain,
+projectId, appId) from server env — not secret, but not hardcoded either.
+
 Customer:
 
 | | | |
 |---|---|---|
-| `GET` | `/api/salons?q=` | browse |
-| `GET` | `/api/salons/:id` | services, hours, rating |
+| `GET` | `/api/salons?q=&lat=&lng=&category=` | browse — `lat`/`lng` sort by distance, `category` filters by service category |
+| `GET` | `/api/salons/:id` | services, hours, rating, `openNow`/`closesAt` |
 | `POST` | `/api/salons/:id/availability` | `{serviceIds}` → 7-day window |
 | `POST` | `/api/bookings` | → 201, or **409** `SLOT_UNAVAILABLE` |
+| `POST` | `/api/me/bookings/:id/cancel` | customer-owned cancel, reuses the §4 state machine |
 | `GET` | `/api/me` | the signed-in user |
 | `GET` | `/api/me/bookings` | verify code appears 15 min before the slot |
+| `GET/POST/DELETE` | `/api/me/favorites[/:salonId]` | saved salons |
 
 Salon panel — every route resolves the salon from the signed-in owner, so a
 `salonId` is never accepted from the client:
@@ -86,6 +97,7 @@ wrapping it in Nest touches only `src/http/server.ts`.
 
 ```
 db/schema.sql                 spec §5, applied and verified against Postgres 16
+db/migrations/                idempotent ALTERs for an existing database
 src/time/tz.ts                wall-clock <-> instant, DST-correct
 src/availability/grid.ts      the bookable slot grid for one day
 src/availability/engine.ts    the algorithm — pure, no I/O
@@ -96,14 +108,22 @@ src/booking/create.ts         advisory-lock booking create
 src/auth/verifier.ts          Firebase token verification (swappable)
 src/auth/session.ts           token -> users row, roles, provisioning
 src/booking/status.ts         §4 state machine + close-for-day
-src/salons/repo.ts            browse + detail queries
+src/salons/repo.ts            browse + detail, openNow, distance, favorites
 src/business/repo.ts          the §6 panel's reads and writes
 src/http/server.ts            routing
 src/http/routes-business.ts   the panel's endpoints
-src/http/public/brand.css     design tokens from the logo
-src/http/public/index.html    customer
-src/http/public/business.html salon panel
+src/http/public/brand.css     design tokens + component styles
+src/http/public/app.css       layout glue between views
+src/http/public/index.html    customer shell — chrome, boot, route table
+src/http/public/lib/          api, auth, router, format, dom, payments
+src/http/public/components/   render-only pieces, no fetch
+src/http/public/views/        home, explore, salon, bookings, profile, login
+src/http/public/business.html salon panel (untouched, still one inline file)
 ```
+
+The customer app is vanilla ES modules loaded natively by the browser — no
+bundler, matching the no-build-step choice the rest of the repo makes. Rule:
+components render, `lib/` talks to the network, views compose.
 
 `engine.ts` is pure and takes a snapshot, so every availability rule is testable
 without a database. Only concurrency needs one.
@@ -143,6 +163,17 @@ availability query counts `booked`. This is a defect, not a design choice.
 **3. Index on `bookings (salon_id, start_at)` (new).** Today's bookings, the
 calendar, and `[Close for today]` all filter salon + day. The spec indexes only
 `(customer_id, start_at)`.
+
+**3c. `users.avatar_url` + `users.updated_at` (new).** Google sign-in carries a
+`picture` claim and a display name that can change. Without these the profile
+is frozen at first login and there is nowhere to put the photo. Sign-in now
+refreshes name/email/avatar every time. `db/migrations/001_users_profile_fields.sql`.
+
+**3d. `salons.cover_url`, `salon_photos`, `favorites` (new).** The marketplace UI
+needs imagery and saved salons; the spec's schema has neither. Photos are
+seeded from `scripts/seed-demo.ts` only — a salon with none renders a branded
+gradient placeholder rather than a borrowed stock image.
+`db/migrations/002_marketplace.sql`.
 
 **3b. `cancelled_at` + `refund_status` (new).** §4 promises "Full refund, auto"
 for `[Close for today]` and for a customer who arrives at a shut shop, but the

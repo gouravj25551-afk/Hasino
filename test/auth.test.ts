@@ -36,7 +36,7 @@ describe('bearer parsing', () => {
 
 describe('requireRole', () => {
   const s = (role: 'customer' | 'business' | 'admin') =>
-    ({ userId: 'u', role, phone: '+910000000000', name: null, blockedUntil: null });
+    ({ userId: 'u', role, phone: '+910000000000', name: null, email: null, avatarUrl: null, blockedUntil: null });
 
   it('lets a business user into the panel', () => {
     assert.doesNotThrow(() => requireRole(s('business'), 'business'));
@@ -83,13 +83,44 @@ describe('resolveSession', () => {
     assert.equal(Number(count.rows[0].n), 1, 'must not create a duplicate');
   });
 
-  it('demands a phone when the provider gives none (Google/Apple sign-in)', async (t) => {
+  it('demands a phone when the provider gives none (Google sign-in)', async (t) => {
     if (!pool) return t.skip('no test database reachable');
     await reset(pool);
     await assert.rejects(
       resolveSession(pool, token({ uid: 'fb-google', email: 'a@b.com' })),
       (err: AuthError) => err.code === 'PHONE_REQUIRED' && err.status === 428,
     );
+  });
+
+  it('refreshes name/email/avatar from Google on the first sign-in once a phone is linked', async (t) => {
+    if (!pool) return t.skip('no test database reachable');
+    await reset(pool);
+    const s = await resolveSession(
+      pool,
+      token({
+        uid: 'fb-google',
+        phone: '+919812340000',
+        email: 'a@b.com',
+        name: 'Google User',
+        picture: 'https://avatar.com/pic.jpg',
+      }),
+    );
+    assert.equal(s.email, 'a@b.com');
+    assert.equal(s.name, 'Google User');
+    assert.equal(s.avatarUrl, 'https://avatar.com/pic.jpg');
+    assert.equal(s.role, 'customer');
+  });
+
+  it('refreshes name/email/avatar on a returning sign-in', async (t) => {
+    if (!pool) return t.skip('no test database reachable');
+    await reset(pool);
+    await resolveSession(pool, token({ uid: 'fb-refresh', phone: '+919812340001', name: 'Old Name' }));
+    const s = await resolveSession(
+      pool,
+      token({ uid: 'fb-refresh', phone: '+919812340001', name: 'New Name', picture: 'https://avatar.com/new.jpg' }),
+    );
+    assert.equal(s.name, 'New Name');
+    assert.equal(s.avatarUrl, 'https://avatar.com/new.jpg');
   });
 
   it('links a pre-existing row by verified phone', async (t) => {

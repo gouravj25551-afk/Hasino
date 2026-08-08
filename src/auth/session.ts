@@ -8,6 +8,8 @@ export interface Session {
   role: 'customer' | 'business' | 'admin';
   phone: string;
   name: string | null;
+  email: string | null;
+  avatarUrl: string | null;
   blockedUntil: Date | null;
 }
 
@@ -15,7 +17,7 @@ export interface Session {
  * Turn a verified token into the users row that owns bookings, creating it on
  * first sign-in.
  *
- * Two rules here are load-bearing:
+ * Three rules here are load-bearing:
  *
  * 1. A new account is ALWAYS 'customer'. Roles never come from token claims —
  *    otherwise anyone who can mint a custom claim, or any future bug in claim
@@ -24,33 +26,56 @@ export interface Session {
  *
  * 2. Linking by phone is safe *only* because Firebase has already verified
  *    ownership of that number. We never accept a client-supplied phone.
+ *
+ * 3. users.phone is NOT NULL UNIQUE, and a salon has to be able to ring the
+ *    customer. Google sign-in carries no phone, so the client must link a
+ *    phone credential before the account can exist. 428 tells it to do that.
  */
 export async function resolveSession(
   db: Queryable,
   token: VerifiedToken,
-  now: Date = new Date(),
+  _now: Date = new Date(),
 ): Promise<Session> {
   const existing = await db.query<{
     id: string;
     role: Session['role'];
     phone: string;
     name: string | null;
+    email: string | null;
+    avatar_url: string | null;
     blocked_until: Date | null;
-  }>(`SELECT id, role, phone, name, blocked_until FROM users WHERE firebase_uid = $1`, [token.uid]);
+  }>(
+    `SELECT id, role, phone, name, email, avatar_url, blocked_until FROM users WHERE firebase_uid = $1`,
+    [token.uid],
+  );
 
   const found = existing.rows[0];
   if (found) {
+    // Update name/email/avatar_url/updated_at if available from token
+    if (token.name || token.email || token.picture) {
+      await db.query(
+        `UPDATE users
+            SET name = coalesce($2, name),
+                email = coalesce($3, email),
+                avatar_url = coalesce($4, avatar_url),
+                updated_at = now()
+          WHERE id = $1`,
+        [found.id, token.name ?? null, token.email ?? null, token.picture ?? null],
+      );
+    }
     return {
       userId: found.id,
       role: found.role,
       phone: found.phone,
-      name: found.name,
+      name: token.name ?? found.name,
+      email: token.email ?? found.email,
+      avatarUrl: token.picture ?? found.avatar_url,
       blockedUntil: found.blocked_until,
     };
   }
 
   // users.phone is NOT NULL UNIQUE, and a salon has to be able to ring the
-  // customer. Google/Apple sign-in carries no phone, so the client must link a
+  // customer. Google sign-in carries no phone, so the client must link a
   // phone credential before the account can exist. 428 tells it to do that.
   if (!token.phone) {
     throw new AuthError(
@@ -65,17 +90,21 @@ export async function resolveSession(
     role: Session['role'];
     phone: string;
     name: string | null;
+    email: string | null;
+    avatar_url: string | null;
     blocked_until: Date | null;
   }>(
-    `INSERT INTO users (phone, firebase_uid, name, email, role)
-     VALUES ($1, $2, $3, $4, 'customer')
+    `INSERT INTO users (phone, firebase_uid, name, email, avatar_url, role)
+     VALUES ($1, $2, $3, $4, $5, 'customer')
      ON CONFLICT (phone) DO UPDATE
        SET firebase_uid = EXCLUDED.firebase_uid,
-           name  = coalesce(users.name,  EXCLUDED.name),
-           email = coalesce(users.email, EXCLUDED.email)
+           name  = coalesce(users.name, EXCLUDED.name),
+           email = coalesce(users.email, EXCLUDED.email),
+           avatar_url = coalesce(users.avatar_url, EXCLUDED.avatar_url),
+           updated_at = now()
      WHERE users.firebase_uid IS NULL OR users.firebase_uid = EXCLUDED.firebase_uid
-     RETURNING id, role, phone, name, blocked_until`,
-    [token.phone, token.uid, token.name ?? null, token.email ?? null],
+     RETURNING id, role, phone, name, email, avatar_url, blocked_until`,
+    [token.phone, token.uid, token.name ?? null, token.email ?? null, token.picture ?? null],
   );
 
   const row = linked.rows[0];
@@ -94,6 +123,8 @@ export async function resolveSession(
     role: row.role,
     phone: row.phone,
     name: row.name,
+    email: row.email,
+    avatarUrl: row.avatar_url,
     blockedUntil: row.blocked_until,
   };
 }

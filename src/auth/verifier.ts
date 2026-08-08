@@ -12,6 +12,7 @@ export interface VerifiedToken {
   phone?: string | undefined;
   email?: string | undefined;
   name?: string | undefined;
+  picture?: string | undefined;
 }
 
 export interface TokenVerifier {
@@ -69,6 +70,7 @@ export class FirebaseVerifier implements TokenVerifier {
       phone: decoded.phone_number,
       email: decoded.email,
       name: typeof decoded['name'] === 'string' ? decoded['name'] : undefined,
+      picture: typeof decoded['picture'] === 'string' ? decoded['picture'] : undefined,
     };
   }
 }
@@ -80,7 +82,9 @@ export class FirebaseVerifier implements TokenVerifier {
 export class DevVerifier implements TokenVerifier {
   readonly kind = 'dev';
   async verify(idToken: string): Promise<VerifiedToken> {
-    return { uid: 'dev:' + idToken };
+    return {
+      uid: 'dev:' + idToken,
+    };
   }
 }
 

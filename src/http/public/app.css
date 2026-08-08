@@ -1,0 +1,10 @@
+/* hasino — page layout and view-specific styles.
+   brand.css holds design tokens and the reusable component styles that sit
+   directly on top of them; this file holds the layout glue between views
+   that doesn't belong to any one component. */
+
+/* Redundant with .bottom-nav below 768px (same breakpoint bottom-nav uses).
+   Selector matches brand.css's ".topbar nav" specificity so it actually wins. */
+@media (max-width: 768px) {
+  .topbar nav.desktop-nav { display: none; }
+}

@@ -5,9 +5,10 @@ import { MemorySnapshotCache } from '../availability/cache.ts';
 import { getAvailability } from '../availability/service.ts';
 import { loadCart } from '../availability/repo.ts';
 import { createBooking } from '../booking/create.ts';
+import { customerCancelBooking } from '../booking/status.ts';
 import { BookingError, SlotUnavailableError } from '../booking/errors.ts';
 import { ForbiddenError, listCustomerBookings } from '../business/repo.ts';
-import { getBooking, getSalon, listSalons } from '../salons/repo.ts';
+import { addFavorite, getBooking, getSalon, listFavorites, listSalons, removeFavorite } from '../salons/repo.ts';
 import { businessRoutes } from './routes-business.ts';
 import { HttpError, json, loadAssets, readJson, sendAsset, stringArray, uuid } from './respond.ts';
 import { AuthError, verifierFromEnv } from '../auth/verifier.ts';
@@ -27,6 +28,34 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'index.html',
   'business.html',
   'brand.css',
+  'app.css',
+  'lib/api.js',
+  'lib/auth.js',
+  'lib/dom.js',
+  'lib/format.js',
+  'lib/payments.js',
+  'lib/router.js',
+  'components/Avatar.js',
+  'components/Badge.js',
+  'components/BookingCard.js',
+  'components/BottomNav.js',
+  'components/BottomSheet.js',
+  'components/Button.js',
+  'components/EmptyState.js',
+  'components/Input.js',
+  'components/Modal.js',
+  'components/Rating.js',
+  'components/SalonCard.js',
+  'components/SearchBar.js',
+  'components/ServiceCard.js',
+  'components/Skeleton.js',
+  'components/TopBar.js',
+  'views/home.js',
+  'views/explore.js',
+  'views/salon.js',
+  'views/bookings.js',
+  'views/profile.js',
+  'views/login.js',
 ]);
 
 const PAGES: Record<string, string> = {
@@ -62,15 +91,11 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
   const seg = path.split('/').filter(Boolean);
 
   // ---------- pages + assets ----------
+  // Pages are served either way — production users sign in with real Google
+  // auth. Only the x-dev-user bypass and /api/dev/identities (below) are
+  // DEV_AUTH-only.
   const page = PAGES[path];
   if (method === 'GET' && page) {
-    if (!DEV_AUTH) {
-      return json(res, 200, {
-        service: 'hasino-api',
-        ui: 'disabled (DEV_AUTH is off)',
-        pages: Object.keys(PAGES),
-      });
-    }
     return sendAsset(res, assets.get(page)!);
   }
 
@@ -86,6 +111,20 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
   if (method === 'GET' && path === '/health') {
     await db.query('SELECT 1');
     return json(res, 200, { ok: true, auth: DEV_AUTH ? 'DEV_AUTH (insecure)' : verifier.kind });
+  }
+
+  // The client Firebase config is not secret, but it's still environment-
+  // specific — served from env so it's not hardcoded into a checked-in file.
+  if (method === 'GET' && path === '/api/config') {
+    return json(res, 200, {
+      firebase: {
+        apiKey: process.env.FIREBASE_WEB_API_KEY ?? null,
+        authDomain: process.env.FIREBASE_AUTH_DOMAIN ?? null,
+        projectId: process.env.FIREBASE_PROJECT_ID ?? null,
+        appId: process.env.FIREBASE_APP_ID ?? null,
+      },
+      devAuth: DEV_AUTH,
+    });
   }
 
   // ---------- dev identity ----------
@@ -122,7 +161,15 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
   // ---------- customer ----------
   if (method === 'GET' && path === '/api/salons') {
     const q = url.searchParams.get('q') ?? undefined;
-    return json(res, 200, { salons: await listSalons(db, q) });
+    const latRaw = url.searchParams.get('lat');
+    const lngRaw = url.searchParams.get('lng');
+    const lat = latRaw === null ? undefined : Number(latRaw);
+    const lng = lngRaw === null ? undefined : Number(lngRaw);
+    if ((lat !== undefined && Number.isNaN(lat)) || (lng !== undefined && Number.isNaN(lng))) {
+      throw new HttpError(400, 'lat and lng must be numbers');
+    }
+    const category = url.searchParams.get('category') ?? undefined;
+    return json(res, 200, { salons: await listSalons(db, q, { lat, lng, category }) });
   }
 
   if (method === 'GET' && seg[0] === 'api' && seg[1] === 'salons' && seg.length === 3) {
@@ -170,12 +217,53 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
 
   if (method === 'GET' && path === '/api/me') {
     const s = await session(db, req);
-    return json(res, 200, { id: s.userId, role: s.role, phone: s.phone, name: s.name, blockedUntil: s.blockedUntil });
+    return json(res, 200, {
+      id: s.userId,
+      role: s.role,
+      phone: s.phone,
+      name: s.name,
+      email: s.email,
+      avatarUrl: s.avatarUrl,
+      blockedUntil: s.blockedUntil,
+    });
   }
 
   if (method === 'GET' && path === '/api/me/bookings') {
     const s = await session(db, req);
     return json(res, 200, { bookings: await listCustomerBookings(db, s.userId) });
+  }
+
+  if (method === 'POST' && seg[0] === 'api' && seg[1] === 'me' && seg[2] === 'bookings' && seg[4] === 'cancel' && seg.length === 5) {
+    const s = await session(db, req);
+    const bookingId = uuid(seg[3]!, 'bookingId');
+    const result = await customerCancelBooking(db, s.userId, bookingId);
+    await cache.invalidate(result.salonId);
+    return json(res, 200, { ok: true, booking: result });
+  }
+
+  if (method === 'GET' && path === '/api/me/favorites') {
+    const s = await session(db, req);
+    return json(res, 200, { salonIds: await listFavorites(db, s.userId) });
+  }
+
+  if (method === 'POST' && path === '/api/me/favorites') {
+    const s = await session(db, req);
+    const body = await readJson(req);
+    const salonId = uuid(String(body['salonId'] ?? ''), 'salonId');
+    await addFavorite(db, s.userId, salonId);
+    return json(res, 201, { ok: true });
+  }
+
+  if (
+    method === 'DELETE' &&
+    seg[0] === 'api' &&
+    seg[1] === 'me' &&
+    seg[2] === 'favorites' &&
+    seg.length === 4
+  ) {
+    const s = await session(db, req);
+    await removeFavorite(db, s.userId, uuid(seg[3]!, 'salonId'));
+    return json(res, 200, { ok: true });
   }
 
   if (method === 'POST' && path === '/api/bookings') {

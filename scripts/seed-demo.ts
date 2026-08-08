@@ -13,10 +13,14 @@ if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DESTRUCTIVE_SEED 
 
 const SERVICES = [
   { name: 'Haircut', category: 'hair' },
-  { name: 'Beard Trim', category: 'hair' },
-  { name: 'Hair Colour', category: 'hair' },
-  { name: 'Head Massage', category: 'spa' },
-  { name: 'Facial', category: 'skin' },
+  { name: 'Beard Trim', category: 'beard' },
+  { name: 'Hair Colour', category: 'color' },
+  { name: 'Head Massage', category: 'grooming' },
+  { name: 'Facial', category: 'facial' },
+  { name: 'Hair Styling', category: 'styling' },
+  { name: 'Beard Styling & Spa', category: 'beard' },
+  { name: 'De-Tan Facial', category: 'facial' },
+  { name: 'Global Hair Color', category: 'color' },
 ];
 
 const SALONS = [
@@ -30,7 +34,19 @@ const SALONS = [
     open: '10:00',
     close: '20:00',
     break: ['14:00', '15:00'] as [string, string] | null,
-    prices: { Haircut: [25_000, 30], 'Beard Trim': [12_000, 15], 'Hair Colour': [90_000, 60], 'Head Massage': [40_000, 30] },
+    prices: {
+      Haircut: [25_000, 30],
+      'Beard Trim': [12_000, 15],
+      'Hair Colour': [90_000, 60],
+      'Head Massage': [40_000, 30],
+      'Hair Styling': [30_000, 20],
+      'De-Tan Facial': [60_000, 35],
+    },
+    photos: [
+      'https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1521590832167-7bcbfaa6381f?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1503951914875-452162b0f3f1?auto=format&fit=crop&w=800&q=80',
+    ],
   },
   {
     name: 'The Barber Room',
@@ -42,7 +58,18 @@ const SALONS = [
     open: '09:00',
     close: '21:00',
     break: null,
-    prices: { Haircut: [35_000, 40], 'Beard Trim': [15_000, 20], Facial: [70_000, 40] },
+    prices: {
+      Haircut: [35_000, 40],
+      'Beard Trim': [15_000, 20],
+      Facial: [70_000, 40],
+      'Beard Styling & Spa': [25_000, 25],
+      'Hair Styling': [40_000, 20],
+    },
+    photos: [
+      'https://images.unsplash.com/photo-1503951914875-452162b0f3f1?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1585747860715-2ba37e788b70?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1599351431202-1e0f0137899a?auto=format&fit=crop&w=800&q=80',
+    ],
   },
   {
     name: 'Glow Unisex Salon',
@@ -54,7 +81,19 @@ const SALONS = [
     open: '11:00',
     close: '19:00',
     break: ['13:30', '14:15'] as [string, string] | null,
-    prices: { Haircut: [45_000, 45], 'Hair Colour': [150_000, 90], Facial: [85_000, 45], 'Head Massage': [50_000, 45] },
+    prices: {
+      Haircut: [45_000, 45],
+      'Hair Colour': [150_000, 90],
+      Facial: [85_000, 45],
+      'Head Massage': [50_000, 45],
+      'Global Hair Color': [220_000, 90],
+      'De-Tan Facial': [75_000, 40],
+    },
+    photos: [
+      'https://images.unsplash.com/photo-1562322140-8baeececf3df?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&w=800&q=80',
+    ],
   },
 ];
 
@@ -62,7 +101,8 @@ const db = getPool();
 
 await db.query(`
   TRUNCATE booking_slots, booking_items, bookings, reviews, salon_strikes,
-           salon_holidays, salon_hours, salon_services, services, salons, users
+           salon_holidays, salon_hours, salon_services, services, salons, users,
+           favorites, salon_photos
   RESTART IDENTITY CASCADE
 `);
 
@@ -97,12 +137,16 @@ for (const [i, salon] of SALONS.entries()) {
   const ownerId = ownerRow.rows[0]!.id;
 
   const r = await db.query<{ id: string }>(
-    `INSERT INTO salons (owner_id, name, address, lat, lng, timezone, status)
-     VALUES ($1, $2, $3, $4, $5, 'Asia/Kolkata', 'active') RETURNING id`,
-    [ownerId, salon.name, salon.address, salon.lat, salon.lng],
+    `INSERT INTO salons (owner_id, name, address, lat, lng, timezone, status, cover_url)
+     VALUES ($1, $2, $3, $4, $5, 'Asia/Kolkata', 'active', $6) RETURNING id`,
+    [ownerId, salon.name, salon.address, salon.lat, salon.lng, salon.photos[0] ?? null],
   );
   const salonId = r.rows[0]!.id;
   created.push({ id: salonId, name: salon.name });
+
+  for (const [sort, url] of salon.photos.entries()) {
+    await db.query(`INSERT INTO salon_photos (salon_id, url, sort) VALUES ($1, $2, $3)`, [salonId, url, sort]);
+  }
 
   for (const [serviceName, [price, duration]] of Object.entries(salon.prices)) {
     await db.query(

@@ -11,11 +11,16 @@ Verified locally in production mode:
 ```
 /health                      -> {"ok":true,"auth":"firebase"}
 GET /api/salons              -> 200   (browsing stays public)
-GET /                        -> dev pages disabled
+GET /                        -> 200   (customer app, real Google sign-in)
 GET /api/dev/identities      -> 404
 x-dev-user: <uuid>           -> 401 NO_TOKEN      (dev header is inert)
 Authorization: Bearer junk   -> 401 INVALID_TOKEN (real signature check)
 ```
+
+The web pages are served in production now — they were dev-only before. They
+sign in with real Google auth via Firebase, so they need the four
+`FIREBASE_WEB_*` client variables below. Without them browsing still works and
+only sign-in fails, with a visible message.
 
 **Payments are still not implemented.** See "What going live still means" below.
 
@@ -44,8 +49,22 @@ Set these variables on the host:
 | `DATABASE_URL` | your Postgres URL, SSL on |
 | `NODE_ENV` | `production` |
 | `FIREBASE_SERVICE_ACCOUNT` | the whole service-account JSON, inline |
+| `FIREBASE_WEB_API_KEY` | client config — Project settings → General → Your apps |
+| `FIREBASE_AUTH_DOMAIN` | client config |
+| `FIREBASE_PROJECT_ID` | client config |
+| `FIREBASE_APP_ID` | client config |
 | `PORT` | usually injected by the host |
 | `DEV_AUTH` | **leave unset** — the server refuses to start with it |
+
+The four `FIREBASE_WEB_*`/client values are not secret — they ship to the
+browser via `GET /api/config`. They are environment variables so a staging and
+a production deploy can point at different Firebase projects.
+
+In the Firebase console you must also enable **Google** and **Phone** under
+Authentication → Sign-in method, and add your production domain under
+Authentication → Settings → Authorized domains. Google sign-in carries no
+phone number, so the client walks the `428 PHONE_REQUIRED` phone-link flow
+before the account can book.
 
 `GOOGLE_APPLICATION_CREDENTIALS` (a file path) works instead of
 `FIREBASE_SERVICE_ACCOUNT` and is what Cloud Run injects for free.
@@ -93,11 +112,22 @@ and a salon has to be able to ring the customer, so a token without a phone gets
 
 ## Migrations
 
-`db/schema.sql` is idempotent but is **not a migration system**. It will not
-alter an existing table. Every schema change so far has been hand-applied with
-`ALTER TABLE ... IF NOT EXISTS`. Before there are two environments, add
-`node-pg-migrate` or Atlas — otherwise the first column change silently skips
-production.
+`db/schema.sql` is idempotent but will **not** alter an existing table — it is
+the fresh-install path only. Schema changes also land in `db/migrations/` as
+numbered, idempotent files:
+
+```bash
+for m in db/migrations/*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$m"; done
+```
+
+Applying every migration to a database built from the previous schema was
+verified to produce identical columns, types, nullability, defaults and
+indexes to a fresh `db/schema.sql` build.
+
+This is still **not a migration system** — nothing records which files have
+run, so re-running is safe only because each one is written to be. Before
+there are two long-lived environments, add `node-pg-migrate` or Atlas and give
+them a version table.
 
 Do **not** run `npm run db:seed` against production; it truncates every table.
 It refuses when `NODE_ENV=production` unless `ALLOW_DESTRUCTIVE_SEED=true`.

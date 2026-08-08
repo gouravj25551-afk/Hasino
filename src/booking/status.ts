@@ -176,3 +176,31 @@ export async function closeForDay(
     customerIds: [...new Set(res.rows.map((r) => r.customer_id))],
   };
 }
+
+export async function customerCancelBooking(
+  db: Pool,
+  customerId: string,
+  bookingId: string,
+  now: Date = new Date(),
+): Promise<{ id: string; status: BookingStatus; salonId: string }> {
+  return withTransaction(db, async (tx) => {
+    const res = await tx.query<{ salon_id: string; status: BookingStatus }>(
+      `SELECT salon_id, status FROM bookings WHERE id = $1 AND customer_id = $2 FOR UPDATE`,
+      [bookingId, customerId],
+    );
+    const row = res.rows[0];
+    if (!row) throw new BookingNotFoundError();
+    if (!canTransition(row.status, 'cancelled_by_customer')) {
+      throw new InvalidTransitionError(row.status, 'cancelled_by_customer');
+    }
+    await tx.query(
+      `UPDATE bookings
+          SET status = 'cancelled_by_customer',
+              cancelled_at = $3,
+              reschedule_deadline = $4
+        WHERE id = $1 AND customer_id = $2`,
+      [bookingId, customerId, now, new Date(now.getTime() + RESCHEDULE_WINDOW_HOURS * 3600_000)],
+    );
+    return { id: bookingId, status: 'cancelled_by_customer', salonId: row.salon_id };
+  });
+}
