@@ -198,6 +198,7 @@ export async function rescheduleBooking(
         to: c.customer_email ?? '',
         payload,
         dedupeKey: `booking_rescheduled:${created.id}`,
+        now,
       });
       const remindAt = new Date(created.startAt.getTime() - 2 * 3600_000);
       if (remindAt.getTime() > now.getTime() + 60_000) {

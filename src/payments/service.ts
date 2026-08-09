@@ -516,6 +516,7 @@ async function queueBookingNotifications(
     to: ctx.customerEmail ?? '',
     payload,
     dedupeKey: `booking_confirmed:${bookingId}`,
+    now,
   });
 
   await enqueueNotification(tx, {
@@ -526,6 +527,7 @@ async function queueBookingNotifications(
     to: ctx.ownerEmail ?? '',
     payload,
     dedupeKey: `salon_new_booking:${bookingId}`,
+    now,
   });
 
   // Two hours out. A reminder that would fire in the past — someone booking a
@@ -790,7 +792,7 @@ export async function processDueRefunds(
           [row.booking_id],
         );
         await writeRefundLedger(tx, row.salon_id, row.booking_id, row.payment_id, row.id, row.amount, now);
-        await queueRefundNotification(tx, row.booking_id, row.amount);
+        await queueRefundNotification(tx, row.booking_id, row.amount, now);
       });
       processed += 1;
     } catch (err) {
@@ -857,7 +859,12 @@ async function writeRefundLedger(
   );
 }
 
-async function queueRefundNotification(tx: PoolClient, bookingId: string, amount: number): Promise<void> {
+async function queueRefundNotification(
+  tx: PoolClient,
+  bookingId: string,
+  amount: number,
+  now: Date,
+): Promise<void> {
   const ctx = await bookingContext(tx, bookingId);
   if (!ctx) return;
   await enqueueNotification(tx, {
@@ -874,5 +881,6 @@ async function queueRefundNotification(tx: PoolClient, bookingId: string, amount
       amount,
     },
     dedupeKey: `refund_processed:${bookingId}`,
+    now,
   });
 }
