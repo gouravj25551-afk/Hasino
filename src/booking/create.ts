@@ -1,4 +1,4 @@
-import type { Pool } from '../db/pool.ts';
+import type { Pool, PoolClient } from '../db/pool.ts';
 import { withTransaction } from '../db/pool.ts';
 import type { CartItem } from '../types.ts';
 import { localDateKey, weekdayOf, zonedTimeToUtc } from '../time/tz.ts';
@@ -14,6 +14,7 @@ import {
   SlotUnavailableError,
 } from './errors.ts';
 import { generateVerifyCode } from './status.ts';
+import { chairConsumingSql } from './occupancy.ts';
 
 export interface CreateBookingInput {
   salonId: string;
@@ -22,6 +23,16 @@ export interface CreateBookingInput {
   startAt: Date;
   rzpOrderId?: string | null;
   rzpPaymentId?: string | null;
+  /** set by the reschedule flow — the booking this one replaces */
+  rescheduledFrom?: string | null;
+  /** carried forward from that booking, so the §10 cap of 1 survives the chain */
+  rescheduleCount?: number;
+  /**
+   * Prices and durations frozen at the time the customer paid. Set by the
+   * reschedule flow; when absent the cart is resolved from the salon's current
+   * menu, which is what a new booking wants.
+   */
+  cart?: CartItem[];
 }
 
 export interface CreatedBooking {
@@ -33,6 +44,9 @@ export interface CreatedBooking {
   amount: number;
   slots: Date[];
   items: CartItem[];
+  status: 'pending_payment' | 'booked';
+  /** when the chair is released if payment never lands; null once paid */
+  holdExpiresAt: Date | null;
 }
 
 export interface CreateBookingOptions {
@@ -41,6 +55,12 @@ export interface CreateBookingOptions {
   bufferPolicy?: BufferPolicy;
   /** invalidated on success, per spec §2 */
   cache?: SnapshotCache;
+  /**
+   * How long the chair is held while the customer pays. Omit — or pass 0 — to
+   * create a settled 'booked' row directly, which is what the reschedule flow
+   * does: that money already moved.
+   */
+  holdTtlMs?: number;
 }
 
 /**
@@ -56,10 +76,33 @@ export async function createBooking(
   input: CreateBookingInput,
   opts: CreateBookingOptions = {},
 ): Promise<CreatedBooking> {
+  const booking = await withTransaction(db, (tx) => createBookingTx(tx, input, opts));
+  await opts.cache?.invalidate(input.salonId);
+  return booking;
+}
+
+/**
+ * The same thing, on a caller's transaction.
+ *
+ * The reschedule flow needs to retire the old booking and take the new one
+ * atomically: if the two were separate transactions, a failure between them
+ * either leaves the customer holding two chairs or none. It must therefore be
+ * able to reach inside this lock, which is why the body is exposed rather than
+ * duplicated.
+ *
+ * Cache invalidation is the wrapper's job — it must happen after COMMIT, not
+ * inside it, or a concurrent read repopulates the snapshot from a transaction
+ * that has not landed yet.
+ */
+export async function createBookingTx(
+  tx: PoolClient,
+  input: CreateBookingInput,
+  opts: CreateBookingOptions = {},
+): Promise<CreatedBooking> {
   const now = opts.now ?? new Date();
   const minLead = opts.minLeadMin ?? MIN_LEAD_MIN;
 
-  const booking = await withTransaction(db, async (tx) => {
+  {
     // Serialise every write for this salon. Held until COMMIT/ROLLBACK, so
     // there is no path that releases it early.
     await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [input.salonId]);
@@ -84,8 +127,12 @@ export async function createBooking(
       throw new CustomerBlockedError(blockedUntil);
     }
 
-    const cart = await loadCart(tx, input.salonId, input.serviceIds);
-    if (cart.length === 0 || cart.length !== new Set(input.serviceIds).size) {
+    // A frozen cart comes from the booking being rescheduled: prices and
+    // durations as they were when the customer paid, not as the salon lists
+    // them today. It also skips the `active` check on purpose — a salon that
+    // retired a service after taking money still owes the haircut.
+    const cart = input.cart ?? (await loadCart(tx, input.salonId, input.serviceIds));
+    if (cart.length === 0 || (!input.cart && cart.length !== new Set(input.serviceIds).size)) {
       throw new EmptyCartError();
     }
 
@@ -142,16 +189,17 @@ export async function createBooking(
       throw new InvalidStartError('Booking does not fit from that start time');
     }
 
-    // THE re-check. Same three chair-consuming statuses as the availability query.
+    // THE re-check. Shares one predicate with the availability query — see
+    // booking/occupancy.ts for why that is not duplicated here.
     const occ = await tx.query<{ slot_start_at: Date; booked: number }>(
       `SELECT bs.slot_start_at, COUNT(*)::int8 AS booked
          FROM booking_slots bs
          JOIN bookings b ON b.id = bs.booking_id
         WHERE bs.salon_id = $1
           AND bs.slot_start_at = ANY($2::timestamptz[])
-          AND b.status IN ('booked','verified','in_progress')
+          AND ${chairConsumingSql('$3')}
         GROUP BY bs.slot_start_at`,
-      [input.salonId, slots],
+      [input.salonId, slots, now],
     );
     for (const row of occ.rows) {
       if (Number(row.booked) >= grid.capacity) throw new SlotUnavailableError();
@@ -164,6 +212,18 @@ export async function createBooking(
     // be wrong on the booking card.
     const endAt = new Date(input.startAt.getTime() + cart.reduce((a, c) => a + c.durationMin, 0) * 60_000);
 
+    // The hold. This row consumes a chair from the moment it is inserted —
+    // inside the same advisory lock that just proved the chair was free — so
+    // the customer who reaches checkout second is rejected *before* paying
+    // rather than refunded after. hold_expires_at bounds the damage from a
+    // customer who opens the sheet and walks away; sweep.ts collects them.
+    //
+    // holdTtlMs = 0 skips the hold and books outright. The reschedule flow uses
+    // that: the money moved on the original booking.
+    const holdTtlMs = opts.holdTtlMs ?? 0;
+    const status = holdTtlMs > 0 ? 'pending_payment' : 'booked';
+    const holdExpiresAt = holdTtlMs > 0 ? new Date(now.getTime() + holdTtlMs) : null;
+
     // Spec §4 has a job generate this 15 minutes before the slot. Generating
     // it at creation and only *revealing* it 15 minutes before is equivalent
     // for the customer and removes a scheduler from the critical path —
@@ -171,8 +231,9 @@ export async function createBooking(
     // read path, not here.
     const inserted = await tx.query<{ id: string }>(
       `INSERT INTO bookings (salon_id, customer_id, start_at, end_at, status,
-                             amount, rzp_order_id, rzp_payment_id, verify_code)
-       VALUES ($1, $2, $3, $4, 'booked', $5, $6, $7, $8)
+                             amount, rzp_order_id, rzp_payment_id, verify_code,
+                             hold_expires_at, rescheduled_from, reschedule_count)
+       VALUES ($1, $2, $3, $4, $9, $5, $6, $7, $8, $10, $11, $12)
        RETURNING id`,
       [
         input.salonId,
@@ -183,6 +244,10 @@ export async function createBooking(
         input.rzpOrderId ?? null,
         input.rzpPaymentId ?? null,
         generateVerifyCode(),
+        status,
+        holdExpiresAt,
+        input.rescheduledFrom ?? null,
+        input.rescheduleCount ?? 0,
       ],
     );
     const bookingId = inserted.rows[0]!.id;
@@ -209,11 +274,10 @@ export async function createBooking(
       amount,
       slots,
       items: cart,
-    };
-  });
-
-  await opts.cache?.invalidate(input.salonId);
-  return booking;
+      status,
+      holdExpiresAt,
+    } satisfies CreatedBooking;
+  }
 }
 
 /**

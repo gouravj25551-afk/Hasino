@@ -1,13 +1,22 @@
 # Hasino
 
-Salon booking marketplace. Build-order steps 2 and 3 (availability engine,
-booking create), the schema they run on, and a read-and-book HTTP API over them.
+Salon booking marketplace. The availability engine, booking create, Razorpay
+payments, the money ledger, and two web surfaces over them.
 
-Firebase Auth is implemented — including Google sign-in with the one-time
-phone-link step — so the API is deployable. **Payments are not** — bookings
-hold a real chair without money attached. See [DEPLOY.md](DEPLOY.md).
+Firebase Auth (Google sign-in with the one-time phone-link step) and Razorpay
+are both implemented. A booking now holds a chair while the customer pays and
+only becomes real once the money is verified — see
+[the payment hold](#the-payment-hold) for why that ordering matters.
 
 ## Run it
+
+```bash
+npm run dev
+```
+
+Creates the database, applies the schema and migrations, seeds demo data, and
+starts on :3000 with file watching. It checks Node and Postgres first and tells
+you what to install if either is missing. The long way, if you prefer it:
 
 ```bash
 npm install
@@ -16,9 +25,23 @@ DATABASE_URL=postgres://localhost:5432/hasino_dev npm run db:seed
 DATABASE_URL=postgres://localhost:5432/hasino_dev DEV_AUTH=true npm start
 ```
 
+With no Razorpay keys, `DEV_AUTH=true` runs against an in-process stub that
+signs its payments with the same HMAC Razorpay uses — so the whole hold → pay →
+confirm path works locally, signature check included. `POST /api/dev/pay`
+stands in for the customer tapping Pay. In production the server refuses to
+boot without real keys.
+
 `db/schema.sql` is the whole schema, so a fresh database needs nothing else.
-For a database that already has data, apply `db/migrations/*.sql` in order
-instead — each is idempotent and safe to re-run.
+For a database that already has data:
+
+```bash
+npm run db:migrate          # apply outstanding migrations, once each
+npm run db:migrate:status    # show what would run, change nothing
+```
+
+Each migration is idempotent, runs in a transaction, and is recorded in
+`schema_migrations` with a checksum — editing one that has already run is
+refused rather than silently producing two different schemas.
 
 Two surfaces:
 
@@ -33,14 +56,14 @@ with real Google auth via Firebase. `DEV_AUTH=true` additionally exposes an
 local consoles work without a Firebase project.
 
 ```bash
-npm run smoke   # 27 end-to-end checks against a running server
+npm run smoke   # end-to-end checks against a running server, payments included
 ```
 
 These are web surfaces standing in for what the spec plans as React Native
 (customer) and Next.js (business). The API underneath is the same either way.
 
 ```bash
-npm test        # 46 tests
+npm test        # 97 tests
 npm run typecheck
 ```
 
@@ -67,11 +90,22 @@ Customer:
 | `GET` | `/api/salons?q=&lat=&lng=&category=` | browse — `lat`/`lng` sort by distance, `category` filters by service category |
 | `GET` | `/api/salons/:id` | services, hours, rating, `openNow`/`closesAt` |
 | `POST` | `/api/salons/:id/availability` | `{serviceIds}` → 7-day window |
-| `POST` | `/api/bookings` | → 201, or **409** `SLOT_UNAVAILABLE` |
+| `POST` | `/api/bookings` | **holds a chair** and opens a Razorpay order → 201, or **409** `SLOT_UNAVAILABLE`. Honours `Idempotency-Key`. |
+| `POST` | `/api/bookings/:id/checkout` | re-open checkout for a hold that is still live |
+| `POST` | `/api/bookings/:id/confirm` | the signed checkout callback → 200 booked, or **202** paid-too-late (refund queued) |
 | `POST` | `/api/me/bookings/:id/cancel` | customer-owned cancel, reuses the §4 state machine |
+| `POST` | `/api/me/bookings/:id/reschedule` | §4's 36-hour move, no extra charge |
 | `GET` | `/api/me` | the signed-in user |
 | `GET` | `/api/me/bookings` | verify code appears 15 min before the slot |
 | `GET/POST/DELETE` | `/api/me/favorites[/:salonId]` | saved salons |
+
+Unauthenticated, and not for humans:
+
+| | | |
+|---|---|---|
+| `POST` | `/api/webhooks/razorpay` | signature-verified over the raw body, idempotent on the event id |
+| `GET` | `/healthz` | liveness — no database call, on purpose |
+| `GET` | `/readyz` | readiness — checks Postgres |
 
 Salon panel — every route resolves the salon from the signed-in owner, so a
 `salonId` is never accepted from the client:
@@ -85,7 +119,8 @@ Salon panel — every route resolves the salon from the signed-in owner, so a
 | `POST` | `/api/business/bookings/:id/{verify,start,complete,no-show,cancel}` | §4 states |
 | `POST` | `/api/business/close-today` | §6.5 |
 | `GET` | `/api/business/{stats,reviews}` | §6.7 |
-| `GET` | `/api/business/payouts` | §6.6 — stub, blocked on Razorpay |
+| `GET` | `/api/business/payouts` | §6.6 — balance, settlements and statement, all summed from the ledger |
+| `GET` | `/api/business/earnings?days=` | daily net, in the salon's own timezone |
 
 `node:http`, no framework. The spec picks NestJS, which is decorator-based and
 needs a real compile step with `emitDecoratorMetadata` — it cannot run under
@@ -104,14 +139,28 @@ src/availability/engine.ts    the algorithm — pure, no I/O
 src/availability/repo.ts      the 7-day window in 3 queries
 src/availability/cache.ts     60s snapshot cache
 src/availability/service.ts   7-day orchestration
-src/booking/create.ts         advisory-lock booking create
+src/booking/create.ts         advisory-lock booking create (+ the hold)
+src/booking/occupancy.ts      the ONE definition of "holding a chair"
+src/booking/sweep.ts          expired holds -> terminal
+src/booking/reschedule.ts     §4's 36-hour move, atomically
+src/payments/razorpay.ts      Razorpay over fetch, signatures, in-memory stub
+src/payments/service.ts       checkout, capture, refunds — the money path
+src/payments/webhook.ts       signature-verified, idempotent event inbox
+src/payments/ledger.ts        balances, statement, payouts
+src/notify/outbox.ts          transactional outbox
+src/notify/dispatch.ts        the worker that drains it
+src/notify/templates.ts       the six emails
+src/workers/runner.ts         three loops over Postgres, advisory-locked
+src/obs/logger.ts             structured logs, request ids, error reporter seam
 src/auth/verifier.ts          Firebase token verification (swappable)
 src/auth/session.ts           token -> users row, roles, provisioning
 src/booking/status.ts         §4 state machine + close-for-day
 src/salons/repo.ts            browse + detail, openNow, distance, favorites
 src/business/repo.ts          the §6 panel's reads and writes
 src/http/server.ts            routing
+src/http/middleware.ts        security headers, CORS, rate limits, raw bodies
 src/http/routes-business.ts   the panel's endpoints
+src/http/public/views/checkout.js  the payment screen
 src/http/public/brand.css     design tokens + component styles
 src/http/public/app.css       layout glue between views
 src/http/public/index.html    customer shell — chrome, boot, route table
@@ -136,6 +185,21 @@ All 9 cases, plus 19 more covering rules the spec states without listing a test.
 |---|---|---|
 | 1-8 | empty day, capacity, fragmented gaps, break, closing, holiday | `test/availability.test.ts` |
 | 9 | two concurrent inserts, last seat | `test/booking-concurrency.test.ts` |
+
+Plus the payment path, which the spec does not cover at all:
+
+| | |
+|---|---|
+| `test/payments.test.ts` | signature forgery, commission rounding, refund idempotency, rate limits — no database needed |
+| `test/payment-flow.test.ts` | the hold, the sweeper, late payments, webhook replay, refunds, ledger arithmetic |
+| `test/reschedule.test.ts` | the 36h window, the cap of one, frozen prices, rollback on a taken slot |
+
+The signature tests are written against forgery rather than the happy path: a
+valid signature is the only thing between `POST /api/bookings/:id/confirm` and
+"type a payment id, get a free booking". They cover a signature made with the
+wrong secret, one lifted from a cheaper payment, a payment id swapped under a
+valid order signature, and non-hex garbage that must fail closed rather than
+throw.
 
 **Case 9 as the spec writes it does not work.** A two-way race passes with the
 advisory lock deleted — verified by removing the lock and rerunning: case 9 still
@@ -228,45 +292,128 @@ a job create it late; the read path withholds it until 15 minutes before
 instead. Same customer experience, one fewer scheduler on the critical path —
 and BullMQ (step 7) is not built. If a code ever needs rotating, move it back.
 
-## The thing that needs a decision before payment code is written
+## The payment hold
 
-The §4 flow is `pay → booking created, slots locked`. Nothing holds the slot
-*during* payment. Two customers open the payment sheet on the last chair; both
-pay; one gets `SLOT_UNAVAILABLE` after their money has already moved — and under
-the Partner sub-merchant model that money is in the salon's account, so the
-platform is now issuing a refund against someone else's balance for its own
-concurrency bug.
+§4 orders this `pay → booking created, slots locked`. Nothing holds the slot
+*during* payment, so two customers open the sheet on the last chair, both pay,
+and one gets `SLOT_UNAVAILABLE` after their money has already moved.
+`createBooking` is correct as specified — it never double-books — but the
+correctness was costing a refund instead of a rejection.
 
-`createBooking` is correct as specified — it never double-books. The gap is that
-correctness costs a refund instead of a rejection.
+The order is now `hold → pay → confirm`:
 
-The standard fix is a `pending_payment` status that consumes a chair with a short
-TTL, confirmed by the webhook and swept if it expires. That is a real change to
-§4, §5, and the BullMQ job list, so it is flagged rather than built:
-
-```sql
--- if you take this route
-ALTER TABLE bookings DROP CONSTRAINT bookings_status_check;
-ALTER TABLE bookings ADD CONSTRAINT bookings_status_check
-  CHECK (status IN ('pending_payment','booked','verified','in_progress','completed',
-                    'no_show','rescheduled','cancelled_by_customer','cancelled_by_salon'));
-ALTER TABLE bookings ADD COLUMN hold_expires_at timestamptz;
--- and add 'pending_payment' to the chair-consuming status list in BOTH
--- src/availability/repo.ts and src/booking/create.ts
+```
+POST /api/bookings              takes the chair, status = pending_payment,
+                                hold_expires_at = now + 8 min, opens an order
+[Razorpay sheet]
+POST /api/bookings/:id/confirm  verifies the signature, asks Razorpay what
+                                really happened, flips the row to 'booked'
 ```
 
-## Still open from §10
+Four things make it hold up:
 
-1. Revenue model — subscription vs per-booking. Blocks billing code only.
-2. Reschedule more than once? (spec recommends cap at 1)
-3. Reschedule locked to the same salon? (spec recommends yes)
-4. Who absorbs a price change within the 36h reschedule window?
-5. Solo or team.
+**The chair is taken inside the same advisory lock that proved it was free.**
+The second customer is rejected at step one, before Razorpay is ever opened.
 
-None of these block the next build step.
+**Which statuses consume a chair is defined once**, in `src/booking/occupancy.ts`,
+because the availability read and the commit-time re-check must never disagree.
+One counts a hold only while `hold_expires_at > now`.
+
+**Correctness lives in the predicate, not in the sweeper.** An expired hold
+stops consuming a chair by the clock, so a dead worker cannot oversell — it can
+only leave a stale row. `sweep.ts` tidies those up; nothing depends on it having
+run.
+
+**The webhook is the backstop, and it races the callback on purpose.** Whichever
+lands first confirms; the second gets `already_confirmed`. Without the webhook,
+every customer who closes the tab on the UPI screen is debited with no booking.
+
+The one case a refund is still unavoidable is money that arrives after the hold
+lapsed *and* after someone else took the chair. `applyCapture` re-checks under
+the lock, honours the payment if the chair is still free, and only queues a
+refund when it genuinely cannot be honoured — returning **202**, not 200, so the
+app never shows a confirmation for a booking that does not exist.
+
+## Where the money goes
+
+Payments are collected into the **platform's** Razorpay account, not per-salon
+sub-merchants. The spec assumes the Partner model, which is gated on an
+application that takes weeks; this ships today and Route transfers slot in later
+without touching the checkout flow (`salons.rzp_route_account_id` is where they
+attach).
+
+That means the platform holds the salon's money for a while, so it has to be
+accounted for properly rather than inferred. Every movement is a signed row in
+`ledger_entries`:
+
+```
+sale                + gross the customer paid
+commission          − the platform's cut (salons.commission_bps, default 1500)
+refund              − returned to the customer
+commission_reversal + the cut given back with that refund
+payout              − actually sent to the salon
+adjustment          ± manual, and a note is required
+```
+
+A salon's balance is `SUM(amount)`. There is no stored running total, because
+one that drifts cannot be repaired without an audit while a ledger can always be
+re-summed. The commission reversal is scaled from the commission entry that was
+actually written, not recomputed at today's rate — a salon whose rate changed
+between the sale and the refund must not have the difference quietly pocketed.
+
+Both ledger writes are `ON CONFLICT DO NOTHING` against partial unique indexes on
+`(payment_id, kind)` and `(refund_id, kind)`, so a webhook Razorpay delivers
+twice credits a salon exactly once.
+
+Refunds are a queue, never an inline call. Calling Razorpay inside the
+transaction that cancels a booking means a timeout leaves the caller retrying a
+cancel that already refunded.
+
+## Answers to §10, and what they cost
+
+1. **Revenue model** — per-booking commission, `salons.commission_bps`, default
+   15%. Per-salon because launch deals are the norm. Still open as a *business*
+   question; the code no longer blocks on it.
+2. **Reschedule more than once?** No — the spec's own recommendation.
+   `reschedule_count` carries forward down the chain, so rescheduling the
+   reschedule is not a way around the cap.
+3. **Same salon?** Yes. The money sits against this salon in the ledger; moving
+   it elsewhere is a refund plus a fresh sale, which is a different feature.
+4. **Who absorbs a price change in the 36h window?** Nobody. The cart is carried
+   forward frozen from `booking_items`. Charging the difference means a second
+   payment flow on a slot the customer already holds; refunding it means a
+   partial refund on a booking that is going ahead. Both cost more than the few
+   rupees involved.
+5. **Solo or team** — still open, still blocks nothing.
+
+## Operational shape
+
+- **Workers** are three loops over Postgres (`src/workers/runner.ts`), not
+  BullMQ. Every job is "find due rows, act, mark them", which is what Postgres
+  is for; a queue would add Redis and a second durability story. Each tick takes
+  a `pg_try_advisory_lock`, so N instances do not run N sweepers. Set
+  `RUN_WORKERS=false` to split them onto their own dyno.
+- **Logs** are one JSON object per line with a request id carried in
+  `AsyncLocalStorage`, and a redaction list that covers signatures, tokens,
+  phone and email. `setErrorReporter()` is the Sentry seam.
+- **Rate limits** are in-memory token buckets — per-instance, which is the
+  honest trade for keeping Redis off the request path. `X-Forwarded-For` is only
+  trusted when `TRUST_PROXY` is set, because with no proxy in front it lets any
+  caller forge a fresh identity per request.
+- **Liveness and readiness are separate.** `/healthz` never touches Postgres: a
+  liveness probe that does turns a database blip into a rolling restart of every
+  instance.
+- **Assets** get ETags at boot. The customer app is ~40 natively-loaded ES
+  modules; without conditional requests that is 40 full downloads per
+  navigation.
 
 ## Next
 
-Build order 1 (`salon_services` / `salon_hours` CRUD) and 4-8 are untouched.
-Step 4 (Razorpay Partner onboarding) is gated on the partner application and the
-business entity — §3 is right that those take weeks and should start now.
+Build order 1 (`salon_services` / `salon_hours` CRUD) and 6-8 remain. The two
+things worth doing before real traffic:
+
+1. **Reconciliation.** Nothing yet compares our `payments` table against
+   Razorpay's settlement report. Until it does, a payment Razorpay recorded and
+   we did not is invisible.
+2. **Redis for the snapshot cache.** In-process is correct for one instance and
+   merely wasteful for several.

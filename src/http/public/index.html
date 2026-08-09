@@ -25,6 +25,7 @@ import { el } from './lib/dom.js';
 import { renderHome } from './views/home.js';
 import { renderExplore } from './views/explore.js';
 import { renderSalon } from './views/salon.js';
+import { renderCheckout } from './views/checkout.js';
 import { renderBookings } from './views/bookings.js';
 import { renderProfile } from './views/profile.js';
 import { renderLogin } from './views/login.js';
@@ -130,6 +131,7 @@ function showRouteError(err) {
 register(/^#\/home$/, () => renderHome(viewRoot, app));
 register(/^#\/explore$/, () => renderExplore(viewRoot, app));
 register(/^#\/salon\/([\w-]+)$/, (id) => renderSalon(viewRoot, app, id));
+register(/^#\/checkout\/([\w-]+)$/, (id) => renderCheckout(viewRoot, app, id));
 register(/^#\/bookings$/, () => renderBookings(viewRoot, app));
 register(/^#\/profile$/, () => renderProfile(viewRoot, app));
 register(/^#\/login$/, () => renderLogin(viewRoot, app));

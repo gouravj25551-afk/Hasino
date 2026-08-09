@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 export class HttpError extends Error {
@@ -72,9 +73,15 @@ export function stringArray(value: unknown, field: string): string[] {
 }
 
 /**
- * Static assets, read once at boot into memory. There are four of them and
- * they never change at runtime; a real static server would be more machinery
- * than the problem deserves.
+ * Static assets, read once at boot into memory. There are forty of them, none
+ * changes at runtime, and the whole set is well under a megabyte; a real static
+ * server would be more machinery than the problem deserves.
+ *
+ * Each one gets an ETag hashed from its bytes at boot. The customer app is
+ * ~40 ES modules loaded natively by the browser — without conditional requests
+ * that is 40 full downloads on every navigation, which on a 3G phone in a salon
+ * queue is the difference between usable and not. With them it is 40 requests
+ * that answer 304 and transfer nothing.
  */
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -83,19 +90,42 @@ const MIME: Record<string, string> = {
   '.svg': 'image/svg+xml',
 };
 
-export function loadAssets(dir: URL, names: string[]): Map<string, { body: string; type: string }> {
-  const assets = new Map<string, { body: string; type: string }>();
+export interface Asset {
+  body: string;
+  type: string;
+  etag: string;
+  cacheControl: string;
+}
+
+export function loadAssets(dir: URL, names: string[]): Map<string, Asset> {
+  const assets = new Map<string, Asset>();
   for (const name of names) {
     const ext = name.slice(name.lastIndexOf('.'));
+    const body = readFileSync(new URL(name, dir), 'utf8');
     assets.set(name, {
-      body: readFileSync(new URL(name, dir), 'utf8'),
+      body,
       type: MIME[ext] ?? 'application/octet-stream',
+      etag: `"${createHash('sha256').update(body).digest('base64url').slice(0, 27)}"`,
+      // The HTML shells must never be cached: they name every other file, so a
+      // stale shell pins a stale app forever. Everything else revalidates,
+      // which is cheap because the ETag makes the answer a 304.
+      cacheControl:
+        ext === '.html' ? 'no-store' : 'public, max-age=0, must-revalidate',
     });
   }
   return assets;
 }
 
-export function sendAsset(res: ServerResponse, asset: { body: string; type: string }): void {
-  res.writeHead(200, { 'content-type': asset.type, 'cache-control': 'no-store' });
+export function sendAsset(res: ServerResponse, asset: Asset, req?: IncomingMessage): void {
+  const inm = req?.headers['if-none-match'];
+  if (typeof inm === 'string' && inm.split(',').some((t) => t.trim() === asset.etag)) {
+    res.writeHead(304, { etag: asset.etag, 'cache-control': asset.cacheControl });
+    return void res.end();
+  }
+  res.writeHead(200, {
+    'content-type': asset.type,
+    'cache-control': asset.cacheControl,
+    etag: asset.etag,
+  });
   res.end(asset.body);
 }

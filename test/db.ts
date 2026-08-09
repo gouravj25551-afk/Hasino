@@ -51,7 +51,9 @@ export interface Fixture {
 export async function reset(pool: pg.Pool): Promise<void> {
   await pool.query(`
     TRUNCATE booking_slots, booking_items, bookings, reviews, salon_strikes,
-             salon_holidays, salon_hours, salon_services, services, salons, users
+             salon_holidays, salon_hours, salon_services, services, salons, users,
+             payments, refunds, ledger_entries, payouts, webhook_events,
+             notifications, idempotency_keys
     RESTART IDENTITY CASCADE
   `);
 }
@@ -117,13 +119,47 @@ export async function seed(pool: pg.Pool, input: SeedInput = {}): Promise<Fixtur
   const customerIds: string[] = [];
   for (let i = 0; i < customerCount; i++) {
     const row = await pool.query<{ id: string }>(
-      `INSERT INTO users (phone, name) VALUES ($1, $2) RETURNING id`,
-      [`+9199999${String(i).padStart(5, '0')}`, `Customer ${i}`],
+      // An email, because the notification outbox skips a customer without one
+      // and half the payment assertions are about what got queued.
+      `INSERT INTO users (phone, name, email) VALUES ($1, $2, $3) RETURNING id`,
+      [`+9199999${String(i).padStart(5, '0')}`, `Customer ${i}`, `customer${i}@example.test`],
     );
     customerIds.push(row.rows[0]!.id);
   }
 
   return { salonId, ownerId, customerIds, serviceIds };
+}
+
+/**
+ * Chairs consumed at a slot, counting live payment holds.
+ *
+ * Deliberately a copy of the predicate in src/booking/occupancy.ts rather than
+ * an import of it: if the production predicate is changed by mistake, a test
+ * that imports it changes with it and stays green.
+ */
+export async function chairsHeld(
+  pool: pg.Pool,
+  salonId: string,
+  slotStartAt: Date,
+  now: Date = new Date(),
+): Promise<number> {
+  const res = await pool.query<{ n: number }>(
+    `SELECT COUNT(*)::int8 AS n
+       FROM booking_slots bs
+       JOIN bookings b ON b.id = bs.booking_id
+      WHERE bs.salon_id = $1 AND bs.slot_start_at = $2
+        AND (b.status IN ('booked','verified','in_progress')
+             OR (b.status = 'pending_payment' AND b.hold_expires_at > $3))`,
+    [salonId, slotStartAt, now],
+  );
+  return Number(res.rows[0]!.n);
+}
+
+export async function bookingStatus(pool: pg.Pool, bookingId: string): Promise<string> {
+  const res = await pool.query<{ status: string }>(`SELECT status FROM bookings WHERE id = $1`, [
+    bookingId,
+  ]);
+  return res.rows[0]?.status ?? 'missing';
 }
 
 export async function slotHolders(pool: pg.Pool, salonId: string, slotStartAt: Date): Promise<number> {

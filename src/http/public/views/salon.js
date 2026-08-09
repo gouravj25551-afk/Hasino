@@ -5,7 +5,6 @@ import { ServiceCard } from '../components/ServiceCard.js';
 import { Badge } from '../components/Badge.js';
 import { Button } from '../components/Button.js';
 import { Modal } from '../components/Modal.js';
-import { payForBooking } from '../lib/payments.js';
 
 export async function renderSalon(container, app, salonId) {
   container.innerHTML = '';
@@ -293,7 +292,7 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
     el(
       'div',
       'note',
-      '⚠️ Payment is not implemented yet — this reserves the slot without charging you. See My Bookings for status.',
+      'Continuing holds this slot for you for a few minutes while you pay. Nothing is charged until you complete payment on the next screen.',
     ),
   );
 
@@ -301,7 +300,7 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
   actions.style.justifyContent = 'flex-end';
   const cancelBtn = Button({ label: 'Cancel', onClick: () => close() });
   const confirmBtn = Button({
-    label: 'Confirm booking',
+    label: 'Continue to payment',
     variant: 'primary',
     onClick: async () => {
       if (!app.session) {
@@ -310,20 +309,34 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
         return;
       }
       confirmBtn.disabled = true;
-      confirmBtn.textContent = 'Booking…';
+      confirmBtn.textContent = 'Holding your slot…';
       try {
+        // The chair is taken here, not on the payment screen. A booking that
+        // reaches checkout is one nobody else can take out from under it.
+        // Idempotency-Key means a retry on a flaky connection replays this
+        // response instead of holding a second chair.
         const booking = await api('/api/bookings', {
           method: 'POST',
+          headers: { 'idempotency-key': idempotencyKey(salon.id, picked, iso) },
           body: JSON.stringify({ salonId: salon.id, serviceIds: picked.map((s) => s.serviceId), startAt: iso }),
         });
-        await payForBooking(booking);
         close();
-        app.navigate('#/bookings');
+
+        if (!booking.checkout) {
+          // A server with no Razorpay keys — development only; start() will not
+          // boot without them in production.
+          app.navigate('#/bookings');
+          return;
+        }
+        app.navigate(`#/checkout/${booking.id}`);
       } catch (err) {
-        const message = err instanceof ApiError && err.status === 409 ? 'That slot was just taken — pick another time.' : err.message;
+        const message =
+          err instanceof ApiError && err.status === 409
+            ? 'That slot was just taken — pick another time.'
+            : err.message;
         body.append(el('div', 'out bad', message || 'Booking failed'));
         confirmBtn.disabled = false;
-        confirmBtn.textContent = 'Confirm booking';
+        confirmBtn.textContent = 'Continue to payment';
       }
     },
   });
@@ -331,4 +344,13 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
   body.append(actions);
 
   const close = Modal(body);
+}
+
+/**
+ * Stable for the same cart at the same slot, so a double-tap or a retry is one
+ * booking — and different the moment the customer changes anything, so a
+ * genuine second booking is never swallowed.
+ */
+function idempotencyKey(salonId, picked, iso) {
+  return [salonId, iso, ...picked.map((s) => s.serviceId).sort()].join('|');
 }

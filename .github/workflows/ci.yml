@@ -1,0 +1,86 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch cancels the first — a queue of CI runs on
+# superseded commits tells you nothing and costs minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # The engine tests are pure and run anywhere, but the ones that matter most
+    # — the advisory-lock concurrency case, the payment hold, the ledger — need
+    # a real Postgres. Without this service they SKIP, and a green run that
+    # skipped the concurrency test is worse than no run at all.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: hasino_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/hasino_test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/hasino_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Type stripping — the reason this repo has no build step — needs
+          # >=22.18. Pinning the major stops a Node release from turning a
+          # green main red without a commit.
+          node-version: '22.x'
+          cache: npm
+
+      - run: npm ci
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: schema
+        run: psql -v ON_ERROR_STOP=1 -d "$DATABASE_URL" -f db/schema.sql
+
+      - name: migrations are idempotent
+        # schema.sql already contains everything the migrations add, so this
+        # asserts the two have not drifted: if a migration is not re-runnable
+        # against an up-to-date schema, it will fail here rather than against a
+        # production database on a Friday.
+        run: |
+          node scripts/migrate.ts
+          node scripts/migrate.ts --status
+
+      - name: test
+        run: npm test
+
+      - name: seed + smoke
+        run: |
+          node scripts/seed-demo.ts
+          DEV_AUTH=true RUN_WORKERS=false node src/main.ts &
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:3000/readyz >/dev/null && break
+            sleep 1
+          done
+          npm run smoke
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Build only. The image is what ships, so a Dockerfile that stopped
+      # working should fail here and not during a deploy.
+      - run: docker build -t hasino:ci .

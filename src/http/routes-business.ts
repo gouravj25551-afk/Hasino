@@ -19,6 +19,7 @@ import {
   saveHours,
   upsertService,
 } from '../business/repo.ts';
+import { listPayouts, salonBalance, salonEarnings, salonLedger } from '../payments/ledger.ts';
 import { HttpError, bool, int, json, readJson, str, uuid } from './respond.ts';
 
 /**
@@ -176,8 +177,7 @@ export async function businessRoutes(
     json(res, 200, {
       date,
       ...result,
-      refunds:
-        'queued as refund_status=pending — Razorpay is not wired, so no money has moved yet',
+      refunds: `${result.refundsQueued} full refund(s) queued; the worker sends them to Razorpay within the minute`,
     });
     return true;
   }
@@ -192,17 +192,35 @@ export async function businessRoutes(
     return true;
   }
 
-  // ---- screen 6: Razorpay onboarding ----
+  // ---- screen 6: money ----
+  //
+  // §6.6 as the spec writes it assumes the Partner sub-merchant model, where
+  // money never touches the platform and there is nothing to show but a KYC
+  // status. Payments run on the platform account instead (see [DEVIATION 9] in
+  // db/schema.sql), so what a salon needs here is the actual number it is owed
+  // and the entries that make it up.
   if (method === 'GET' && tail[0] === 'payouts' && tail.length === 1) {
+    const [balance, payouts, recent] = await Promise.all([
+      salonBalance(db, salon.id),
+      listPayouts(db, salon.id),
+      salonLedger(db, salon.id, { limit: 50 }),
+    ]);
     json(res, 200, {
+      balance,
+      payouts,
+      ledger: recent,
+      commissionBps: salon.commissionBps,
       kycStatus: salon.rzpKycStatus,
-      implemented: false,
-      blockedOn: [
-        'Razorpay Partner programme approval',
-        'registered business entity + current account',
-      ],
-      note: 'Sub-merchant onboarding is build order step 4. Until it exists, bookings are unpaid.',
+      // The transfer itself is still an operator action — see
+      // payments/ledger.ts createPayoutForPeriod.
+      settlement: 'weekly, to the account on file',
     });
+    return true;
+  }
+
+  if (method === 'GET' && tail[0] === 'earnings' && tail.length === 1) {
+    const days = Math.min(Math.max(Number(url.searchParams.get('days') ?? 30), 1), 365);
+    json(res, 200, { days, series: await salonEarnings(db, salon.id, days) });
     return true;
   }
 

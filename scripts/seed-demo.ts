@@ -102,7 +102,13 @@ const db = getPool();
 await db.query(`
   TRUNCATE booking_slots, booking_items, bookings, reviews, salon_strikes,
            salon_holidays, salon_hours, salon_services, services, salons, users,
-           favorites, salon_photos
+           favorites, salon_photos,
+           -- The money tables. CASCADE would reach these anyway via their
+           -- foreign keys, but naming them means a table added later that
+           -- nothing references does not quietly survive a reseed and leave
+           -- rows pointing at salons that no longer exist.
+           payments, refunds, ledger_entries, payouts, webhook_events,
+           notifications, idempotency_keys
   RESTART IDENTITY CASCADE
 `);
 

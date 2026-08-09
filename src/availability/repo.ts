@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from '../db/pool.ts';
 import type { CartItem, DayHours, WindowSnapshot } from '../types.ts';
 import { addDays, localDateKey } from '../time/tz.ts';
+import { chairConsumingSql } from '../booking/occupancy.ts';
 
 export const WINDOW_DAYS = 7; // today + 6
 
@@ -49,8 +50,10 @@ export async function loadWindowSnapshot(
       [salonId, from, to],
     ),
 
-    // Only these three statuses consume a chair (spec §5). completed, no_show,
-    // cancelled_* and rescheduled do not.
+    // Which statuses consume a chair is defined once, in booking/occupancy.ts,
+    // because this query and the advisory-lock re-check in booking/create.ts
+    // must never disagree. completed, no_show, expired, cancelled_* and
+    // rescheduled do not hold a chair.
     db.query<{ slot_start_at: Date; booked: number }>(
       `SELECT bs.slot_start_at, COUNT(*)::int8 AS booked
          FROM booking_slots bs
@@ -58,9 +61,9 @@ export async function loadWindowSnapshot(
         WHERE bs.salon_id = $1
           AND bs.slot_start_at >= $2
           AND bs.slot_start_at <  $3
-          AND b.status IN ('booked','verified','in_progress')
+          AND ${chairConsumingSql('$4')}
         GROUP BY bs.slot_start_at`,
-      [salonId, windowStart(now), windowEnd(now)],
+      [salonId, windowStart(now), windowEnd(now), now],
     ),
   ]);
 

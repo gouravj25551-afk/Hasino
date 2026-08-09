@@ -8,8 +8,11 @@
   },
   "scripts": {
     "start": "node src/main.ts",
-    "dev": "DEV_AUTH=true node --watch src/main.ts",
+    "dev": "bash scripts/dev.sh",
+    "dev:server": "DEV_AUTH=true node --watch src/main.ts",
     "db:schema": "psql -v ON_ERROR_STOP=1 -d \"${PGDATABASE:-hasino_dev}\" -f db/schema.sql",
+    "db:migrate": "node scripts/migrate.ts",
+    "db:migrate:status": "node scripts/migrate.ts --status",
     "db:seed": "node scripts/seed-demo.ts",
     "test": "node --test --test-concurrency=1 test/*.test.ts",
     "typecheck": "tsc --noEmit",

@@ -16,7 +16,7 @@
     <a href="#/services" data-nav="services">Services</a>
     <a href="#/timings"  data-nav="timings">Timings</a>
     <a href="#/insights" data-nav="insights">Insights</a>
-    <a href="#/payouts"  data-nav="payouts">Payouts</a>
+    <a href="#/payouts"  data-nav="payouts">Money</a>
   </nav>
   <span class="spacer"></span>
   <label class="field" style="min-width:200px">
@@ -27,7 +27,7 @@
 </div>
 
 <div class="banner">
-  No login — <b>DEV_AUTH</b> mode. Anyone can act as any salon. Refunds are recorded but no money moves.
+  No login — <b>DEV_AUTH</b> mode. Anyone can act as any salon. Razorpay runs against the local stub, so no real money moves.
 </div>
 
 <div class="wrap" id="view"></div>
@@ -411,25 +411,95 @@ async function insightsView() {
   view.append(rp);
 }
 
-/* ---------- screen 6: payouts ---------- */
+/* ---------- screen 6: money ----------
+ *
+ * §6.6 assumes the Partner sub-merchant model, where money never touches the
+ * platform and there is nothing to show but a KYC status. Payments run on the
+ * platform account instead, so what a salon actually needs here is the number
+ * it is owed and the entries that add up to it. Every figure below is a SUM
+ * over ledger_entries — nothing is stored pre-aggregated, so this screen and
+ * the accounts cannot drift apart.
+ */
+const LEDGER_LABEL = {
+  sale: 'Booking paid',
+  commission: 'Platform commission',
+  refund: 'Refunded to customer',
+  commission_reversal: 'Commission returned',
+  payout: 'Paid out to you',
+  adjustment: 'Adjustment',
+};
+
 async function payoutsView() {
   const view = $('#view');
   view.innerHTML = '';
-  view.append(el('h1', null, 'Payouts'));
-  view.append(el('p', 'sub', 'Razorpay sub-merchant onboarding.'));
+  view.append(el('h1', null, 'Money'));
+  view.append(el('p', 'sub', 'What you have earned, what we kept, and what is on its way to you.'));
 
   const p = await api('/api/business/payouts');
-  const panel = el('div', 'panel');
-  panel.append(el('div', 'row', '')).append(el('span', 'pill warn', 'KYC ' + p.kycStatus));
-  panel.append(el('h3', null, 'Not built yet'));
-  panel.append(el('p', 'meta', p.note));
-  const ul = el('div', 'list');
-  for (const b of p.blockedOn) ul.append(el('div', 'item', b));
-  panel.append(ul);
-  panel.append(el('div', 'note',
-    'Money settles directly to your bank — hasino never holds it. That is what keeps this legal ' +
-    'without an RBI payment-aggregator licence.'));
-  view.append(panel);
+  const b = p.balance;
+
+  const grid = el('div', 'grid cards');
+  const stat = (k, v, cls) => { const n = el('div', 'stat' + (cls ? ' ' + cls : '')); n.append(el('div', 'k', k), el('div', 'v', v)); return n; };
+  grid.append(stat('Available now', rupees(b.available)));
+  grid.append(stat('Gross taken', rupees(b.gross)));
+  grid.append(stat(`Commission (${(p.commissionBps / 100).toFixed(1)}%)`, '−' + rupees(b.commission)));
+  grid.append(stat('Refunded', '−' + rupees(b.refunded)));
+  grid.append(stat('Already paid out', rupees(b.paidOut)));
+  view.append(grid);
+
+  const settle = el('div', 'panel');
+  settle.append(el('h2', null, 'Settlement'));
+  settle.append(el('div', 'meta', 'Schedule: ' + p.settlement));
+  if (!p.payouts.length) {
+    settle.append(el('div', 'note',
+      'No payout has been sent yet. Your first settlement covers everything in "Available now" ' +
+      'at the end of the current week.'));
+  } else {
+    const list = el('div', 'list');
+    for (const pay of p.payouts) {
+      const item = el('div', 'item');
+      item.append(el('div', 'when', pay.periodStart + ' → ' + pay.periodEnd));
+      const g = el('div', 'grow');
+      g.append(el('div', null, pay.reference || 'Weekly settlement'));
+      if (pay.paidAt) g.append(el('div', 'meta', 'Sent ' + new Date(pay.paidAt).toLocaleDateString('en-GB')));
+      item.append(g);
+      item.append(el('strong', null, rupees(pay.amount)));
+      item.append(el('span', 'pill ' + (pay.status === 'paid' ? 'ok' : pay.status === 'failed' ? 'bad' : 'warn'), pay.status));
+      list.append(item);
+    }
+    settle.append(list);
+  }
+  view.append(settle);
+
+  const led = el('div', 'panel');
+  led.append(el('h2', null, 'Statement'));
+  if (!p.ledger.length) {
+    led.append(el('div', 'meta', 'Nothing yet. Entries appear the moment a customer pays.'));
+  }
+  for (const e of p.ledger) {
+    const item = el('div', 'item');
+    item.append(el('div', 'when', new Date(e.occurredAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })));
+    const g = el('div', 'grow');
+    g.append(el('div', null, LEDGER_LABEL[e.kind] || e.kind));
+    g.append(el('div', 'meta', [e.customerName, e.bookingStartAt ? new Date(e.bookingStartAt).toLocaleString('en-GB', { timeZone: tz, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : null, e.note].filter(Boolean).join(' · ')));
+    item.append(g);
+    const amt = el('strong', null, (e.amount < 0 ? '−' : '+') + rupees(Math.abs(e.amount)));
+    amt.style.color = e.amount < 0 ? 'var(--bad)' : 'var(--ok)';
+    item.append(amt);
+    led.append(item);
+  }
+  view.append(led);
+
+  if (p.kycStatus !== 'verified') {
+    const kyc = el('div', 'panel');
+    kyc.append(el('h2', null, 'Verification'));
+    kyc.append(el('span', 'pill warn', 'KYC ' + p.kycStatus));
+    kyc.append(el('div', 'note',
+      'Settlements need a verified business entity and bank account on file. ' +
+      'Bookings and earnings continue to accrue in the meantime — nothing is lost, ' +
+      'it just cannot be transferred until this is done.'));
+    view.append(kyc);
+  }
 }
 
 window.addEventListener('hashchange', render);

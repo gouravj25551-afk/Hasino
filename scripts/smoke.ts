@@ -120,15 +120,65 @@ const avail2 = (await call(`/api/salons/${salonId}/availability`, { method: 'POS
 check('removing the holiday reopens it (cache invalidated)',
   avail2.days.find((d: any) => d.date === tomorrow)?.state !== 'closed');
 
-// ---------- booking lifecycle (screen 3) ----------
-console.log('\nbooking lifecycle (§6.3, §4 states)');
+// ---------- payment: hold -> pay -> confirm ----------
+//
+// POST /api/bookings no longer produces a booking; it produces a hold on a
+// chair plus a Razorpay order. Under DEV_AUTH the payment client is the
+// in-process stub, and /api/dev/pay mints a payment signed with the same HMAC
+// Razorpay uses — so the confirm below goes through the real signature check.
+console.log('\npayment (hold -> pay -> confirm)');
+
+/** What the customer's browser does between the two API calls. */
+async function payAndConfirm(booking: any, as: Record<string, string>) {
+  const signed = (await call('/api/dev/pay', { method: 'POST', body: { orderId: booking.checkout.orderId } })).body;
+  return call(`/api/bookings/${booking.id}/confirm`, {
+    method: 'POST',
+    as,
+    body: {
+      razorpay_order_id: signed.orderId,
+      razorpay_payment_id: signed.paymentId,
+      razorpay_signature: signed.signature,
+    },
+  });
+}
+
 const openDay = avail2.days.find((d: any) => d.state === 'full' && d.full.length);
 const slot = openDay.full[0];
 const created = await call('/api/bookings', {
   method: 'POST', as: asCustomer, body: { salonId, serviceIds: cartIds, startAt: slot },
 });
-check('customer books', created.status === 201, created.body.id ?? created.body.error);
+check('customer takes a hold on the chair', created.status === 201, created.body.id ?? created.body.error);
+check('the hold is not yet a booking', created.body.status === 'pending_payment' && created.body.paid === false);
+check('a Razorpay order is opened', Boolean(created.body.checkout?.orderId), created.body.checkout?.orderId);
+check('the hold has a deadline', Boolean(created.body.holdExpiresAt));
 const bookingId = created.body.id;
+
+// The chair is gone before any money moves — this is the race the old
+// pay-then-create ordering lost, and lost by refunding someone.
+const contested = await call('/api/bookings', {
+  method: 'POST', as: asCustomer, body: { salonId, serviceIds: cartIds, startAt: slot },
+});
+check('a second customer is rejected while the first is still paying',
+  contested.status === 409 && contested.body.code === 'SLOT_UNAVAILABLE',
+  `${contested.status} ${contested.body.code ?? ''}`);
+
+const forged = await call(`/api/bookings/${bookingId}/confirm`, {
+  method: 'POST', as: asCustomer,
+  body: { razorpay_order_id: created.body.checkout.orderId, razorpay_payment_id: 'pay_forged', razorpay_signature: 'de'.repeat(32) },
+});
+check('a forged signature is refused', forged.status === 403 && forged.body.code === 'BAD_SIGNATURE',
+  `${forged.status} ${forged.body.code ?? ''}`);
+
+const confirmed = await payAndConfirm(created.body, asCustomer);
+check('payment confirms the booking', confirmed.status === 200 && confirmed.body.outcome === 'confirmed',
+  confirmed.body.message ?? confirmed.body.error);
+
+const replay = await payAndConfirm(created.body, asCustomer);
+check('confirming twice is idempotent',
+  replay.status === 200 && replay.body.outcome === 'already_confirmed', replay.body.outcome);
+
+// ---------- booking lifecycle (screen 3) ----------
+console.log('\nbooking lifecycle (§6.3, §4 states)');
 
 const dayList = (await call(`/api/business/bookings?date=${openDay.date}`, { as: asOwner })).body;
 const mine = dayList.bookings.find((b: any) => b.id === bookingId);
@@ -169,8 +219,11 @@ const day2 = avail2.days.find((d: any) => d.state === 'full' && d.full.length > 
 const b2 = await call('/api/bookings', {
   method: 'POST', as: asCustomer, body: { salonId, serviceIds: cartIds, startAt: day2.full[0] },
 });
+await payAndConfirm(b2.body, asCustomer);
+
 const closed = await call('/api/business/close-today', { method: 'POST', as: asOwner, body: { date: day2.date } });
 check('cancels the day\'s bookings', closed.body.cancelled >= 1, `${closed.body.cancelled} cancelled`);
+check('and queues a real refund for each', closed.body.refundsQueued >= 1, closed.body.refunds);
 
 const after = (await call(`/api/business/bookings?date=${day2.date}`, { as: asOwner })).body;
 const cancelled = after.bookings.find((b: any) => b.id === b2.body.id);
@@ -195,6 +248,55 @@ const stats = (await call('/api/business/stats', { as: asOwner })).body;
 check('stats computed', stats.total >= 2, `${stats.total} bookings, ${stats.completed} completed, ${rupees(stats.revenue)}`);
 check('fraud rates present', typeof stats.noShowRate === 'number' && typeof stats.cancelRate === 'number',
   `no-show ${(stats.noShowRate * 100).toFixed(0)}% · cancel ${(stats.cancelRate * 100).toFixed(0)}%`);
+
+// ---------- reschedule (§4, 36h) ----------
+console.log('\nreschedule (§4)');
+const reAvail = (await call(`/api/salons/${salonId}/availability`, { method: 'POST', body: { serviceIds: cartIds } })).body;
+const reDay = reAvail.days.find((d: any) => d.state === 'full' && d.full.length > 1);
+if (reDay) {
+  const toMove = await call('/api/bookings', {
+    method: 'POST', as: asCustomer, body: { salonId, serviceIds: cartIds, startAt: reDay.full[0] },
+  });
+  await payAndConfirm(toMove.body, asCustomer);
+
+  const moved = await call(`/api/me/bookings/${toMove.body.id}/reschedule`, {
+    method: 'POST', as: asCustomer, body: { startAt: reDay.full[1] },
+  });
+  check('a paid booking can be moved', moved.status === 201 && moved.body.paid === true,
+    moved.body.error ?? '');
+  check('and is not charged again', moved.body.amount === toMove.body.amount);
+
+  const twice = await call(`/api/me/bookings/${moved.body.id}/reschedule`, {
+    method: 'POST', as: asCustomer, body: { startAt: reDay.full[0] },
+  });
+  check('but only once — §10 Q2',
+    twice.status === 409 && twice.body.code === 'RESCHEDULE_LIMIT', `${twice.status} ${twice.body.code ?? ''}`);
+} else {
+  check('reschedule needs two free slots on one day', false, 'skipped — no day with 2+ slots');
+}
+
+// ---------- money (screen 6) ----------
+console.log('\nmoney (§6.6)');
+const money = (await call('/api/business/payouts', { as: asOwner })).body;
+check('the salon has a balance from real ledger entries', money.balance.gross > 0,
+  `gross ${rupees(money.balance.gross)} · commission ${rupees(money.balance.commission)} · available ${rupees(money.balance.available)}`);
+check('commission was taken', money.balance.commission > 0);
+check('available = gross - commission - refunds',
+  money.balance.available ===
+    money.balance.gross - money.balance.commission - money.balance.refunded + money.balance.commissionReturned - money.balance.paidOut,
+  'the ledger sums to itself');
+check('the statement lists entries', money.ledger.length > 0, `${money.ledger.length} entries`);
+
+// ---------- ops ----------
+console.log('\nops');
+const live = await call('/healthz');
+check('liveness needs no database', live.status === 200 && live.body.ok === true);
+const ready = await call('/readyz');
+check('readiness checks the database', ready.status === 200 && ready.body.ok === true, ready.body.payments);
+const unsigned = await fetch(BASE + '/api/webhooks/razorpay', {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ event: 'payment.captured' }),
+});
+check('an unsigned webhook is refused', unsigned.status === 400, String(unsigned.status));
 
 console.log(failures === 0 ? '\nall smoke checks passed\n' : `\n${failures} FAILED\n`);
 process.exit(failures === 0 ? 0 : 1);

@@ -45,10 +45,29 @@ CREATE TABLE IF NOT EXISTS salons (
   timezone         text NOT NULL DEFAULT 'Asia/Kolkata',  -- [DEVIATION 1]
   status           text NOT NULL DEFAULT 'pending'
                    CHECK (status IN ('pending','active','suspended','banned')),
-  -- Razorpay Partner sub-merchant
+  -- Razorpay Partner sub-merchant (build order step 4, gated on the Partner
+  -- application). Not the model the payment code runs on today — see
+  -- rzp_route_account_id below and README "Where the money goes".
   rzp_account_id   text,
   rzp_access_token text,          -- encrypt at rest
   rzp_kyc_status   text NOT NULL DEFAULT 'pending',
+
+  -- [DEVIATION 9] platform-account model.
+  --   Payments are collected into the platform's Razorpay account and the
+  --   salon's share is tracked in ledger_entries. Every sale writes a paired
+  --   'sale' (+gross) and 'commission' (-cut) entry, so the salon's balance is
+  --   always SUM(amount) and never a mutable running total that can drift.
+  --   commission_bps is per-salon because launch deals and category pricing are
+  --   the norm; the default comes from PLATFORM_COMMISSION_BPS at insert time.
+  --   When Razorpay Route is enabled, rzp_route_account_id turns each sale into
+  --   a transfer at capture time and the ledger becomes the reconciliation
+  --   record rather than the source of truth. Nothing else changes.
+  commission_bps   smallint NOT NULL DEFAULT 1500
+                   CONSTRAINT salons_commission_bps_check
+                   CHECK (commission_bps BETWEEN 0 AND 10000),
+  rzp_route_account_id text,
+  payout_beneficiary   jsonb,
+
   strike_count     smallint NOT NULL DEFAULT 0,
   cover_url        text,                                    -- [DEVIATION 6]
   created_at       timestamptz NOT NULL DEFAULT now()
@@ -132,15 +151,20 @@ CREATE TABLE IF NOT EXISTS bookings (
   start_at      timestamptz NOT NULL,
   end_at        timestamptz NOT NULL,
   status        text NOT NULL DEFAULT 'booked'
-                CHECK (status IN ('booked','verified','in_progress','completed',
+                CONSTRAINT bookings_status_check
+                CHECK (status IN ('pending_payment',          -- [DEVIATION 7]
+                                  'booked','verified','in_progress','completed',
                                   'no_show','rescheduled',
+                                  'expired',                 -- [DEVIATION 7]
                                   'cancelled_by_customer',   -- [DEVIATION 2]
                                   'cancelled_by_salon')),
   amount        integer NOT NULL,              -- paise, goes to salon
   rzp_order_id  text,
   rzp_payment_id text,
   verify_code   char(6),
+  hold_expires_at     timestamptz,             -- [DEVIATION 7] pending_payment only
   reschedule_deadline timestamptz,             -- no_show / cancel + 36h
+  reschedule_count    smallint NOT NULL DEFAULT 0,   -- [DEVIATION 8] §10 Q2, cap of 1
   rescheduled_from    uuid REFERENCES bookings(id),
   customer_confirmed_at timestamptz,
   code_verified_at      timestamptz,
@@ -167,7 +191,37 @@ CREATE TABLE IF NOT EXISTS bookings (
 --   consuming a chair forever, because the availability query counts
 --   'booked'. This is a defect in the spec, not a design choice.
 
+-- [DEVIATION 7] status 'pending_payment' + 'expired', bookings.hold_expires_at
+--   §4 is `pay -> booking created, slots locked`, which holds nothing during
+--   payment. Two customers open checkout on the last chair, both pay, and one
+--   gets SLOT_UNAVAILABLE after their money has already moved. createBooking is
+--   correct — it never double-books — but correctness was costing a refund
+--   instead of a rejection.
+--
+--   A 'pending_payment' booking consumes a chair with a TTL. It is confirmed by
+--   the checkout callback or the webhook, whichever arrives first, and swept to
+--   'expired' if neither does. Both the availability read
+--   (src/availability/repo.ts) and the advisory-lock re-check
+--   (src/booking/create.ts) count a hold only while hold_expires_at > now().
+--   'expired' is a distinct terminal state rather than a delete, so a customer
+--   whose payment landed one second late has an audit trail.
+
+-- [DEVIATION 8] bookings.reschedule_count
+--   §10 open question 2 recommends capping reschedules at 1. The chain of
+--   rescheduled_from links already records history, but walking it recursively
+--   on every booking write is a self-join on the hot path. One counter, carried
+--   forward from the booking being replaced.
+
 CREATE INDEX IF NOT EXISTS bookings_customer_idx ON bookings (customer_id, start_at DESC);
+
+-- The hold sweeper's only query. Partial, so it stays tiny regardless of how
+-- many bookings exist.
+CREATE INDEX IF NOT EXISTS bookings_hold_idx
+  ON bookings (hold_expires_at) WHERE status = 'pending_payment';
+
+-- The refund worker's only query.
+CREATE INDEX IF NOT EXISTS bookings_refund_pending_idx
+  ON bookings (cancelled_at) WHERE refund_status = 'pending';
 
 -- [DEVIATION 3] the business panel's three hottest reads — "today's bookings",
 --   the calendar, and [Close for today] — all filter salon + day. The spec has
@@ -208,6 +262,171 @@ CREATE TABLE IF NOT EXISTS reviews (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS reviews_salon_idx ON reviews (salon_id, created_at DESC);
+
+-- ---------- money ----------
+--
+-- Mirrors db/migrations/003_payments.sql, which carries the same tables to a
+-- database that already has data. Read that file for the reasoning; this one is
+-- kept terse so the whole schema still fits in one read.
+
+CREATE TABLE IF NOT EXISTS payments (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  booking_id     uuid NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  salon_id       uuid NOT NULL REFERENCES salons(id),
+  customer_id    uuid NOT NULL REFERENCES users(id),
+  -- The order exists before the customer sees the sheet; the payment id only
+  -- once they pay. Both UNIQUE — a webhook replay must not create a second row
+  -- for the same money.
+  rzp_order_id   text NOT NULL UNIQUE,
+  rzp_payment_id text UNIQUE,
+  amount         integer NOT NULL CHECK (amount >= 0),   -- paise, gross
+  currency       text NOT NULL DEFAULT 'INR',
+  status         text NOT NULL DEFAULT 'created'
+                 CHECK (status IN ('created','authorized','captured','failed',
+                                   'refunded','partially_refunded')),
+  method         text,                                   -- upi / card / netbanking
+  error_code     text,
+  error_description text,
+  -- Set once, by whichever of the checkout callback and the webhook wins.
+  captured_at    timestamptz,
+  refunded_amount integer NOT NULL DEFAULT 0 CHECK (refunded_amount >= 0),
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  CHECK (refunded_amount <= amount)
+);
+CREATE INDEX IF NOT EXISTS payments_booking_idx ON payments (booking_id);
+CREATE INDEX IF NOT EXISTS payments_salon_idx   ON payments (salon_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS refunds (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  payment_id     uuid NOT NULL REFERENCES payments(id),
+  booking_id     uuid NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  rzp_refund_id  text UNIQUE,
+  amount         integer NOT NULL CHECK (amount > 0),
+  reason         text NOT NULL,
+  status         text NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending','processing','processed','failed')),
+  attempts       smallint NOT NULL DEFAULT 0,
+  last_error     text,
+  next_attempt_at timestamptz NOT NULL DEFAULT now(),
+  processed_at   timestamptz,
+  created_at     timestamptz NOT NULL DEFAULT now()
+);
+-- One open refund per booking: a double-tap on [Close for today], or a webhook
+-- replay, must not refund the customer twice.
+CREATE UNIQUE INDEX IF NOT EXISTS refunds_one_open_per_booking
+  ON refunds (booking_id) WHERE status <> 'failed';
+CREATE INDEX IF NOT EXISTS refunds_due_idx
+  ON refunds (next_attempt_at) WHERE status IN ('pending','processing');
+
+-- Every movement of money, signed from the salon's point of view. Balance is
+-- SUM(amount) — never a stored running total, because a total that drifts is
+-- unrecoverable while a ledger can always be re-summed.
+CREATE TABLE IF NOT EXISTS ledger_entries (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  salon_id    uuid NOT NULL REFERENCES salons(id),
+  booking_id  uuid REFERENCES bookings(id) ON DELETE SET NULL,
+  payment_id  uuid REFERENCES payments(id),
+  refund_id   uuid REFERENCES refunds(id),
+  payout_id   uuid,                       -- FK added after payouts, below
+  kind        text NOT NULL
+              CHECK (kind IN ('sale','commission','refund','commission_reversal',
+                              'payout','adjustment')),
+  amount      integer NOT NULL,           -- signed paise
+  currency    text NOT NULL DEFAULT 'INR',
+  note        text,
+  occurred_at timestamptz NOT NULL DEFAULT now(),
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  CHECK (kind <> 'adjustment' OR note IS NOT NULL)
+);
+-- Idempotency: the ledger write is the last step of a handler Razorpay may
+-- deliver twice. These make the second delivery a no-op, not a double credit.
+CREATE UNIQUE INDEX IF NOT EXISTS ledger_payment_kind_idx
+  ON ledger_entries (payment_id, kind) WHERE payment_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ledger_refund_kind_idx
+  ON ledger_entries (refund_id, kind) WHERE refund_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ledger_salon_idx ON ledger_entries (salon_id, occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS payouts (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  salon_id     uuid NOT NULL REFERENCES salons(id),
+  period_start date NOT NULL,
+  period_end   date NOT NULL,            -- exclusive
+  amount       integer NOT NULL CHECK (amount > 0),
+  status       text NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending','processing','paid','failed')),
+  rzp_payout_id text UNIQUE,
+  reference    text,
+  failure_reason text,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  paid_at      timestamptz,
+  -- Re-running the payout job for a period must not cut a second cheque.
+  UNIQUE (salon_id, period_start, period_end),
+  CHECK (period_end > period_start)
+);
+
+DO $$ BEGIN
+  ALTER TABLE ledger_entries
+    ADD CONSTRAINT ledger_entries_payout_id_fkey
+    FOREIGN KEY (payout_id) REFERENCES payouts(id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Razorpay retries until it gets a 2xx and will re-deliver on its own. The
+-- event id is the primary key, so the second delivery collides rather than
+-- paying anyone twice. The raw payload is kept because reconciling a disputed
+-- payment six weeks later without it is guesswork.
+CREATE TABLE IF NOT EXISTS webhook_events (
+  id           text PRIMARY KEY,          -- x-razorpay-event-id
+  provider     text NOT NULL DEFAULT 'razorpay',
+  event        text NOT NULL,
+  payload      jsonb NOT NULL,
+  status       text NOT NULL DEFAULT 'received'
+               CHECK (status IN ('received','processed','failed','ignored')),
+  attempts     smallint NOT NULL DEFAULT 0,
+  error        text,
+  received_at  timestamptz NOT NULL DEFAULT now(),
+  processed_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS webhook_events_unprocessed_idx
+  ON webhook_events (received_at) WHERE status IN ('received','failed');
+
+-- Transactional outbox. Written in the same transaction as the booking it
+-- describes, so there is no state where a booking exists and its confirmation
+-- was never queued.
+CREATE TABLE IF NOT EXISTS notifications (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id      uuid REFERENCES users(id) ON DELETE CASCADE,
+  booking_id   uuid REFERENCES bookings(id) ON DELETE CASCADE,
+  channel      text NOT NULL CHECK (channel IN ('email','sms','whatsapp','push')),
+  template     text NOT NULL,
+  to_address   text NOT NULL,
+  payload      jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status       text NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending','sent','failed','skipped')),
+  attempts     smallint NOT NULL DEFAULT 0,
+  last_error   text,
+  next_attempt_at timestamptz NOT NULL DEFAULT now(),
+  sent_at      timestamptz,
+  dedupe_key   text UNIQUE,
+  created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS notifications_due_idx
+  ON notifications (next_attempt_at) WHERE status = 'pending';
+
+-- POST /api/bookings on a flaky phone connection gets retried by the client.
+-- The key makes the retry replay the first response instead of taking a second
+-- chair and opening a second Razorpay order.
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  key          text NOT NULL,
+  user_id      uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint     text NOT NULL,
+  request_hash text NOT NULL,
+  status_code  smallint,
+  response     jsonb,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, endpoint, key)
+);
+CREATE INDEX IF NOT EXISTS idempotency_keys_created_idx ON idempotency_keys (created_at);
 
 CREATE TABLE IF NOT EXISTS salon_strikes (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),

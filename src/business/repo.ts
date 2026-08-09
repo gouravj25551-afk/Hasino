@@ -15,14 +15,26 @@ export class ForbiddenError extends Error {
 export async function salonForOwner(
   db: Queryable,
   ownerId: string,
-): Promise<{ id: string; name: string; timezone: string; status: string; rzpKycStatus: string }> {
+): Promise<{
+  id: string;
+  name: string;
+  timezone: string;
+  status: string;
+  rzpKycStatus: string;
+  commissionBps: number;
+}> {
   const res = await db.query<{
     id: string;
     name: string;
     timezone: string;
     status: string;
     rzp_kyc_status: string;
-  }>(`SELECT id, name, timezone, status, rzp_kyc_status FROM salons WHERE owner_id = $1`, [ownerId]);
+    commission_bps: number;
+  }>(
+    `SELECT id, name, timezone, status, rzp_kyc_status, commission_bps
+       FROM salons WHERE owner_id = $1`,
+    [ownerId],
+  );
   const row = res.rows[0];
   if (!row) throw new ForbiddenError('No salon is registered to this account');
   return {
@@ -31,6 +43,7 @@ export async function salonForOwner(
     timezone: row.timezone,
     status: row.status,
     rzpKycStatus: row.rzp_kyc_status,
+    commissionBps: row.commission_bps,
   };
 }
 
@@ -267,6 +280,12 @@ export async function listBookingsForDay(
        LEFT JOIN booking_items bi ON bi.booking_id = b.id
        LEFT JOIN services sv ON sv.id = bi.service_id
       WHERE b.salon_id = $1 AND b.start_at >= $2 AND b.start_at < $3
+        -- A booking the salon can act on. 'pending_payment' is a chair being
+        -- held while a customer pays: it is real enough to block the slot, but
+        -- putting it on a barber's Today screen would show a queue of people
+        -- who may never arrive, with [Verify] buttons that must not work.
+        -- 'expired' is the same customer, thirty seconds later.
+        AND b.status NOT IN ('pending_payment','expired')
       GROUP BY b.id, u.name, u.phone
       ORDER BY b.start_at`,
     [salonId, start, end],
@@ -361,10 +380,14 @@ export async function listCustomerBookings(db: Queryable, customerId: string, no
     amount: number;
     verify_code: string | null;
     refund_status: string;
+    hold_expires_at: Date | null;
+    reschedule_deadline: Date | null;
+    reschedule_count: number;
     services: string[];
   }>(
     `SELECT b.id, s.name AS salon_name, s.id AS salon_id, b.start_at, b.end_at,
             b.status, b.amount, b.verify_code, b.refund_status,
+            b.hold_expires_at, b.reschedule_deadline, b.reschedule_count,
             coalesce(array_agg(sv.name ORDER BY sv.name)
                      FILTER (WHERE sv.name IS NOT NULL), '{}') AS services
        FROM bookings b
@@ -372,6 +395,11 @@ export async function listCustomerBookings(db: Queryable, customerId: string, no
        LEFT JOIN booking_items bi ON bi.booking_id = b.id
        LEFT JOIN services sv ON sv.id = bi.service_id
       WHERE b.customer_id = $1
+        -- An expired hold is a checkout the customer walked away from. Keeping
+        -- the row is an audit trail; showing it is telling them about a booking
+        -- they never made. A live 'pending_payment' row does show — it is a
+        -- payment they can still finish.
+        AND b.status <> 'expired'
       GROUP BY b.id, s.name, s.id
       ORDER BY b.start_at DESC LIMIT 50`,
     [customerId],
@@ -387,6 +415,18 @@ export async function listCustomerBookings(db: Queryable, customerId: string, no
     amount: r.amount,
     refundStatus: r.refund_status,
     services: r.services,
+    holdExpiresAt: r.hold_expires_at ? r.hold_expires_at.toISOString() : null,
+    rescheduleDeadline: r.reschedule_deadline ? r.reschedule_deadline.toISOString() : null,
+    // The one place the §4 window and the §10 cap are turned into something the
+    // UI can render, so the button and the endpoint cannot disagree about
+    // whether a booking is movable.
+    canReschedule:
+      r.reschedule_count < 1 &&
+      (r.status === 'booked'
+        ? r.start_at.getTime() - now.getTime() > 15 * 60_000
+        : ['no_show', 'cancelled_by_customer', 'cancelled_by_salon'].includes(r.status) &&
+          r.reschedule_deadline !== null &&
+          r.reschedule_deadline.getTime() > now.getTime()),
     // Spec §4: the code appears 15 minutes before the slot. Withheld until
     // then so a screenshot taken at booking time is not a permanent key.
     verifyCode:
