@@ -12,6 +12,8 @@ import { BookingError, SlotUnavailableError } from '../booking/errors.ts';
 import { ForbiddenError, listCustomerBookings } from '../business/repo.ts';
 import { addFavorite, getBooking, getSalon, listFavorites, listSalons, removeFavorite } from '../salons/repo.ts';
 import { businessRoutes } from './routes-business.ts';
+import { adminRoutes } from './routes-admin.ts';
+import { AdminError } from '../admin/repo.ts';
 import {
   HttpError,
   json,
@@ -78,6 +80,7 @@ const limits = {
 const assets = loadAssets(new URL('./public/', import.meta.url), [
   'index.html',
   'business.html',
+  'admin.html',
   'brand.css',
   'app.css',
   'lib/api.js',
@@ -113,6 +116,10 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
 const PAGES: Record<string, string> = {
   '/': 'index.html',
   '/business': 'business.html',
+  // Public shell, like /business. Serving HTML to anyone is fine; every byte
+  // of data behind it is authorised server-side, and the panel must never
+  // rely on a hidden nav link for that.
+  '/admin': 'admin.html',
 };
 
 function requireDevAuth(): void {
@@ -350,6 +357,18 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       return json(res, 200, { paid: false, paymentId: failed.id, error: failed.error_code });
     }
     return json(res, 200, { paid: true, ...payments.client.pay(orderId, String(body['method'] ?? 'upi')) });
+  }
+
+  // ---------- admin panel ----------
+  // Authenticated and role-checked before the body is parsed, the same
+  // ordering POST /api/bookings uses: an unauthorised request should not get
+  // 64KB of parsing done on its behalf.
+  if (seg[0] === 'api' && seg[1] === 'admin') {
+    const s = await session(db, req);
+    requireRole(s, 'admin');
+    const handled = await adminRoutes(db, req, res, { seg, method, url, adminUserId: s.userId, cache });
+    if (handled) return;
+    throw new HttpError(404, `No route for ${method} ${path}`);
   }
 
   // ---------- business panel ----------
@@ -648,6 +667,7 @@ function respondToError(res: ServerResponse, err: unknown): void {
   if (err instanceof HttpError) return json(res, err.status, { error: err.message });
   if (err instanceof AuthError) return json(res, err.status, { error: err.message, code: err.code });
   if (err instanceof ForbiddenError) return json(res, 403, { error: err.message, code: err.code });
+  if (err instanceof AdminError) return json(res, err.status, { error: err.message, code: err.code });
   if (err instanceof WebhookSignatureError) {
     // 400, not 401: Razorpay does not retry a 4xx, and a body we cannot verify
     // is one we never want again.
