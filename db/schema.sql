@@ -13,9 +13,11 @@ CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 CREATE TABLE IF NOT EXISTS users (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   phone          text UNIQUE NOT NULL,
-  -- Firebase is the identity provider (spec §7: "auth only, data in Postgres").
-  -- This is the join between the token's subject and the row that owns bookings.
-  firebase_uid   text UNIQUE,
+  -- The identity provider's subject claim (spec §7: "auth only, data in
+  -- Postgres"). This is the join between a verified token and the row that
+  -- owns bookings. Named for the role it plays, not for the provider — see
+  -- db/migrations/005_auth_provider_id.sql.
+  auth_provider_id text UNIQUE,
   name           text,
   email          text,
   avatar_url     text,       -- [DEVIATION 5] Google sign-in's `picture` claim

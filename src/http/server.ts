@@ -42,7 +42,7 @@ import { startWorkers, type RunningWorkers } from '../workers/runner.ts';
 import { annotate, log, newRequestId, reportError, withRequestContext } from '../obs/logger.ts';
 
 /**
- * DEV_AUTH swaps Firebase token verification for a header naming the user
+ * DEV_AUTH swaps real token verification for a header naming the user
  * directly — anyone can act as anyone.
  *
  * It now requires CI_SMOKE as well, because "local development" and "a smoke
@@ -93,6 +93,11 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'admin.html',
   'brand.css',
   'app.css',
+  // Page shells. External rather than inline so the CSP can stay
+  // `script-src 'self'` with no 'unsafe-inline'.
+  'app.js',
+  'business.js',
+  'admin.js',
   'lib/api.js',
   'lib/auth.js',
   'lib/dom.js',
@@ -140,9 +145,9 @@ function requireDevAuth(): void {
 /**
  * The single authentication entry point.
  *
- * Production: Firebase ID token in `Authorization: Bearer <token>`.
- * DEV_AUTH:   an `x-dev-user` header naming a users.firebase_uid, so the local
- *             console can switch identity without a Firebase project.
+ * Production: a Clerk session token in `Authorization: Bearer <token>`.
+ * DEV_AUTH:   an `x-dev-user` header naming a users.auth_provider_id, so the
+ *             smoke harness can act as anyone without a browser.
  */
 async function session(db: Pool, req: IncomingMessage): Promise<Session> {
   if (DEV_AUTH) {
@@ -305,15 +310,13 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     return void res.end();
   }
 
-  // The client Firebase config is not secret, but it's still environment-
-  // specific — served from env so it's not hardcoded into a checked-in file.
+  // Clerk's publishable key is not secret — it ships to every browser by
+  // design — but it is environment-specific, so it comes from env rather than
+  // being hardcoded into a checked-in file. CLERK_SECRET_KEY is never served.
   if (read && path === '/api/config') {
     return json(res, 200, {
-      firebase: {
-        apiKey: process.env['FIREBASE_WEB_API_KEY'] ?? null,
-        authDomain: process.env['FIREBASE_AUTH_DOMAIN'] ?? null,
-        projectId: process.env['FIREBASE_PROJECT_ID'] ?? null,
-        appId: process.env['FIREBASE_APP_ID'] ?? null,
+      clerk: {
+        publishableKey: process.env['CLERK_PUBLISHABLE_KEY'] ?? null,
       },
       // The public key id only. The secret signs, and never leaves the server.
       razorpay: { keyId: payments.enabled ? payments.keyId : null, enabled: payments.enabled },
@@ -325,18 +328,18 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
   // There is no login, so the panels need a way to pick who they are acting as.
   if (method === 'GET' && path === '/api/dev/identities') {
     requireDevAuth();
-    // devToken is what x-dev-user expects: the part of firebase_uid after "dev:".
+    // devToken is what x-dev-user expects: the part of auth_provider_id after "dev:".
     const [customers, owners] = await Promise.all([
       db.query(
-        `SELECT id, name, phone, replace(firebase_uid, 'dev:', '') AS dev_token
-           FROM users WHERE role = 'customer' AND firebase_uid LIKE 'dev:%'
+        `SELECT id, name, phone, replace(auth_provider_id, 'dev:', '') AS dev_token
+           FROM users WHERE role = 'customer' AND auth_provider_id LIKE 'dev:%'
           ORDER BY created_at LIMIT 20`,
       ),
       db.query(
         `SELECT u.id, u.name, s.name AS salon_name,
-                replace(u.firebase_uid, 'dev:', '') AS dev_token
+                replace(u.auth_provider_id, 'dev:', '') AS dev_token
            FROM users u JOIN salons s ON s.owner_id = u.id
-          WHERE u.role = 'business' AND u.firebase_uid LIKE 'dev:%'
+          WHERE u.role = 'business' AND u.auth_provider_id LIKE 'dev:%'
           ORDER BY s.name`,
       ),
     ]);
@@ -381,7 +384,7 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       db,
       {
         userId: applicant.userId,
-        // From the session, never the body — Firebase already verified it.
+        // From the session, never the body — the provider already verified it.
         phone: applicant.phone,
         name: applicant.name,
         email: applicant.email,
@@ -820,10 +823,16 @@ export function start(): void {
       );
     }
     // Fail at boot, not on the first customer's request.
-    if (!process.env['FIREBASE_SERVICE_ACCOUNT'] && !process.env['GOOGLE_APPLICATION_CREDENTIALS']) {
+    if (!process.env['CLERK_SECRET_KEY']) {
       fatal.push(
-        'No Firebase credentials. Set FIREBASE_SERVICE_ACCOUNT (inline JSON) or ' +
-          'GOOGLE_APPLICATION_CREDENTIALS (path).',
+        'No CLERK_SECRET_KEY. Without it no session token can be verified and every ' +
+          'authenticated request would fail at runtime instead of at boot.',
+      );
+    }
+    if (!process.env['CLERK_PUBLISHABLE_KEY']) {
+      fatal.push(
+        'No CLERK_PUBLISHABLE_KEY. The browser reads it from GET /api/config; without it ' +
+          'the pages load but nobody can sign in.',
       );
     }
     if (!payments.enabled) {
@@ -880,7 +889,7 @@ export function start(): void {
       log.warn(
         'DEV_AUTH=true was ignored: it now also requires CI_SMOKE=true, which exists ' +
           'for the smoke-test harness. Local development signs in with real Google auth — ' +
-          'set the FIREBASE_WEB_* variables in .env. Authentication is ON.',
+          'set CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in .env. Authentication is ON.',
       );
     }
     if (!payments.enabled) console.warn('Razorpay is not configured — bookings will be unpaid.');

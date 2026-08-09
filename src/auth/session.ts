@@ -88,8 +88,9 @@ export interface Session {
  *    propagation, becomes a salon owner or admin. Elevation is an admin
  *    action against the database.
  *
- * 2. Linking by phone is safe *only* because Firebase has already verified
- *    ownership of that number. We never accept a client-supplied phone.
+ * 2. Linking by phone is safe *only* because the identity provider has
+ *    already verified ownership of that number. We never accept a
+ *    client-supplied phone.
  *
  * 3. users.phone is NOT NULL UNIQUE, and a salon has to be able to ring the
  *    customer. Google sign-in carries no phone, so the client must link a
@@ -109,7 +110,7 @@ export async function resolveSession(
     avatar_url: string | null;
     blocked_until: Date | null;
   }>(
-    `SELECT id, role, phone, name, email, avatar_url, blocked_until FROM users WHERE firebase_uid = $1`,
+    `SELECT id, role, phone, name, email, avatar_url, blocked_until FROM users WHERE auth_provider_id = $1`,
     [token.uid],
   );
 
@@ -158,22 +159,22 @@ export async function resolveSession(
     avatar_url: string | null;
     blocked_until: Date | null;
   }>(
-    `INSERT INTO users (phone, firebase_uid, name, email, avatar_url, role)
+    `INSERT INTO users (phone, auth_provider_id, name, email, avatar_url, role)
      VALUES ($1, $2, $3, $4, $5, 'customer')
      ON CONFLICT (phone) DO UPDATE
-       SET firebase_uid = EXCLUDED.firebase_uid,
+       SET auth_provider_id = EXCLUDED.auth_provider_id,
            name  = coalesce(users.name, EXCLUDED.name),
            email = coalesce(users.email, EXCLUDED.email),
            avatar_url = coalesce(users.avatar_url, EXCLUDED.avatar_url),
            updated_at = now()
-     WHERE users.firebase_uid IS NULL OR users.firebase_uid = EXCLUDED.firebase_uid
+     WHERE users.auth_provider_id IS NULL OR users.auth_provider_id = EXCLUDED.auth_provider_id
      RETURNING id, role, phone, name, email, avatar_url, blocked_until`,
     [token.phone, token.uid, token.name ?? null, token.email ?? null, token.picture ?? null],
   );
 
   const row = linked.rows[0];
   if (!row) {
-    // The phone belongs to a row already bound to a *different* Firebase uid.
+    // The phone belongs to a row already bound to a *different* provider id.
     // Silently rebinding would hand one person another's booking history.
     throw new AuthError(
       409,

@@ -1,7 +1,7 @@
 /**
  * Session resolution: turning a verified token into the users row that owns
- * bookings. Signature checking is Firebase's job; this is the part we can get
- * wrong, so it is the part that is tested.
+ * bookings. Signature checking is the provider's job; this is the part we can
+ * get wrong, so it is the part that is tested.
  */
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
@@ -149,7 +149,7 @@ describe('resolveSession', () => {
     if (!pool) return t.skip('no test database reachable');
     await reset(pool);
     await resolveSession(pool, token({ uid: 'fb-first', phone: '+919777777777' }));
-    // A second Firebase account claiming the same number must not inherit
+    // A second provider account claiming the same number must not inherit
     // the first one's bookings.
     await assert.rejects(
       resolveSession(pool, token({ uid: 'fb-second', phone: '+919777777777' })),
@@ -169,7 +169,7 @@ describe('resolveSession', () => {
     if (!pool) return t.skip('no test database reachable');
     await reset(pool);
     await pool.query(
-      `INSERT INTO users (phone, firebase_uid, blocked_until)
+      `INSERT INTO users (phone, auth_provider_id, blocked_until)
        VALUES ('+919555555555', 'fb-blocked', now() + interval '10 days')`,
     );
     const s = await resolveSession(pool, token({ uid: 'fb-blocked', phone: '+919555555555' }));

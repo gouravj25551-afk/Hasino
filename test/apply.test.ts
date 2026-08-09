@@ -27,7 +27,7 @@ afterEach(() => {
 
 async function customer(db: pg.Pool, phone: string) {
   const r = await db.query<{ id: string }>(
-    `INSERT INTO users (phone, name, email, firebase_uid) VALUES ($1,'Applicant','applicant@x.com',$2)
+    `INSERT INTO users (phone, name, email, auth_provider_id) VALUES ($1,'Applicant','applicant@x.com',$2)
      RETURNING id`,
     [phone, `fb:${phone}`],
   );

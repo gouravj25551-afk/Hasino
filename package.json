@@ -20,7 +20,7 @@
     "db:fixture": "CI_SMOKE=true node scripts/ci-fixture.ts"
   },
   "dependencies": {
-    "firebase-admin": "^14.2.0",
+    "@clerk/backend": "^3.16.1",
     "pg": "^8.13.1"
   },
   "devDependencies": {

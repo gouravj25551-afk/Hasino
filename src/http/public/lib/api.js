@@ -20,7 +20,7 @@ async function authHeader(forceRefresh) {
     const token = await currentIdToken(forceRefresh);
     return token ? { authorization: `Bearer ${token}` } : {};
   } catch {
-    // Firebase not configured, or not yet initialized — browsing is public,
+    // Clerk not configured, or not yet initialized — browsing is public,
     // so a public request must still go out unauthenticated rather than fail.
     return {};
   }

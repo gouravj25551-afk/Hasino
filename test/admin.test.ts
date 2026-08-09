@@ -178,7 +178,7 @@ describe('ADMIN_EMAILS elevation', () => {
     await reset(db);
     process.env['ADMIN_EMAILS'] = 'boss@hasino.in';
 
-    // An admin onboarded this owner: role set, no firebase_uid yet.
+    // An admin onboarded this owner: role set, no auth_provider_id yet.
     await db.query(
       `INSERT INTO users (phone, name, email, role) VALUES ($1, $2, $3, 'business')`,
       ['+919888888888', 'Rahul', 'rahul@example.com'],
@@ -241,7 +241,7 @@ describe('admin and business do not overlap', () => {
  * Onboarding and the status machine.
  *
  * The mechanism worth protecting is the one the PRD calls load-bearing: an
- * admin creates a users row with role='business' and no firebase_uid, and the
+ * admin creates a users row with role='business' and no auth_provider_id, and the
  * owner's first Google sign-in adopts it without losing the role. That is one
  * ON CONFLICT clause in resolveSession and nothing else guards it.
  */
@@ -258,11 +258,11 @@ describe('admin onboarding', () => {
     });
     assert.equal(ownerExisted, false);
 
-    const u = await db.query<{ role: string; firebase_uid: string | null }>(
-      `SELECT role, firebase_uid FROM users WHERE id = $1`, [ownerId],
+    const u = await db.query<{ role: string; auth_provider_id: string | null }>(
+      `SELECT role, auth_provider_id FROM users WHERE id = $1`, [ownerId],
     );
     assert.equal(u.rows[0]!.role, 'business');
-    assert.equal(u.rows[0]!.firebase_uid, null, 'the row is claimed at sign-in, not created signed-in');
+    assert.equal(u.rows[0]!.auth_provider_id, null, 'the row is claimed at sign-in, not created signed-in');
 
     const hours = await db.query<{ n: string }>(
       `SELECT count(*)::int8 AS n FROM salon_hours WHERE salon_id = $1`, [salonId],

@@ -134,7 +134,7 @@ export async function listSalonsForAdmin(
     `SELECT s.id, s.name, s.city, s.area, s.address, s.status, s.commission_bps,
             u.id AS owner_id, u.name AS owner_name, u.phone AS owner_phone,
             u.email AS owner_email,
-            (u.firebase_uid IS NOT NULL) AS owner_signed_in,
+            (u.auth_provider_id IS NOT NULL) AS owner_signed_in,
             (SELECT count(*)::int8 FROM salon_services ss
               WHERE ss.salon_id = s.id AND ss.active)          AS service_count,
             (SELECT count(*)::int8 FROM bookings b
@@ -212,11 +212,11 @@ const DEFAULT_HOURS = {
  * Create a salon and the owner row that will later be adopted by a Google
  * sign-in.
  *
- * The owner is upserted by phone and left WITHOUT a firebase_uid on purpose.
- * resolveSession's `ON CONFLICT (phone) DO UPDATE` sets firebase_uid on first
+ * The owner is upserted by phone and left WITHOUT a auth_provider_id on purpose.
+ * resolveSession's `ON CONFLICT (phone) DO UPDATE` sets auth_provider_id on first
  * sign-in and does not touch role, so the 'business' assigned here survives.
  * That one clause is the whole owner-onboarding mechanism; nothing else here
- * may set firebase_uid.
+ * may set auth_provider_id.
  */
 export async function onboardSalon(
   db: Pool,
@@ -512,7 +512,7 @@ export async function adminSalonDetail(db: Queryable, salonId: string) {
     `SELECT s.id, s.name, s.address, s.city, s.area, s.lat, s.lng, s.timezone, s.status,
             s.commission_bps, s.phone, s.email, s.created_at, s.approved_at,
             u.id AS owner_id, u.name AS owner_name, u.phone AS owner_phone,
-            u.email AS owner_email, (u.firebase_uid IS NOT NULL) AS owner_signed_in
+            u.email AS owner_email, (u.auth_provider_id IS NOT NULL) AS owner_signed_in
        FROM salons s JOIN users u ON u.id = s.owner_id
       WHERE s.id = $1`,
     [salonId],
@@ -639,7 +639,7 @@ export async function adminOverview(db: Queryable, now: Date = new Date()) {
                             WHERE ss.salon_id = salons.id AND ss.active)
        )::int8 AS no_services,
        (SELECT count(*)::int8 FROM users u
-         WHERE u.role = 'business' AND u.firebase_uid IS NULL) AS owners_never_signed_in,
+         WHERE u.role = 'business' AND u.auth_provider_id IS NULL) AS owners_never_signed_in,
        (SELECT count(*)::int8 FROM bookings b
          WHERE b.start_at >= date_trunc('day', $1::timestamptz)
            AND b.start_at <  date_trunc('day', $1::timestamptz) + interval '1 day') AS bookings_today,
@@ -686,7 +686,7 @@ export interface ApplyInput {
  * hours while they wait, which is the point.
  *
  * The applicant's phone comes from their session — already verified by
- * Firebase — never from the request body.
+ * the identity provider — never from the request body.
  */
 export async function applyForSalon(
   db: Pool,

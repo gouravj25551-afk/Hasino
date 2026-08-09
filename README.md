@@ -3,7 +3,7 @@
 Salon booking marketplace. The availability engine, booking create, Razorpay
 payments, the money ledger, and two web surfaces over them.
 
-Firebase Auth (Google sign-in with the one-time phone-link step) and Razorpay
+Clerk (Google sign-in with the one-time phone-link step) and Razorpay
 are both implemented. A booking now holds a chair while the customer pays and
 only becomes real once the money is verified — see
 [the payment hold](#the-payment-hold) for why that ordering matters.
@@ -16,13 +16,13 @@ npm run dev
 
 Creates the database, applies the schema and migrations, loads the service
 catalogue, and starts on :3000 with file watching. It checks Node, Postgres and
-your Firebase config first, and stops with the exact console steps if anything
+your Clerk config first, and stops with the exact console steps if anything
 is missing.
 
 **The database starts empty of people and salons.** There is no demo data and
 no identity dropdown: local development signs in with Google exactly the way
 production does, so a sign-in bug is found here rather than on the first
-deploy. You need a Firebase project and a `.env` — `npm run dev` prints the
+deploy. You need a Clerk application and a `.env` — `npm run dev` prints the
 steps. Set `ADMIN_EMAILS` to your own Google address and you land on `/admin`,
 where you onboard the first salon.
 
@@ -86,7 +86,7 @@ the salon is named explicitly.
 No SQL, either way:
 
 1. **Admin onboards it** — `/admin` → Onboard. Creates the salon plus a `users`
-   row with `role='business'` and no `firebase_uid`. The owner then signs in
+   row with `role='business'` and no `auth_provider_id`. The owner then signs in
    with Google, links that phone at the existing `428 PHONE_REQUIRED` step, and
    the row is adopted with its role intact. That one `ON CONFLICT (phone)`
    clause in `resolveSession` is the whole mechanism.
@@ -119,11 +119,11 @@ run anywhere.
 
 ## API
 
-Authenticated routes take `Authorization: Bearer <Firebase ID token>`. Browsing
-is public. Under `DEV_AUTH=true` an `x-dev-user` header naming a `firebase_uid`
-stands in, so the local consoles work without a Firebase project.
+Authenticated routes take `Authorization: Bearer <Clerk session token>`. Browsing
+is public. Under `DEV_AUTH=true` an `x-dev-user` header naming a `auth_provider_id`
+stands in, so the local consoles work without a Clerk application.
 
-`GET /api/config` serves the client Firebase config (apiKey, authDomain,
+`GET /api/config` serves the client Clerk config (apiKey, authDomain,
 projectId, appId) from server env — not secret, but not hardcoded either.
 
 Customer:
@@ -222,7 +222,7 @@ src/notify/dispatch.ts        the worker that drains it
 src/notify/templates.ts       the six emails
 src/workers/runner.ts         three loops over Postgres, advisory-locked
 src/obs/logger.ts             structured logs, request ids, error reporter seam
-src/auth/verifier.ts          Firebase token verification (swappable)
+src/auth/verifier.ts          Clerk token verification (swappable)
 src/auth/session.ts           token -> users row, roles, provisioning
 src/booking/status.ts         §4 state machine + close-for-day
 src/salons/repo.ts            browse + detail, openNow, distance, favorites

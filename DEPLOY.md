@@ -2,7 +2,7 @@
 
 ## Status
 
-Deployable, and now takes money. Firebase Auth and Razorpay are both
+Deployable, and now takes money. Clerk and Razorpay are both
 implemented, and `NODE_ENV=production` refuses to boot without either — a server
 that serves bookings it cannot authenticate, or takes bookings it cannot charge
 for, should not start at all.
@@ -11,7 +11,7 @@ Verified locally in production mode:
 
 ```
 /healthz                     -> {"ok":true}          (no DB call, by design)
-/readyz                      -> {"ok":true,"auth":"firebase","payments":"razorpay"}
+/readyz                      -> {"ok":true,"auth":"clerk","payments":"razorpay"}
 GET /api/salons              -> 200   (browsing stays public)
 GET /                        -> 200   (customer app, real Google sign-in)
 GET /api/dev/identities      -> 404
@@ -25,7 +25,7 @@ POST /api/webhooks/razorpay  -> 400 BAD_SIGNATURE (unsigned body refused)
 
 You need four accounts. I cannot create them — do these yourself:
 
-**1. Firebase project** → Authentication → enable Phone and Google. Project
+**1. Clerk project** → Authentication → enable Phone and Google. Project
 settings → Service accounts → *Generate new private key*.
 
 **2. Razorpay account** → Dashboard → Account & Settings → API Keys. Test keys
@@ -52,11 +52,8 @@ Set these on the host:
 |---|---|
 | `DATABASE_URL` | your Postgres URL, SSL on |
 | `NODE_ENV` | `production` |
-| `FIREBASE_SERVICE_ACCOUNT` | the whole service-account JSON, inline |
-| `FIREBASE_WEB_API_KEY` | client config — Project settings → General → Your apps |
-| `FIREBASE_AUTH_DOMAIN` | client config |
-| `FIREBASE_PROJECT_ID` | client config |
-| `FIREBASE_APP_ID` | client config |
+| `CLERK_SECRET_KEY` | sk_live_… — signs and reads on the server, never sent to a browser |
+| `CLERK_PUBLISHABLE_KEY` | pk_live_… — served to the browser from GET /api/config |
 | `RAZORPAY_KEY_ID` | Dashboard → API Keys |
 | `RAZORPAY_KEY_SECRET` | shown once, at creation |
 | `RAZORPAY_WEBHOOK_SECRET` | a **different** secret — set when you create the webhook |
@@ -69,21 +66,21 @@ Set these on the host:
 | `CI_SMOKE` | **leave unset** — same |
 | `ALLOW_UNPAID_BOOKINGS` | **leave unset** — same |
 
-The four `FIREBASE_WEB_*` values are not secret — they ship to the browser via
+The four `CLERK_*` values are not secret — they ship to the browser via
 `GET /api/config`, alongside `RAZORPAY_KEY_ID`. They are environment variables so
 staging and production can point at different projects. The two **secrets**
 (`RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`) never leave the server.
 
-In the Firebase console also enable **Google** and **Phone** under
+In the Clerk dashboard also enable **Google** and **Phone** under
 Authentication → Sign-in method, and add your production domain under
 Authentication → Settings → Authorized domains. Google sign-in carries no phone
 number, so the client walks the `428 PHONE_REQUIRED` phone-link flow before the
 account can book.
 
-`GOOGLE_APPLICATION_CREDENTIALS` (a file path) works instead of
-`FIREBASE_SERVICE_ACCOUNT` and is what Cloud Run injects for free.
+`CLERK_SECRET_KEY` (a file path) works instead of
+`CLERK_SECRET_KEY` and is what Cloud Run injects for free.
 
-Deploy. `/readyz` should report `"auth":"firebase"` and `"payments":"razorpay"`.
+Deploy. `/readyz` should report `"auth":"clerk"` and `"payments":"razorpay"`.
 
 ## The webhook is not optional
 
@@ -151,7 +148,7 @@ invisible. This is the first thing to build after launch.
 **No mobile app.** The customer surface the spec plans is React Native (step 7).
 What ships is the API plus two web surfaces, which are real and usable but are
 not an app-store presence. A native client sends the same
-`Authorization: Bearer <Firebase ID token>`.
+`Authorization: Bearer <Clerk session token>`.
 
 **Reminders are email only.** The outbox supports `sms`, `whatsapp` and `push`
 channels and parks those rows as `skipped` rather than dropping them — switching

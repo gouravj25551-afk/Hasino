@@ -12,7 +12,7 @@
  *
  *   CI_SMOKE=true node scripts/ci-fixture.ts
  *
- * Identities use 'dev:' firebase_uids so the x-dev-user header resolves them.
+ * Identities use 'dev:' auth_provider_ids so the x-dev-user header resolves them.
  * The admin's dev token is its email address: admin elevation requires a
  * verified email in ADMIN_EMAILS, and DevVerifier reports a token containing
  * '@' as exactly that.
@@ -104,14 +104,14 @@ if (serviceIds.size === 0) {
 }
 
 const admin = await db.query<{ id: string }>(
-  `INSERT INTO users (phone, name, email, role, firebase_uid)
+  `INSERT INTO users (phone, name, email, role, auth_provider_id)
    VALUES ($1, $2, $3, 'admin', $4) RETURNING id`,
   ['+917000000001', 'Fixture Admin', ADMIN_EMAIL, `dev:${ADMIN_EMAIL}`],
 );
 
 for (const c of CUSTOMERS) {
   await db.query(
-    `INSERT INTO users (phone, name, email, firebase_uid) VALUES ($1, $2, $3, $4)`,
+    `INSERT INTO users (phone, name, email, auth_provider_id) VALUES ($1, $2, $3, $4)`,
     [c.phone, c.name, c.email, `dev:${c.phone}`],
   );
 }
@@ -120,7 +120,7 @@ const created: Array<{ id: string; name: string }> = [];
 
 for (const salon of SALONS) {
   const owner = await db.query<{ id: string }>(
-    `INSERT INTO users (phone, name, email, role, firebase_uid)
+    `INSERT INTO users (phone, name, email, role, auth_provider_id)
      VALUES ($1, $2, $3, 'business', $4) RETURNING id`,
     [salon.owner.phone, salon.owner.name, salon.owner.email, `dev:${salon.owner.phone}`],
   );
