@@ -152,6 +152,13 @@ CREATE TABLE IF NOT EXISTS services (      -- global master list, admin-managed
   category text NOT NULL
 );
 
+-- [DEVIATION 10] two rows called 'Haircut' would split one service across two
+--   menus and two sets of bookings with nothing to say which is canonical. The
+--   catalogue seed uses this for ON CONFLICT DO NOTHING, and the admin's
+--   create-service route uses it to reject duplicates in the database rather
+--   than in a check-then-insert race.
+CREATE UNIQUE INDEX IF NOT EXISTS services_name_key ON services (name);
+
 CREATE TABLE IF NOT EXISTS salon_services (   -- per-salon price AND duration
   salon_id     uuid NOT NULL REFERENCES salons(id) ON DELETE CASCADE,
   service_id   uuid NOT NULL REFERENCES services(id),

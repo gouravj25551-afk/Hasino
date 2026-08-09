@@ -40,11 +40,21 @@ import { startWorkers, type RunningWorkers } from '../workers/runner.ts';
 import { annotate, log, newRequestId, reportError, withRequestContext } from '../obs/logger.ts';
 
 /**
- * DEV_AUTH=true swaps Firebase token verification for a header naming the
- * user directly — anyone can act as anyone. The server refuses to start with
- * it in production; see start().
+ * DEV_AUTH swaps Firebase token verification for a header naming the user
+ * directly — anyone can act as anyone.
+ *
+ * It now requires CI_SMOKE as well, because "local development" and "a smoke
+ * test harness" are different needs that were sharing one switch. Local
+ * development uses real Google sign-in like production does; only the CI smoke
+ * run, which has no browser to sign in with, gets the bypass. A developer who
+ * sets DEV_AUTH out of habit gets a working server with auth ON and a warning
+ * saying why, rather than a server that silently trusts a header.
+ *
+ * start() refuses to boot with either flag in production.
  */
-const DEV_AUTH = process.env['DEV_AUTH'] === 'true';
+const DEV_AUTH_REQUESTED = process.env['DEV_AUTH'] === 'true';
+const CI_SMOKE = process.env['CI_SMOKE'] === 'true';
+const DEV_AUTH = DEV_AUTH_REQUESTED && CI_SMOKE;
 const IS_PROD = process.env['NODE_ENV'] === 'production';
 const TRUST_PROXY = process.env['TRUST_PROXY'] === 'true';
 
@@ -714,10 +724,19 @@ export function start(): void {
   if (IS_PROD) {
     const fatal: string[] = [];
 
-    if (DEV_AUTH) {
+    // Both flags, not just their conjunction. Either one set in production is
+    // a misconfiguration worth refusing on: DEV_AUTH means someone intended
+    // the bypass, and CI_SMOKE is the other half of the key.
+    if (DEV_AUTH_REQUESTED) {
       fatal.push(
         'DEV_AUTH=true trusts an unverified x-dev-user header. Anyone could book, ' +
           'cancel, or edit any salon as anyone else.',
+      );
+    }
+    if (CI_SMOKE) {
+      fatal.push(
+        'CI_SMOKE=true enables the DEV_AUTH bypass and the /api/dev/* routes. ' +
+          'It exists for the smoke test harness and must never be set in production.',
       );
     }
     // Fail at boot, not on the first customer's request.
@@ -773,7 +792,17 @@ export function start(): void {
     });
     console.log(`hasino  →  http://localhost:${port}          (customer)`);
     console.log(`        →  http://localhost:${port}/business (salon panel)`);
-    if (DEV_AUTH) console.warn('DEV_AUTH is on — authentication is bypassed. Local use only.');
+    if (DEV_AUTH) {
+      log.warn('DEV_AUTH is on — authentication is bypassed. CI only.');
+    } else if (DEV_AUTH_REQUESTED) {
+      // Ignored, loudly. Silently honouring it would be a server that trusts a
+      // header; silently dropping it would look like the flag was broken.
+      log.warn(
+        'DEV_AUTH=true was ignored: it now also requires CI_SMOKE=true, which exists ' +
+          'for the smoke-test harness. Local development signs in with real Google auth — ' +
+          'set the FIREBASE_WEB_* variables in .env. Authentication is ON.',
+      );
+    }
     if (!payments.enabled) console.warn('Razorpay is not configured — bookings will be unpaid.');
   });
 

@@ -57,6 +57,29 @@ END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS salons_one_per_owner ON salons (owner_id);
 
+-- ---------- the catalogue is keyed by name ----------
+-- `services` is the global master list the admin manages and every
+-- salon_services row points at. Two rows called 'Haircut' would split one
+-- service across two menus and two sets of bookings, with nothing to say which
+-- is canonical. The catalogue seed relies on this for ON CONFLICT DO NOTHING,
+-- and POST /api/admin/services relies on it to reject duplicates in the
+-- database rather than in a check-then-insert race.
+DO $$
+DECLARE
+  dupes text;
+BEGIN
+  SELECT string_agg(name, ', ') INTO dupes
+    FROM (SELECT name FROM services GROUP BY name HAVING count(*) > 1) d;
+
+  IF dupes IS NOT NULL THEN
+    RAISE EXCEPTION
+      'Cannot add services_name_key: the catalogue already has duplicates: %. '
+      'Merge them onto one row and repoint salon_services first.', dupes;
+  END IF;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS services_name_key ON services (name);
+
 -- ---------- why a salon is in the state it is in ----------
 CREATE TABLE IF NOT EXISTS salon_status_events (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
