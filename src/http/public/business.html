@@ -19,55 +19,88 @@
     <a href="#/payouts"  data-nav="payouts">Money</a>
   </nav>
   <span class="spacer"></span>
-  <label class="field" style="min-width:200px">
-    <span>Salon (dev)</span>
-    <select id="who"></select>
-  </label>
+  <div class="row" id="whoami" style="gap:10px"></div>
   <a class="btn sm" href="/">← Customer app</a>
-</div>
-
-<div class="banner">
-  No login — <b>DEV_AUTH</b> mode. Anyone can act as any salon. Razorpay runs against the local stub, so no real money moves.
 </div>
 
 <div class="wrap" id="view"></div>
 
-<script>
+<script type="module">
+import { currentIdToken, watchAuthState, signOut } from './lib/auth.js';
+
 const $  = (s, r = document) => r.querySelector(s);
 const el = (t, cls, txt) => { const n = document.createElement(t); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
 const rupees = p => '₹' + (p / 100).toLocaleString('en-IN');
 const DOW = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
-let owner = null;
 let tz = 'Asia/Kolkata';
 const time = iso => new Date(iso).toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' });
 
+/**
+ * Every /api/business/* route resolves the salon from the signed-in owner, so
+ * there is no salon id to pass and no identity to pick — you are whoever
+ * Google says you are.
+ */
 async function api(path, opts = {}) {
+  let token = null;
+  try { token = await currentIdToken(); } catch { /* Firebase unconfigured — request goes out unauthenticated and 401s honestly */ }
   const res = await fetch(path, {
     ...opts,
-    headers: { 'content-type': 'application/json', ...(owner ? { 'x-dev-user': owner } : {}), ...(opts.headers || {}) },
+    headers: {
+      'content-type': 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(opts.headers || {}),
+    },
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(body.error || res.statusText), { body, status: res.status });
   return body;
 }
 
+/**
+ * Gate the panel on a signed-in owner. /api/me tells us who they are; the
+ * role check is the server's, not ours — every /api/business/* route runs
+ * requireRole(s, 'business') before it does anything.
+ */
 async function initIdentity() {
-  const sel = $('#who');
+  const who = $('#whoami');
   try {
-    const { owners } = await api('/api/dev/identities');
-    if (!owners.length) { sel.innerHTML = '<option>none seeded</option>'; return; }
-    owner = localStorage.getItem('hasino.owner') || owners[0].dev_token;
-    if (!owners.some(o => o.dev_token === owner)) owner = owners[0].dev_token;
-    sel.innerHTML = '';
-    for (const o of owners) {
-      const opt = el('option', null, o.salon_name);
-      opt.value = o.dev_token;
-      if (o.dev_token === owner) opt.selected = true;
-      sel.appendChild(opt);
-    }
-    sel.onchange = () => { owner = sel.value; localStorage.setItem('hasino.owner', owner); render(); };
-  } catch { sel.innerHTML = '<option>unavailable</option>'; }
+    const me = await api('/api/me');
+    who.innerHTML = '';
+    who.append(el('span', 'meta', me.name || me.email || me.phone));
+    const out = el('button', 'btn sm', 'Sign out');
+    out.onclick = async () => { await signOut(); location.reload(); };
+    who.append(out);
+    return me;
+  } catch (err) {
+    who.innerHTML = '';
+    const link = el('a', 'btn sm primary', 'Sign in');
+    link.href = '/#/login';
+    who.append(link);
+    return null;
+  }
+}
+
+/** Shown instead of the panel when the caller is not a salon owner. */
+function renderNotAnOwner(err) {
+  const view = $('#view');
+  view.innerHTML = '';
+  const box = el('div', 'panel');
+  if (err && err.status === 403) {
+    box.append(el('h1', null, 'This account does not manage a salon'));
+    box.append(el('p', 'sub',
+      'The salon panel is for salon owners. If you have applied to list a salon, it is waiting for review.'));
+  } else if (err && (err.status === 401 || err.body?.code === 'NO_TOKEN')) {
+    box.append(el('h1', null, 'Sign in to manage your salon'));
+    box.append(el('p', 'sub', 'Use the Google account your salon was registered with.'));
+    const link = el('a', 'btn primary', 'Sign in');
+    link.href = '/#/login';
+    box.append(link);
+  } else {
+    box.append(el('h1', null, 'Could not load the panel'));
+    box.append(el('p', 'sub', err?.message || 'Unknown error'));
+  }
+  view.append(box);
 }
 
 const routes = {
@@ -503,7 +536,15 @@ async function payoutsView() {
 }
 
 window.addEventListener('hashchange', render);
-initIdentity().then(render);
+
+// Firebase restores a session asynchronously, so wait for the first auth state
+// before deciding whether this is a signed-out visitor or a slow page load.
+watchAuthState(async () => {
+  const me = await initIdentity();
+  if (!me) return renderNotAnOwner({ status: 401 });
+  if (me.role !== 'business') return renderNotAnOwner({ status: 403 });
+  render();
+}).catch(() => renderNotAnOwner({ status: 401 }));
 </script>
 </body>
 </html>

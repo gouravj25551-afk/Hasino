@@ -15,8 +15,8 @@
 <div id="modalContainer"></div>
 
 <script type="module">
-import { register, start, reload, go, activeSection } from './lib/router.js';
-import { api, setDevUser, getDevUser, checkDevAuth, ApiError } from './lib/api.js';
+import { register, start, go, activeSection } from './lib/router.js';
+import { api, ApiError } from './lib/api.js';
 import { watchAuthState, consumeRedirectResult, signOut as firebaseSignOut } from './lib/auth.js';
 import { TopBar, highlightTopBarNav } from './components/TopBar.js';
 import { BottomNav } from './components/BottomNav.js';
@@ -37,7 +37,6 @@ const bottomNavRoot = document.getElementById('bottomNav');
 /** Shared app state + the handful of things every view needs from the shell. */
 const app = {
   session: null,       // GET /api/me response, or null when signed out
-  devIdentities: null, // { customers, owners } when DEV_AUTH; null in production
   navigate: go,
   refreshSession,
   requireSession,
@@ -47,23 +46,13 @@ const app = {
 /**
  * Throws on failure (including 428 PHONE_REQUIRED) so callers that need to
  * distinguish "not signed in" from "needs a phone" can. Callers that just
- * want a best-effort refresh (boot, dev-identity switch) catch it themselves.
+ * want a best-effort refresh catch it themselves.
  */
 async function refreshSession() {
   const session = await api('/api/me');
   app.session = session;
   renderChrome();
   return session;
-}
-
-async function refreshSessionQuietly() {
-  try {
-    return await refreshSession();
-  } catch {
-    app.session = null;
-    renderChrome();
-    return null;
-  }
 }
 
 /** Views call this when a route needs a signed-in user. Redirects to login if there isn't one. */
@@ -76,12 +65,7 @@ function requireSession() {
 }
 
 async function doSignOut() {
-  if (getDevUser()) {
-    localStorage.removeItem('hasino.devUser');
-    setDevUser(null);
-  } else {
-    await firebaseSignOut();
-  }
+  await firebaseSignOut();
   app.session = null;
   renderChrome();
   go('#/home');
@@ -96,30 +80,8 @@ function renderChrome() {
   topbarRoot.append(bar);
   highlightTopBarNav(bar, activeSection());
 
-  if (app.devIdentities?.customers?.length) {
-    bar.insertBefore(devPicker(), bar.querySelector('.spacer'));
-  }
-
   bottomNavRoot.innerHTML = '';
   bottomNavRoot.append(BottomNav(activeSection()));
-}
-
-function devPicker() {
-  const sel = el('select');
-  sel.style.maxWidth = '160px';
-  for (const c of app.devIdentities.customers) {
-    const opt = el('option', null, c.name || c.phone);
-    opt.value = c.dev_token;
-    if (c.dev_token === getDevUser()) opt.selected = true;
-    sel.append(opt);
-  }
-  sel.onchange = async () => {
-    setDevUser(sel.value);
-    localStorage.setItem('hasino.devUser', sel.value);
-    await refreshSessionQuietly();
-    await reload();
-  };
-  return sel;
 }
 
 function showRouteError(err) {
@@ -137,17 +99,7 @@ register(/^#\/profile$/, () => renderProfile(viewRoot, app));
 register(/^#\/login$/, () => renderLogin(viewRoot, app));
 
 async function boot() {
-  const devIdentities = await checkDevAuth();
-  if (devIdentities) {
-    app.devIdentities = devIdentities;
-    const saved = localStorage.getItem('hasino.devUser');
-    const token = saved || devIdentities.customers[0]?.dev_token;
-    if (token) {
-      setDevUser(token);
-      localStorage.setItem('hasino.devUser', token);
-      await refreshSessionQuietly();
-    }
-  } else {
+  {
     // Browsing is public even if Firebase was never configured on this
     // deploy — only sign-in itself should fail, visibly, when attempted.
     try {

@@ -4,9 +4,13 @@
 #
 #   ./scripts/dev.sh
 #
-# Creates the database if it does not exist, applies the schema, seeds demo
-# data, and starts the server with DEV_AUTH on. Safe to re-run — re-running
-# reseeds, which wipes local data and nothing else.
+# Creates the database if it does not exist, applies the schema, loads the
+# service catalogue, and starts the server with real Google sign-in.
+#
+# There is no demo data and no identity dropdown: local development
+# authenticates exactly the way production does, so a sign-in bug is found here
+# rather than on the first deploy. That needs Firebase config in .env — this
+# script stops with the console steps if it is missing.
 #
 # Everything here is deliberately explicit rather than clever: the failure modes
 # of a local setup script are all "it did something you did not expect to a
@@ -15,6 +19,15 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# .env is gitignored and holds the Firebase config. Loaded here rather than via
+# node --env-file so the checks below can see the values too.
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
 
 DB_NAME="${DB_NAME:-hasino_dev}"
 PORT="${PORT:-3000}"
@@ -102,10 +115,53 @@ fi
 
 node scripts/migrate.ts
 
-# ---------- seed ----------
+# ---------- catalogue ----------
+# Services only — no users, no salons. Onboard those from /admin. This is
+# additive and truncates nothing, so it is safe on every run.
 if [ "$RESEED" = "true" ]; then
-  dim "seeding demo data (truncates $DB_NAME)"
-  node scripts/seed-demo.ts >/dev/null
+  dim "loading the service catalogue"
+  node scripts/seed-catalog.ts >/dev/null
+fi
+
+# ---------- firebase ----------
+# Checked after the database work so a first run still leaves a usable database
+# behind, and before the server starts so sign-in cannot fail silently.
+if [ -z "${FIREBASE_WEB_API_KEY:-}" ]; then
+  echo
+  red "No Firebase config — sign-in would fail silently, so this stops here."
+  echo
+  echo "  Local development uses the same Google sign-in as production."
+  echo
+  echo "  1. https://console.firebase.google.com — create or open a project"
+  echo "  2. Build > Authentication > Get started"
+  echo "       enable Google (set a support email)"
+  echo "       enable Phone   (Google carries no phone number, and users.phone is required)"
+  echo "  3. Authentication > Settings > Authorized domains — add: localhost"
+  echo "  4. Project settings > General > Your apps > Add app > Web (</>)"
+  echo "       copy apiKey, authDomain, projectId, appId"
+  echo "  5. Project settings > Service accounts > Generate new private key"
+  echo
+  echo "  Then put them in .env (cp .env.example .env):"
+  echo
+  dim "     FIREBASE_WEB_API_KEY=..."
+  dim "     FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com"
+  dim "     FIREBASE_PROJECT_ID=your-project"
+  dim "     FIREBASE_APP_ID=1:...:web:..."
+  dim "     FIREBASE_SERVICE_ACCOUNT={\"type\":\"service_account\",...}"
+  dim "     ADMIN_EMAILS=you@example.com"
+  echo
+  echo "  ADMIN_EMAILS decides who gets /admin. Sign in with that Google account."
+  echo
+  exit 1
+fi
+
+if [ -z "${ADMIN_EMAILS:-}" ]; then
+  echo
+  red "ADMIN_EMAILS is not set — nobody can reach /admin, so no salon can be onboarded."
+  echo "  Add your Google address to .env:"
+  dim  "     ADMIN_EMAILS=you@example.com"
+  echo
+  exit 1
 fi
 
 echo
@@ -114,9 +170,11 @@ echo
 echo "  customer app   http://localhost:$PORT"
 echo "  salon panel    http://localhost:$PORT/business"
 echo
-dim "DEV_AUTH is on — pick an identity from the dropdown, top right."
-dim "Razorpay runs against the in-process stub, so 'Pay' completes without real keys."
+echo "  admin panel    http://localhost:$PORT/admin"
+echo
+dim "Sign in with Google. ADMIN_EMAILS=${ADMIN_EMAILS} gets /admin."
+dim "The database has a service catalogue and nothing else — onboard a salon from /admin."
 dim "Emails are printed to this terminal instead of being sent."
 echo
 
-DEV_AUTH=true PORT="$PORT" LOG_FORMAT=pretty exec node --watch src/main.ts
+PORT="$PORT" LOG_FORMAT=pretty exec node --watch src/main.ts

@@ -33,18 +33,6 @@ const GOOGLE_G = `
 
 export function renderLogin(container, app) {
   container.innerHTML = '';
-
-  if (app.devIdentities) {
-    container.append(
-      card(
-        logo(),
-        el('h1', null, 'DEV_AUTH is on'),
-        el('p', 'sub', 'Use the identity switcher in the top bar instead of signing in with Google.'),
-      ),
-    );
-    return;
-  }
-
   renderGoogleStep(container, app);
 }
 
