@@ -63,8 +63,11 @@ Set these on the host:
 | `PLATFORM_COMMISSION_BPS` | optional, default `1500` (15%) |
 | `TRUST_PROXY` | `true` only if something in front appends `X-Forwarded-For` |
 | `RESEND_API_KEY` + `EMAIL_FROM` | optional; without them emails print to stdout |
+| `ADMIN_EMAILS` | comma-separated Google addresses that get `/admin` |
 | `PORT` | usually injected by the host |
 | `DEV_AUTH` | **leave unset** — the server refuses to start with it |
+| `CI_SMOKE` | **leave unset** — same |
+| `ALLOW_UNPAID_BOOKINGS` | **leave unset** — same |
 
 The four `FIREBASE_WEB_*` values are not secret — they ship to the browser via
 `GET /api/config`, alongside `RAZORPAY_KEY_ID`. They are environment variables so

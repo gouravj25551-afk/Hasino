@@ -78,7 +78,7 @@ jobs:
         run: |
           node scripts/seed-catalog.ts
           node scripts/ci-fixture.ts
-          DEV_AUTH=true CI_SMOKE=true RUN_WORKERS=false ALLOW_UNPAID_BOOKINGS=true node src/main.ts &
+          DEV_AUTH=true CI_SMOKE=true RUN_WORKERS=false node src/main.ts &
           for i in $(seq 1 30); do
             curl -fsS http://localhost:3000/readyz >/dev/null && break
             sleep 1

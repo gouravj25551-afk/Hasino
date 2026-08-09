@@ -30,6 +30,19 @@ export function renderProfile(container, app) {
 
   list.append(el('div', 'item', '⚙️ Account settings — coming soon'));
 
+  // Salon owners already have a salon; sending them here would only 409.
+  if (session.role === 'business') {
+    const panel = el('a', 'item', '💈 My salon panel');
+    panel.href = '/business';
+    panel.style.cssText = 'text-decoration:none; color:inherit';
+    list.append(panel);
+  } else if (session.role === 'customer') {
+    const apply = el('div', 'item', '💈 List your salon on Hasino');
+    apply.style.cursor = 'pointer';
+    apply.onclick = () => app.navigate('#/apply');
+    list.append(apply);
+  }
+
   container.append(list);
 
   container.append(

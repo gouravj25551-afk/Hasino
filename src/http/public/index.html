@@ -29,6 +29,7 @@ import { renderCheckout } from './views/checkout.js';
 import { renderBookings } from './views/bookings.js';
 import { renderProfile } from './views/profile.js';
 import { renderLogin } from './views/login.js';
+import { renderApply } from './views/apply.js';
 
 const viewRoot = document.getElementById('view');
 const topbarRoot = document.getElementById('topbar');
@@ -37,6 +38,7 @@ const bottomNavRoot = document.getElementById('bottomNav');
 /** Shared app state + the handful of things every view needs from the shell. */
 const app = {
   session: null,       // GET /api/me response, or null when signed out
+  config: null,        // GET /api/config — tells the UI whether payments exist
   navigate: go,
   refreshSession,
   requireSession,
@@ -97,8 +99,13 @@ register(/^#\/checkout\/([\w-]+)$/, (id) => renderCheckout(viewRoot, app, id));
 register(/^#\/bookings$/, () => renderBookings(viewRoot, app));
 register(/^#\/profile$/, () => renderProfile(viewRoot, app));
 register(/^#\/login$/, () => renderLogin(viewRoot, app));
+register(/^#\/apply$/, () => renderApply(viewRoot, app));
 
 async function boot() {
+  // Fetched before the first route so no view has to guess whether there is a
+  // payment step. Public endpoint; failure is not fatal to browsing.
+  app.config = await fetch('/api/config').then((r) => r.json()).catch(() => null);
+
   {
     // Browsing is public even if Firebase was never configured on this
     // deploy — only sign-in itself should fail, visibly, when attempted.

@@ -427,7 +427,23 @@ export const DEFAULT_HOLD_TTL_MS = 8 * 60_000;
  * customer gives up. Tunable, because the right number is whatever the drop-off
  * data says once there is any.
  */
-export function paymentsConfigFromEnv(devAuth: boolean): PaymentsConfig {
+/**
+ * `enabled` follows the keys, not the auth mode.
+ *
+ * It used to read `enabled: devAuth`, so removing the local DEV_AUTH bypass
+ * would have switched payments off as a side effect — the right outcome
+ * reached by accident, and one the next person to tidy that line would
+ * re-break. Real keys mean real payments. No keys means no payments, and what
+ * happens then is ALLOW_UNPAID_BOOKINGS' decision, made explicitly in
+ * server.ts rather than inferred here.
+ *
+ * `ciSmoke` is the one exception, and it is deliberate rather than incidental:
+ * the smoke suite's most valuable checks are the hold -> pay -> confirm path
+ * and the race two customers lose on the last chair, and neither can run
+ * without a payment client. It gets the signing stub. CI_SMOKE is refused in
+ * production by start(), so this cannot reach a real deployment.
+ */
+export function paymentsConfigFromEnv(ciSmoke: boolean): PaymentsConfig {
   const keyId = process.env['RAZORPAY_KEY_ID'] ?? '';
   const keySecret = process.env['RAZORPAY_KEY_SECRET'] ?? '';
   const webhookSecret = process.env['RAZORPAY_WEBHOOK_SECRET'] ?? '';
@@ -446,9 +462,9 @@ export function paymentsConfigFromEnv(devAuth: boolean): PaymentsConfig {
     };
   }
 
-  // No keys. In dev this is the stub so the whole flow still runs; in
-  // production start() refuses to boot rather than quietly taking free
-  // bookings — see src/http/server.ts.
+  // No keys. The stub signs with the same HMAC Razorpay uses, so CI exercises
+  // the real signature check. Outside CI this is inert: enabled stays false,
+  // and whether an unpaid booking may be created is ALLOW_UNPAID_BOOKINGS.
   const stub = new StubRazorpayClient('stub_secret');
   return {
     client: stub,
@@ -457,6 +473,6 @@ export function paymentsConfigFromEnv(devAuth: boolean): PaymentsConfig {
     webhookSecret: 'stub_webhook_secret',
     commissionBps,
     holdTtlMs,
-    enabled: devAuth,
+    enabled: ciSmoke,
   };
 }

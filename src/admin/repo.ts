@@ -14,7 +14,7 @@
 import type { Pool, PoolClient } from '../db/pool.ts';
 import { withTransaction } from '../db/pool.ts';
 import { queueRefundForBooking } from '../payments/service.ts';
-import { cancelPending } from '../notify/outbox.ts';
+import { cancelPending, enqueueNotification } from '../notify/outbox.ts';
 
 type Queryable = Pool | PoolClient;
 
@@ -660,4 +660,127 @@ export async function adminOverview(db: Queryable, now: Date = new Date()) {
     bookingsToday: Number(r.bookings_today),
     gmvThisMonth: Number(r.gmv_month ?? 0),
   };
+}
+
+// ---------- self-serve application ----------
+
+export interface ApplyInput {
+  name: string;
+  address: string;
+  city: string;
+  area?: string | null;
+  lat: number;
+  lng: number;
+  timezone?: string;
+  phone?: string | null;
+  email?: string | null;
+}
+
+/**
+ * "List your salon", for a signed-in customer.
+ *
+ * Always pending, and the applicant becomes the owner. Granting 'business'
+ * here is safe: the role only ever unlocks salonForOwner(ownerId), which is
+ * their own pending salon, and listSalons filters status='active' so nothing
+ * is publicly visible until an admin approves. They can set up their menu and
+ * hours while they wait, which is the point.
+ *
+ * The applicant's phone comes from their session — already verified by
+ * Firebase — never from the request body.
+ */
+export async function applyForSalon(
+  db: Pool,
+  applicant: { userId: string; phone: string; name: string | null; email: string | null },
+  input: ApplyInput,
+): Promise<{ salonId: string }> {
+  validateCoords(input.lat, input.lng);
+  const timezone = validateTimezone(input.timezone ?? 'Asia/Kolkata');
+  if (!input.name.trim()) throw new AdminError(400, 'BAD_NAME', 'name is required');
+  if (!input.address.trim()) throw new AdminError(400, 'BAD_ADDRESS', 'address is required');
+  if (!input.city.trim()) throw new AdminError(400, 'BAD_CITY', 'city is required');
+
+  const commissionBps = validateCommissionBps(Number(process.env['PLATFORM_COMMISSION_BPS'] ?? 1500));
+
+  return withTransaction(db, async (tx) => {
+    const owns = await tx.query<{ id: string }>(
+      `SELECT id FROM salons WHERE owner_id = $1 FOR UPDATE`,
+      [applicant.userId],
+    );
+    if (owns.rows.length > 0) {
+      throw new AdminError(409, 'ALREADY_OWNS_SALON', 'You already have a salon on Hasino.');
+    }
+
+    const role = await tx.query<{ role: string }>(`SELECT role FROM users WHERE id = $1`, [applicant.userId]);
+    if (role.rows[0]?.role === 'admin') {
+      throw new AdminError(
+        409,
+        'ADMIN_CANNOT_APPLY',
+        'Platform admins cannot own a salon. Onboard it to a separate account from /admin.',
+      );
+    }
+
+    const salon = await tx.query<{ id: string }>(
+      `INSERT INTO salons (owner_id, name, address, city, area, lat, lng, timezone,
+                           status, commission_bps, phone, email)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,$11)
+       RETURNING id`,
+      [
+        applicant.userId, input.name.trim(), input.address.trim(), input.city.trim(),
+        input.area?.trim() || null, input.lat, input.lng, timezone, commissionBps,
+        input.phone ?? null, input.email ?? null,
+      ],
+    );
+    const salonId = salon.rows[0]!.id;
+
+    await tx.query(`UPDATE users SET role = 'business', updated_at = now() WHERE id = $1`, [applicant.userId]);
+
+    // Same seven default rows as admin onboarding, for the same reason: the
+    // applicant can set their hours up while they wait, and an approved salon
+    // is never live-with-no-hours.
+    for (let weekday = 0; weekday < 7; weekday++) {
+      await tx.query(
+        `INSERT INTO salon_hours (salon_id, weekday, open_at, close_at, break_start,
+                                  break_end, online_capacity, slot_interval_min)
+         VALUES ($1, $2, $3, $4, NULL, NULL, $5, $6)`,
+        [salonId, weekday, DEFAULT_HOURS.openAt, DEFAULT_HOURS.closeAt,
+         DEFAULT_HOURS.onlineCapacity, DEFAULT_HOURS.slotIntervalMin],
+      );
+    }
+
+    await tx.query(
+      `INSERT INTO salon_status_events (salon_id, from_status, to_status, reason, actor_id)
+       VALUES ($1, NULL, 'pending', 'self-serve application', $2)`,
+      [salonId, applicant.userId],
+    );
+
+    // Tell whoever empties the queue. Best-effort, inside the transaction so a
+    // created application always has its notification.
+    for (const to of adminNotificationAddresses()) {
+      await enqueueNotification(tx, {
+        userId: null,
+        channel: 'email',
+        template: 'salon_application',
+        to,
+        payload: {
+          salonId,
+          salonName: input.name.trim(),
+          city: input.city.trim(),
+          address: input.address.trim(),
+          ownerName: applicant.name,
+          ownerPhone: applicant.phone,
+          ownerEmail: applicant.email,
+        },
+        dedupeKey: `salon_application:${salonId}:${to}`,
+      });
+    }
+
+    return { salonId };
+  });
+}
+
+function adminNotificationAddresses(): string[] {
+  return (process.env['ADMIN_EMAILS'] ?? '')
+    .split(',')
+    .map((e) => e.trim())
+    .filter(Boolean);
 }

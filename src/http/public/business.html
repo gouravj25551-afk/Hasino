@@ -539,10 +539,38 @@ window.addEventListener('hashchange', render);
 
 // Firebase restores a session asynchronously, so wait for the first auth state
 // before deciding whether this is a signed-out visitor or a slow page load.
+/**
+ * A pending salon's owner is a real owner — they reach the panel and can set
+ * up their menu and hours while they wait. What they must not see is a Today
+ * screen with nothing on it and no explanation, which is indistinguishable
+ * from the product being broken.
+ */
+async function renderPendingBanner() {
+  try {
+    const { salon } = await api('/api/business/overview');
+    const existing = document.getElementById('pendingBanner');
+    if (existing) existing.remove();
+    if (salon.status === 'active') return;
+
+    const banner = el('div', 'banner');
+    banner.id = 'pendingBanner';
+    banner.textContent =
+      salon.status === 'pending'
+        ? 'Your salon is under review. Set up your services and timings now — customers will see it the moment it is approved.'
+        : salon.status === 'suspended'
+          ? 'This salon is suspended and is not taking bookings. Contact Hasino support.'
+          : 'This salon has been removed from Hasino and cannot take bookings.';
+    document.querySelector('.topbar').after(banner);
+  } catch { /* the panel itself will surface the error */ }
+}
+
+window.addEventListener('hashchange', renderPendingBanner);
+
 watchAuthState(async () => {
   const me = await initIdentity();
   if (!me) return renderNotAnOwner({ status: 401 });
   if (me.role !== 'business') return renderNotAnOwner({ status: 403 });
+  await renderPendingBanner();
   render();
 }).catch(() => renderNotAnOwner({ status: 401 }));
 </script>

@@ -288,11 +288,18 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
   details.append(totalRow);
   body.append(details);
 
+  // Whether there is a payment step at all is the server's answer, not a
+  // guess: /api/config reports it, and POST /api/bookings 503s when payments
+  // are off and unpaid bookings are not allowed either.
+  const payments = app.config?.razorpay?.enabled === true;
+
   body.append(
     el(
       'div',
       'note',
-      'Continuing holds this slot for you for a few minutes while you pay. Nothing is charged until you complete payment on the next screen.',
+      payments
+        ? 'Continuing holds this slot for you for a few minutes while you pay. Nothing is charged until you complete payment on the next screen.'
+        : 'Payment is not enabled on this deployment, so this booking is confirmed without charge. The salon is expecting you.',
     ),
   );
 
@@ -300,7 +307,7 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
   actions.style.justifyContent = 'flex-end';
   const cancelBtn = Button({ label: 'Cancel', onClick: () => close() });
   const confirmBtn = Button({
-    label: 'Continue to payment',
+    label: payments ? 'Continue to payment' : 'Confirm booking',
     variant: 'primary',
     onClick: async () => {
       if (!app.session) {
@@ -323,8 +330,9 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
         close();
 
         if (!booking.checkout) {
-          // A server with no Razorpay keys — development only; start() will not
-          // boot without them in production.
+          // Payments are off and ALLOW_UNPAID_BOOKINGS let this through. There
+          // is no Pay screen to send them to, and pretending otherwise is how
+          // a customer ends up believing they paid.
           app.navigate('#/bookings');
           return;
         }
@@ -333,10 +341,12 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
         const message =
           err instanceof ApiError && err.status === 409
             ? 'That slot was just taken — pick another time.'
-            : err.message;
+            : err instanceof ApiError && err.code === 'PAYMENTS_DISABLED'
+              ? 'This deployment cannot take bookings yet — payments are not set up.'
+              : err.message;
         body.append(el('div', 'out bad', message || 'Booking failed'));
         confirmBtn.disabled = false;
-        confirmBtn.textContent = 'Continue to payment';
+        confirmBtn.textContent = payments ? 'Continue to payment' : 'Confirm booking';
       }
     },
   });

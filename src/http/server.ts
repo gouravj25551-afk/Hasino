@@ -13,7 +13,7 @@ import { ForbiddenError, listCustomerBookings } from '../business/repo.ts';
 import { addFavorite, getBooking, getSalon, listFavorites, listSalons, removeFavorite } from '../salons/repo.ts';
 import { businessRoutes } from './routes-business.ts';
 import { adminRoutes } from './routes-admin.ts';
-import { AdminError } from '../admin/repo.ts';
+import { AdminError, applyForSalon } from '../admin/repo.ts';
 import {
   HttpError,
   json,
@@ -61,7 +61,17 @@ const IS_PROD = process.env['NODE_ENV'] === 'production';
 const TRUST_PROXY = process.env['TRUST_PROXY'] === 'true';
 
 const verifier = verifierFromEnv(DEV_AUTH);
-const payments = paymentsConfigFromEnv(DEV_AUTH);
+const payments = paymentsConfigFromEnv(CI_SMOKE);
+
+/**
+ * Create bookings without taking money, for local work on the booking path.
+ *
+ * Opt-in and named for what it does, rather than inferred from DEV_AUTH. With
+ * no keys and no flag, POST /api/bookings is a 503 — a server that silently
+ * hands out free chairs is worse than one that says it cannot take payment.
+ * start() refuses to boot with this in production.
+ */
+const ALLOW_UNPAID_BOOKINGS = process.env['ALLOW_UNPAID_BOOKINGS'] === 'true';
 const cache = new MemorySnapshotCache();
 const allowedOrigins = originsFromEnv();
 
@@ -111,6 +121,7 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'views/bookings.js',
   'views/profile.js',
   'views/login.js',
+  'views/apply.js',
 ]);
 
 const PAGES: Record<string, string> = {
@@ -359,6 +370,37 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     return json(res, 200, { paid: true, ...payments.client.pay(orderId, String(body['method'] ?? 'upi')) });
   }
 
+  // ---------- self-serve: list your salon ----------
+  // Creates rows for any signed-in user, so it shares the booking bucket's
+  // shape: keyed to the user, not the IP.
+  if (method === 'POST' && path === '/api/salons/apply') {
+    const applicant = await session(db, req);
+    limits.booking.check(`apply:${applicant.userId}`);
+    const body = await readJson(req);
+    const result = await applyForSalon(
+      db,
+      {
+        userId: applicant.userId,
+        // From the session, never the body — Firebase already verified it.
+        phone: applicant.phone,
+        name: applicant.name,
+        email: applicant.email,
+      },
+      {
+        name: String(body['name'] ?? ''),
+        address: String(body['address'] ?? ''),
+        city: String(body['city'] ?? ''),
+        area: typeof body['area'] === 'string' ? body['area'] : null,
+        lat: Number(body['lat']),
+        lng: Number(body['lng']),
+        ...(typeof body['timezone'] === 'string' ? { timezone: body['timezone'] } : {}),
+        phone: typeof body['phone'] === 'string' ? body['phone'] : null,
+        email: typeof body['email'] === 'string' ? body['email'] : null,
+      },
+    );
+    return json(res, 201, { ...result, status: 'pending' });
+  }
+
   // ---------- admin panel ----------
   // Authenticated and role-checked before the body is parsed, the same
   // ordering POST /api/bookings uses: an unauthorised request should not get
@@ -534,6 +576,15 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     const serviceIds = stringArray(body['serviceIds'], 'serviceIds');
     const startAt = isoDate(body['startAt']);
 
+    if (!payments.enabled && !ALLOW_UNPAID_BOOKINGS) {
+      throw new HttpError(
+        503,
+        'Payments are not configured on this server, so bookings cannot be taken. ' +
+          'Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET, or ALLOW_UNPAID_BOOKINGS=true for local use.',
+        'PAYMENTS_DISABLED',
+      );
+    }
+
     const out = await withIdempotency<BookingResponse>(db, req, customer.userId, 'POST /api/bookings', body, async () => {
       const booking = await createBooking(
         db,
@@ -542,8 +593,9 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       );
 
       if (!payments.enabled) {
-        // Only reachable in dev with no Razorpay keys. start() refuses to boot
-        // in production without them, so this cannot silently ship.
+        // Reachable only with ALLOW_UNPAID_BOOKINGS — the guard above this
+        // block 503s otherwise, and start() refuses to boot with the flag in
+        // production, so this cannot silently ship.
         return {
           status: 201,
           body: {
@@ -664,7 +716,9 @@ function respondToError(res: ServerResponse, err: unknown): void {
     res.setHeader('retry-after', String(err.retryAfterSec));
     return json(res, 429, { error: err.message, code: 'RATE_LIMITED' });
   }
-  if (err instanceof HttpError) return json(res, err.status, { error: err.message });
+  if (err instanceof HttpError) {
+    return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+  }
   if (err instanceof AuthError) return json(res, err.status, { error: err.message, code: err.code });
   if (err instanceof ForbiddenError) return json(res, 403, { error: err.message, code: err.code });
   if (err instanceof AdminError) return json(res, err.status, { error: err.message, code: err.code });
@@ -751,6 +805,12 @@ export function start(): void {
       fatal.push(
         'DEV_AUTH=true trusts an unverified x-dev-user header. Anyone could book, ' +
           'cancel, or edit any salon as anyone else.',
+      );
+    }
+    if (ALLOW_UNPAID_BOOKINGS) {
+      fatal.push(
+        'ALLOW_UNPAID_BOOKINGS=true creates bookings that hold a real chair without taking ' +
+          'money. It exists for local work on the booking path and must never be set in production.',
       );
     }
     if (CI_SMOKE) {
