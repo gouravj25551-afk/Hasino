@@ -3,6 +3,70 @@ import { AuthError, type TokenVerifier, type VerifiedToken } from './verifier.ts
 
 type Queryable = Pool | PoolClient;
 
+/**
+ * ADMIN_EMAILS is the single source of truth for who is an admin.
+ *
+ * The first admin cannot be created by an admin, and hand-editing a role in the
+ * database is the thing that gets done once, forgotten, and later exploited.
+ * So the env var decides and `users.role` is only a cache of it, re-derived on
+ * every sign-in in both directions — see applyAdminPolicy.
+ *
+ * Read at call time rather than module load so tests can set it per case and a
+ * deploy can change it without a code change.
+ */
+export function adminEmails(): Set<string> {
+  return new Set(
+    (process.env['ADMIN_EMAILS'] ?? '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+/**
+ * Whether this token proves its holder is an admin.
+ *
+ * Requires a *verified* email. An unverified `email` claim is an
+ * unauthenticated string — on a provider that allows unverified sign-ups it is
+ * chosen by the person signing up, which would make ADMIN_EMAILS a list of
+ * addresses anyone may claim.
+ */
+function tokenIsAdmin(token: VerifiedToken): boolean {
+  if (!token.email || token.emailVerified !== true) return false;
+  return adminEmails().has(token.email.trim().toLowerCase());
+}
+
+/**
+ * Re-derive the admin role from ADMIN_EMAILS on every sign-in.
+ *
+ * Fail-closed in both directions:
+ *  - verified email in the list        -> promote to admin
+ *  - stored admin without that proof   -> demote to customer
+ *
+ * Deliberately scoped to `admin` alone. 'business' is assigned by an admin
+ * onboarding a salon, and a salon owner's sign-in carries no ADMIN_EMAILS
+ * proof — demoting them here would silently destroy the owner-onboarding
+ * mechanism the moment they first log in.
+ */
+async function applyAdminPolicy(
+  db: Queryable,
+  userId: string,
+  storedRole: Session['role'],
+  token: VerifiedToken,
+): Promise<Session['role']> {
+  const shouldBeAdmin = tokenIsAdmin(token);
+
+  if (shouldBeAdmin && storedRole !== 'admin') {
+    await db.query(`UPDATE users SET role = 'admin', updated_at = now() WHERE id = $1`, [userId]);
+    return 'admin';
+  }
+  if (!shouldBeAdmin && storedRole === 'admin') {
+    await db.query(`UPDATE users SET role = 'customer', updated_at = now() WHERE id = $1`, [userId]);
+    return 'customer';
+  }
+  return storedRole;
+}
+
 export interface Session {
   userId: string;
   role: 'customer' | 'business' | 'admin';
@@ -65,7 +129,7 @@ export async function resolveSession(
     }
     return {
       userId: found.id,
-      role: found.role,
+      role: await applyAdminPolicy(db, found.id, found.role, token),
       phone: found.phone,
       name: token.name ?? found.name,
       email: token.email ?? found.email,
@@ -120,7 +184,10 @@ export async function resolveSession(
 
   return {
     userId: row.id,
-    role: row.role,
+    // The INSERT above always writes 'customer'; ON CONFLICT deliberately does
+    // not touch role, so an admin-created 'business' row survives its owner's
+    // first Google sign-in. Admin is then re-derived from ADMIN_EMAILS.
+    role: await applyAdminPolicy(db, row.id, row.role, token),
     phone: row.phone,
     name: row.name,
     email: row.email,
@@ -145,10 +212,18 @@ export async function authenticate(
   return resolveSession(db, await verifier.verify(bearer(authorization)));
 }
 
+/**
+ * Roles do not nest. Admin is its own namespace, not a superset of business.
+ *
+ * Treating admin as business was a trap: /api/business/* resolves the caller's
+ * salon through salonForOwner(), which looks for a salon the *admin* owns,
+ * finds none, and throws ForbiddenError. The admin appeared to be authorised
+ * and then failed anyway, one layer deeper and with a misleading error. An
+ * admin acting on a salon does it through /api/admin/salons/:id, where the
+ * salon is named explicitly.
+ */
 export function requireRole(session: Session, role: Session['role']): void {
-  // admin is a superset of business for panel access; customers never are.
-  const ok = session.role === role || (role === 'business' && session.role === 'admin');
-  if (!ok) {
+  if (session.role !== role) {
     throw new AuthError(403, 'WRONG_ROLE', `This endpoint requires the ${role} role`);
   }
 }

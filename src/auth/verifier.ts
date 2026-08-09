@@ -11,6 +11,13 @@ export interface VerifiedToken {
   uid: string;
   phone?: string | undefined;
   email?: string | undefined;
+  /**
+   * Whether the provider vouches for the address, not merely that a value is
+   * present. Admin elevation keys off ADMIN_EMAILS, so an unverified `email`
+   * claim is an unauthenticated string that must never grant a role — see
+   * resolveSession.
+   */
+  emailVerified?: boolean | undefined;
   name?: string | undefined;
   picture?: string | undefined;
 }
@@ -69,6 +76,7 @@ export class FirebaseVerifier implements TokenVerifier {
       uid: decoded.uid,
       phone: decoded.phone_number,
       email: decoded.email,
+      emailVerified: decoded.email_verified === true,
       name: typeof decoded['name'] === 'string' ? decoded['name'] : undefined,
       picture: typeof decoded['picture'] === 'string' ? decoded['picture'] : undefined,
     };
@@ -76,14 +84,23 @@ export class FirebaseVerifier implements TokenVerifier {
 }
 
 /**
- * Local development only. Trusts a header naming the user directly.
- * server.ts refuses to boot with this in production.
+ * CI only. Trusts a header naming the user directly. server.ts refuses to boot
+ * with this in production, and ignores it unless CI_SMOKE is also set.
+ *
+ * A token containing '@' is treated as a verified email address for that
+ * identity. Admin elevation requires a verified email in ADMIN_EMAILS, and the
+ * demotion rule is fail-closed — an admin row whose sign-in presents no such
+ * email is demoted. Without this, a CI fixture admin would be demoted by its
+ * own first request and every /api/admin/* smoke check would 403.
  */
 export class DevVerifier implements TokenVerifier {
   readonly kind = 'dev';
   async verify(idToken: string): Promise<VerifiedToken> {
+    const looksLikeEmail = idToken.includes('@');
     return {
       uid: 'dev:' + idToken,
+      email: looksLikeEmail ? idToken : undefined,
+      emailVerified: looksLikeEmail,
     };
   }
 }

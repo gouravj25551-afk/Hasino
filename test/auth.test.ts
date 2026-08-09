@@ -44,11 +44,21 @@ describe('requireRole', () => {
   it('keeps customers out of the panel', () => {
     assert.throws(() => requireRole(s('customer'), 'business'), /business role/);
   });
-  it('treats admin as a superset of business', () => {
-    assert.doesNotThrow(() => requireRole(s('admin'), 'business'));
+  // Roles do not nest. Admin used to pass as business, which only moved the
+  // failure one layer down: /api/business/* resolves the caller's salon via
+  // salonForOwner(), an admin owns none, and the request died with a
+  // misleading ForbiddenError instead of an honest 403.
+  it('does not treat admin as a superset of business', () => {
+    assert.throws(() => requireRole(s('admin'), 'business'), AuthError);
   });
   it('does not let business act as admin', () => {
     assert.throws(() => requireRole(s('business'), 'admin'), AuthError);
+  });
+  it('does not let a customer act as admin', () => {
+    assert.throws(() => requireRole(s('customer'), 'admin'), AuthError);
+  });
+  it('lets an admin into an admin route', () => {
+    assert.doesNotThrow(() => requireRole(s('admin'), 'admin'));
   });
 });
 
