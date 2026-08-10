@@ -10,8 +10,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { readFileSync } from 'node:fs';
 
+import { clerkFrontendApiHost, contentSecurityPolicy } from '../src/http/middleware.ts';
+
 const server = readFileSync(new URL('../src/http/server.ts', import.meta.url), 'utf8');
-const middleware = readFileSync(new URL('../src/http/middleware.ts', import.meta.url), 'utf8');
 const auth = readFileSync(new URL('../src/http/public/lib/auth.js', import.meta.url), 'utf8');
 
 describe('OAuth callback route', () => {
@@ -149,8 +150,14 @@ describe('no native browser dialogs', () => {
 });
 
 describe('CSP', () => {
-  const scriptSrc = /"script-src ([^"]+)"/.exec(middleware)?.[1] ?? '';
-  const frameSrc = /"frame-src ([^"]+)"/.exec(middleware)?.[1] ?? '';
+  const pkFor = (host: string) => 'pk_live_' + Buffer.from(host + '$').toString('base64');
+  const directive = (csp: string, name: string) =>
+    csp.split('; ').find((d) => d.startsWith(name + ' ')) ?? '';
+
+  const csp = contentSecurityPolicy(pkFor('clerk.hasino.in'));
+  const scriptSrc = directive(csp, 'script-src');
+  const frameSrc = directive(csp, 'frame-src');
+  const connectSrc = directive(csp, 'connect-src');
 
   it('allows Clerk bot protection as a script, not just as a frame', () => {
     // Turnstile is a script that then creates the frame. Trusting only the
@@ -165,5 +172,45 @@ describe('CSP', () => {
 
   it('still refuses eval', () => {
     assert.ok(!scriptSrc.includes('unsafe-eval'));
+  });
+
+  it('carries no wildcard a browser will discard', () => {
+    // A wildcard is only legal as the leftmost label. 'https://clerk.*' is
+    // dropped whole, with nothing but a console warning to say so.
+    for (const source of csp.split(/[; ]/)) {
+      if (!source.startsWith('https://')) continue;
+      assert.ok(
+        !/\*/.test(source.slice('https://'.length).split('.').slice(1).join('.')),
+        `${source} puts a wildcard somewhere a browser will reject`,
+      );
+    }
+  });
+
+  it('trusts the exact Frontend API host of a production instance', () => {
+    // The one that was actually broken: production serves Clerk from
+    // clerk.<yourdomain>, which no other source in the policy matches.
+    assert.ok(scriptSrc.includes('https://clerk.hasino.in'));
+    assert.ok(connectSrc.includes('https://clerk.hasino.in'));
+    assert.ok(frameSrc.includes('https://clerk.hasino.in'));
+  });
+
+  it('reads that host out of the publishable key', () => {
+    assert.equal(clerkFrontendApiHost(pkFor('clerk.hasino.in')), 'clerk.hasino.in');
+    assert.equal(clerkFrontendApiHost('pk_test_' + Buffer.from('abc.clerk.accounts.dev$').toString('base64')),
+      'abc.clerk.accounts.dev');
+  });
+
+  it('refuses a key that would widen the policy', () => {
+    // The host goes into the policy verbatim, so a key encoding a space and a
+    // second origin would otherwise add one.
+    assert.equal(clerkFrontendApiHost('pk_live_' + Buffer.from('evil.com https://attacker.test$').toString('base64')), null);
+    assert.equal(clerkFrontendApiHost('pk_live_@@@'), null);
+    assert.equal(clerkFrontendApiHost(undefined), null);
+  });
+
+  it('omits the Clerk host entirely when there is no key', () => {
+    const bare = contentSecurityPolicy(undefined);
+    assert.ok(!bare.includes('undefined'));
+    assert.ok(!bare.includes('https://null'));
   });
 });
