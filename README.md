@@ -3,7 +3,7 @@
 Salon booking marketplace. The availability engine, booking create, Razorpay
 payments, the money ledger, and two web surfaces over them.
 
-Firebase Auth (Google sign-in with the one-time phone-link step) and Razorpay
+Clerk (Google sign-in, one step, no phone number) and Razorpay
 are both implemented. A booking now holds a chair while the customer pays and
 only becomes real once the money is verified — see
 [the payment hold](#the-payment-hold) for why that ordering matters.
@@ -14,22 +14,37 @@ only becomes real once the money is verified — see
 npm run dev
 ```
 
-Creates the database, applies the schema and migrations, seeds demo data, and
-starts on :3000 with file watching. It checks Node and Postgres first and tells
-you what to install if either is missing. The long way, if you prefer it:
+Creates the database, applies the schema and migrations, loads the service
+catalogue, and starts on :3000 with file watching. It checks Node, Postgres and
+your Clerk config first, and stops with the exact console steps if anything
+is missing.
+
+**The database starts empty of people and salons.** There is no demo data and
+no identity dropdown: local development signs in with Google exactly the way
+production does, so a sign-in bug is found here rather than on the first
+deploy. You need a Clerk application and a `.env` — `npm run dev` prints the
+steps. Set `ADMIN_EMAILS` to your own Google address and you land on `/admin`,
+where you onboard the first salon.
+
+The long way, if you prefer it:
 
 ```bash
 npm install
 createdb hasino_dev && psql -v ON_ERROR_STOP=1 -d hasino_dev -f db/schema.sql
-DATABASE_URL=postgres://localhost:5432/hasino_dev npm run db:seed
-DATABASE_URL=postgres://localhost:5432/hasino_dev DEV_AUTH=true npm start
+DATABASE_URL=postgres://localhost:5432/hasino_dev npm run db:seed   # catalogue only
+DATABASE_URL=postgres://localhost:5432/hasino_dev npm start
 ```
 
-With no Razorpay keys, `DEV_AUTH=true` runs against an in-process stub that
-signs its payments with the same HMAC Razorpay uses — so the whole hold → pay →
-confirm path works locally, signature check included. `POST /api/dev/pay`
-stands in for the customer tapping Pay. In production the server refuses to
-boot without real keys.
+`db:seed` loads the twelve-service global catalogue and nothing else. It
+creates no users and no salons, truncates nothing, and is safe to re-run.
+
+Payments are off unless `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` are set.
+With them absent, `POST /api/bookings` returns **503 `PAYMENTS_DISABLED`**
+unless you also set `ALLOW_UNPAID_BOOKINGS=true`, which creates a `booked` row
+that holds a real chair with no money attached and says so in the response and
+in the UI. A server that silently hands out free chairs is worse than one that
+admits it cannot take payment. Production refuses to boot with that flag, or
+without real keys.
 
 `db/schema.sql` is the whole schema, so a fresh database needs nothing else.
 For a database that already has data:
@@ -43,17 +58,46 @@ Each migration is idempotent, runs in a transaction, and is recorded in
 `schema_migrations` with a checksum — editing one that has already run is
 refused rather than silently producing two different schemas.
 
-Two surfaces:
+Three surfaces:
 
 | | |
 |---|---|
 | `localhost:3000` | **Customer** — browse, pick services, book, my bookings |
-| `localhost:3000/business` | **Salon panel** — services, timings, today's bookings, insights |
+| `localhost:3000/business` | **Salon owner** — one salon's services, timings, today, money |
+| `localhost:3000/admin` | **Hasino admin** — onboard salons, approve them, the catalogue |
 
-Both pages are served regardless of `DEV_AUTH` — production visitors sign in
-with real Google auth via Firebase. `DEV_AUTH=true` additionally exposes an
-`x-dev-user` header bypass and a dev identity picker in the top-right, so the
-local consoles work without a Firebase project.
+All three sign in with Google. Each page is served to anyone; every byte of
+data behind it is authorised server-side, so the panels never rely on a hidden
+nav link.
+
+**Who is an admin is `ADMIN_EMAILS`, and only `ADMIN_EMAILS`.** It is re-derived
+on every sign-in in both directions: a verified address in the list is promoted,
+a stored admin without that proof is demoted. The column is a cache of the env
+var, not a second source of truth — a sticky `admin` row that outlives its entry
+is exactly the thing that gets forgotten and then exploited. Elevation needs a
+*verified* email; an unverified claim is a string the person signing up chose.
+
+Roles do not nest. An admin cannot use `/api/business/*` and an owner cannot use
+`/api/admin/*`. An admin acts on a salon through `/api/admin/salons/:id`, where
+the salon is named explicitly.
+
+### How a salon gets onto Hasino
+
+No SQL, either way:
+
+1. **Admin onboards it** — `/admin` → Onboard. Creates the salon plus a `users`
+   row with `role='business'` and no `auth_provider_id`. The owner then signs in
+   with Google using the email address the admin recorded, and the row is
+   adopted with its role intact. `claimByEmail()` in `resolveSession` is the
+   whole mechanism — which is why owner email is required at onboarding, and
+   must be their actual Google address.
+2. **The salon applies** — a signed-in customer uses "List your salon". Lands as
+   `pending`, invisible to customers, and emails `ADMIN_EMAILS`. They can set up
+   their menu and hours while they wait.
+
+`DEV_AUTH` no longer works on a laptop. It requires `CI_SMOKE=true` alongside
+it and exists for the smoke harness, which has no browser to sign in with. Set
+alone it is ignored and the server says so.
 
 ```bash
 npm run smoke   # end-to-end checks against a running server, payments included
@@ -76,11 +120,11 @@ run anywhere.
 
 ## API
 
-Authenticated routes take `Authorization: Bearer <Firebase ID token>`. Browsing
-is public. Under `DEV_AUTH=true` an `x-dev-user` header naming a `firebase_uid`
-stands in, so the local consoles work without a Firebase project.
+Authenticated routes take `Authorization: Bearer <Clerk session token>`. Browsing
+is public. Under `DEV_AUTH=true` an `x-dev-user` header naming a `auth_provider_id`
+stands in, so the local consoles work without a Clerk application.
 
-`GET /api/config` serves the client Firebase config (apiKey, authDomain,
+`GET /api/config` serves the client Clerk config (apiKey, authDomain,
 projectId, appId) from server env — not secret, but not hardcoded either.
 
 Customer:
@@ -106,6 +150,33 @@ Unauthenticated, and not for humans:
 | `POST` | `/api/webhooks/razorpay` | signature-verified over the raw body, idempotent on the event id |
 | `GET` | `/healthz` | liveness — no database call, on purpose |
 | `GET` | `/readyz` | readiness — checks Postgres |
+
+Self-serve:
+
+| | | |
+|---|---|---|
+| `POST` | `/api/salons/apply` | list your salon — lands `pending`, notifies `ADMIN_EMAILS` |
+
+Admin — `requireRole(s, 'admin')` on every route, checked before the body is
+parsed. The salon is named in the URL, unlike the owner panel:
+
+| | | |
+|---|---|---|
+| `GET` | `/api/admin/overview` | the inbox: pending, live, unset-up, GMV |
+| `GET` | `/api/admin/salons?status=&city=&q=` | every status, pending first |
+| `GET` | `/api/admin/cities` | for the filter |
+| `POST` | `/api/admin/salons` | onboard: salon + owner + 7 days of hours |
+| `GET/PUT` | `/api/admin/salons/:id` | detail: owner, menu, hours, ledger, history |
+| `POST` | `/api/admin/salons/:id/status` | the state machine, + `cancelFutureBookings` |
+| `GET/PUT/DELETE` | `/api/admin/salons/:id/{services,hours}[/:id]` | reuses the owner panel's writes |
+| `GET/POST/DELETE` | `/api/admin/services[/:id]` | the global catalogue |
+
+A salon's status machine: `pending → active | banned`, `active → suspended |
+banned`, `suspended → active | banned`, and **`banned` is terminal**. Anything
+else is a 409. Deactivating does not touch bookings already promised unless
+asked — `createBooking` refuses a non-active salon so no *new* ones follow, but
+suspending a salon with fourteen bookings tomorrow otherwise leaves fourteen
+customers turning up at a shop the platform switched off.
 
 Salon panel — every route resolves the salon from the signed-in owner, so a
 `salonId` is never accepted from the client:
@@ -152,14 +223,16 @@ src/notify/dispatch.ts        the worker that drains it
 src/notify/templates.ts       the six emails
 src/workers/runner.ts         three loops over Postgres, advisory-locked
 src/obs/logger.ts             structured logs, request ids, error reporter seam
-src/auth/verifier.ts          Firebase token verification (swappable)
+src/auth/verifier.ts          Clerk token verification (swappable)
 src/auth/session.ts           token -> users row, roles, provisioning
 src/booking/status.ts         §4 state machine + close-for-day
 src/salons/repo.ts            browse + detail, openNow, distance, favorites
+src/admin/repo.ts             onboarding, status machine, catalogue, apply
 src/business/repo.ts          the §6 panel's reads and writes
 src/http/server.ts            routing
 src/http/middleware.ts        security headers, CORS, rate limits, raw bodies
-src/http/routes-business.ts   the panel's endpoints
+src/http/routes-business.ts   the owner panel's endpoints
+src/http/routes-admin.ts      the operator's endpoints
 src/http/public/views/checkout.js  the payment screen
 src/http/public/brand.css     design tokens + component styles
 src/http/public/app.css       layout glue between views
@@ -167,7 +240,8 @@ src/http/public/index.html    customer shell — chrome, boot, route table
 src/http/public/lib/          api, auth, router, format, dom, payments
 src/http/public/components/   render-only pieces, no fetch
 src/http/public/views/        home, explore, salon, bookings, profile, login
-src/http/public/business.html salon panel (untouched, still one inline file)
+src/http/public/business.html salon owner panel (one inline file)
+src/http/public/admin.html    operator panel (one inline file)
 ```
 
 The customer app is vanilla ES modules loaded natively by the browser — no
@@ -235,7 +309,7 @@ refreshes name/email/avatar every time. `db/migrations/001_users_profile_fields.
 
 **3d. `salons.cover_url`, `salon_photos`, `favorites` (new).** The marketplace UI
 needs imagery and saved salons; the spec's schema has neither. Photos are
-seeded from `scripts/seed-demo.ts` only — a salon with none renders a branded
+seeded from `scripts/ci-fixture.ts` or entered by an admin — a salon with none renders a branded
 gradient placeholder rather than a borrowed stock image.
 `db/migrations/002_marketplace.sql`.
 

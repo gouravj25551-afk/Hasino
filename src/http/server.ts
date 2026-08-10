@@ -12,6 +12,8 @@ import { BookingError, SlotUnavailableError } from '../booking/errors.ts';
 import { ForbiddenError, listCustomerBookings } from '../business/repo.ts';
 import { addFavorite, getBooking, getSalon, listFavorites, listSalons, removeFavorite } from '../salons/repo.ts';
 import { businessRoutes } from './routes-business.ts';
+import { adminRoutes } from './routes-admin.ts';
+import { AdminError, applyForSalon } from '../admin/repo.ts';
 import {
   HttpError,
   json,
@@ -40,16 +42,36 @@ import { startWorkers, type RunningWorkers } from '../workers/runner.ts';
 import { annotate, log, newRequestId, reportError, withRequestContext } from '../obs/logger.ts';
 
 /**
- * DEV_AUTH=true swaps Firebase token verification for a header naming the
- * user directly — anyone can act as anyone. The server refuses to start with
- * it in production; see start().
+ * DEV_AUTH swaps real token verification for a header naming the user
+ * directly — anyone can act as anyone.
+ *
+ * It now requires CI_SMOKE as well, because "local development" and "a smoke
+ * test harness" are different needs that were sharing one switch. Local
+ * development uses real Google sign-in like production does; only the CI smoke
+ * run, which has no browser to sign in with, gets the bypass. A developer who
+ * sets DEV_AUTH out of habit gets a working server with auth ON and a warning
+ * saying why, rather than a server that silently trusts a header.
+ *
+ * start() refuses to boot with either flag in production.
  */
-const DEV_AUTH = process.env['DEV_AUTH'] === 'true';
+const DEV_AUTH_REQUESTED = process.env['DEV_AUTH'] === 'true';
+const CI_SMOKE = process.env['CI_SMOKE'] === 'true';
+const DEV_AUTH = DEV_AUTH_REQUESTED && CI_SMOKE;
 const IS_PROD = process.env['NODE_ENV'] === 'production';
 const TRUST_PROXY = process.env['TRUST_PROXY'] === 'true';
 
 const verifier = verifierFromEnv(DEV_AUTH);
-const payments = paymentsConfigFromEnv(DEV_AUTH);
+const payments = paymentsConfigFromEnv(CI_SMOKE);
+
+/**
+ * Create bookings without taking money, for local work on the booking path.
+ *
+ * Opt-in and named for what it does, rather than inferred from DEV_AUTH. With
+ * no keys and no flag, POST /api/bookings is a 503 — a server that silently
+ * hands out free chairs is worse than one that says it cannot take payment.
+ * start() refuses to boot with this in production.
+ */
+const ALLOW_UNPAID_BOOKINGS = process.env['ALLOW_UNPAID_BOOKINGS'] === 'true';
 const cache = new MemorySnapshotCache();
 const allowedOrigins = originsFromEnv();
 
@@ -68,10 +90,17 @@ const limits = {
 const assets = loadAssets(new URL('./public/', import.meta.url), [
   'index.html',
   'business.html',
+  'admin.html',
   'brand.css',
   'app.css',
+  // Page shells. External rather than inline so the CSP can stay
+  // `script-src 'self'` with no 'unsafe-inline'.
+  'app.js',
+  'business.js',
+  'admin.js',
   'lib/api.js',
   'lib/auth.js',
+  'lib/dialog.js',
   'lib/dom.js',
   'lib/format.js',
   'lib/payments.js',
@@ -98,11 +127,23 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'views/bookings.js',
   'views/profile.js',
   'views/login.js',
+  'views/apply.js',
 ]);
 
 const PAGES: Record<string, string> = {
   '/': 'index.html',
   '/business': 'business.html',
+  // Public shell, like /business. Serving HTML to anyone is fine; every byte
+  // of data behind it is authorised server-side, and the panel must never
+  // rely on a hidden nav link for that.
+  '/admin': 'admin.html',
+  // Where Clerk returns the browser after Google. It has to be a real path
+  // rather than a hash route: Clerk appends its callback parameters as a
+  // query string, and on a '/#/login' target they would land inside the
+  // fragment, where location.search cannot see them and the sign-in can
+  // never be completed. Serves the app shell, which finishes the handshake
+  // and then navigates on — see app.js and lib/auth.js.
+  '/sso-callback': 'index.html',
 };
 
 function requireDevAuth(): void {
@@ -112,9 +153,9 @@ function requireDevAuth(): void {
 /**
  * The single authentication entry point.
  *
- * Production: Firebase ID token in `Authorization: Bearer <token>`.
- * DEV_AUTH:   an `x-dev-user` header naming a users.firebase_uid, so the local
- *             console can switch identity without a Firebase project.
+ * Production: a Clerk session token in `Authorization: Bearer <token>`.
+ * DEV_AUTH:   an `x-dev-user` header naming a users.auth_provider_id, so the
+ *             smoke harness can act as anyone without a browser.
  */
 async function session(db: Pool, req: IncomingMessage): Promise<Session> {
   if (DEV_AUTH) {
@@ -277,15 +318,13 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     return void res.end();
   }
 
-  // The client Firebase config is not secret, but it's still environment-
-  // specific — served from env so it's not hardcoded into a checked-in file.
+  // Clerk's publishable key is not secret — it ships to every browser by
+  // design — but it is environment-specific, so it comes from env rather than
+  // being hardcoded into a checked-in file. CLERK_SECRET_KEY is never served.
   if (read && path === '/api/config') {
     return json(res, 200, {
-      firebase: {
-        apiKey: process.env['FIREBASE_WEB_API_KEY'] ?? null,
-        authDomain: process.env['FIREBASE_AUTH_DOMAIN'] ?? null,
-        projectId: process.env['FIREBASE_PROJECT_ID'] ?? null,
-        appId: process.env['FIREBASE_APP_ID'] ?? null,
+      clerk: {
+        publishableKey: process.env['CLERK_PUBLISHABLE_KEY'] ?? null,
       },
       // The public key id only. The secret signs, and never leaves the server.
       razorpay: { keyId: payments.enabled ? payments.keyId : null, enabled: payments.enabled },
@@ -297,18 +336,18 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
   // There is no login, so the panels need a way to pick who they are acting as.
   if (method === 'GET' && path === '/api/dev/identities') {
     requireDevAuth();
-    // devToken is what x-dev-user expects: the part of firebase_uid after "dev:".
+    // devToken is what x-dev-user expects: the part of auth_provider_id after "dev:".
     const [customers, owners] = await Promise.all([
       db.query(
-        `SELECT id, name, phone, replace(firebase_uid, 'dev:', '') AS dev_token
-           FROM users WHERE role = 'customer' AND firebase_uid LIKE 'dev:%'
+        `SELECT id, name, phone, replace(auth_provider_id, 'dev:', '') AS dev_token
+           FROM users WHERE role = 'customer' AND auth_provider_id LIKE 'dev:%'
           ORDER BY created_at LIMIT 20`,
       ),
       db.query(
         `SELECT u.id, u.name, s.name AS salon_name,
-                replace(u.firebase_uid, 'dev:', '') AS dev_token
+                replace(u.auth_provider_id, 'dev:', '') AS dev_token
            FROM users u JOIN salons s ON s.owner_id = u.id
-          WHERE u.role = 'business' AND u.firebase_uid LIKE 'dev:%'
+          WHERE u.role = 'business' AND u.auth_provider_id LIKE 'dev:%'
           ORDER BY s.name`,
       ),
     ]);
@@ -340,6 +379,49 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       return json(res, 200, { paid: false, paymentId: failed.id, error: failed.error_code });
     }
     return json(res, 200, { paid: true, ...payments.client.pay(orderId, String(body['method'] ?? 'upi')) });
+  }
+
+  // ---------- self-serve: list your salon ----------
+  // Creates rows for any signed-in user, so it shares the booking bucket's
+  // shape: keyed to the user, not the IP.
+  if (method === 'POST' && path === '/api/salons/apply') {
+    const applicant = await session(db, req);
+    limits.booking.check(`apply:${applicant.userId}`);
+    const body = await readJson(req);
+    const result = await applyForSalon(
+      db,
+      {
+        userId: applicant.userId,
+        // From the session, never the body — the provider already verified it.
+        phone: applicant.phone,
+        name: applicant.name,
+        email: applicant.email,
+      },
+      {
+        name: String(body['name'] ?? ''),
+        address: String(body['address'] ?? ''),
+        city: String(body['city'] ?? ''),
+        area: typeof body['area'] === 'string' ? body['area'] : null,
+        lat: Number(body['lat']),
+        lng: Number(body['lng']),
+        ...(typeof body['timezone'] === 'string' ? { timezone: body['timezone'] } : {}),
+        phone: typeof body['phone'] === 'string' ? body['phone'] : null,
+        email: typeof body['email'] === 'string' ? body['email'] : null,
+      },
+    );
+    return json(res, 201, { ...result, status: 'pending' });
+  }
+
+  // ---------- admin panel ----------
+  // Authenticated and role-checked before the body is parsed, the same
+  // ordering POST /api/bookings uses: an unauthorised request should not get
+  // 64KB of parsing done on its behalf.
+  if (seg[0] === 'api' && seg[1] === 'admin') {
+    const s = await session(db, req);
+    requireRole(s, 'admin');
+    const handled = await adminRoutes(db, req, res, { seg, method, url, adminUserId: s.userId, cache });
+    if (handled) return;
+    throw new HttpError(404, `No route for ${method} ${path}`);
   }
 
   // ---------- business panel ----------
@@ -505,6 +587,15 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     const serviceIds = stringArray(body['serviceIds'], 'serviceIds');
     const startAt = isoDate(body['startAt']);
 
+    if (!payments.enabled && !ALLOW_UNPAID_BOOKINGS) {
+      throw new HttpError(
+        503,
+        'Payments are not configured on this server, so bookings cannot be taken. ' +
+          'Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET, or ALLOW_UNPAID_BOOKINGS=true for local use.',
+        'PAYMENTS_DISABLED',
+      );
+    }
+
     const out = await withIdempotency<BookingResponse>(db, req, customer.userId, 'POST /api/bookings', body, async () => {
       const booking = await createBooking(
         db,
@@ -513,8 +604,9 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       );
 
       if (!payments.enabled) {
-        // Only reachable in dev with no Razorpay keys. start() refuses to boot
-        // in production without them, so this cannot silently ship.
+        // Reachable only with ALLOW_UNPAID_BOOKINGS — the guard above this
+        // block 503s otherwise, and start() refuses to boot with the flag in
+        // production, so this cannot silently ship.
         return {
           status: 201,
           body: {
@@ -635,9 +727,12 @@ function respondToError(res: ServerResponse, err: unknown): void {
     res.setHeader('retry-after', String(err.retryAfterSec));
     return json(res, 429, { error: err.message, code: 'RATE_LIMITED' });
   }
-  if (err instanceof HttpError) return json(res, err.status, { error: err.message });
+  if (err instanceof HttpError) {
+    return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+  }
   if (err instanceof AuthError) return json(res, err.status, { error: err.message, code: err.code });
   if (err instanceof ForbiddenError) return json(res, 403, { error: err.message, code: err.code });
+  if (err instanceof AdminError) return json(res, err.status, { error: err.message, code: err.code });
   if (err instanceof WebhookSignatureError) {
     // 400, not 401: Razorpay does not retry a 4xx, and a body we cannot verify
     // is one we never want again.
@@ -714,17 +809,38 @@ export function start(): void {
   if (IS_PROD) {
     const fatal: string[] = [];
 
-    if (DEV_AUTH) {
+    // Both flags, not just their conjunction. Either one set in production is
+    // a misconfiguration worth refusing on: DEV_AUTH means someone intended
+    // the bypass, and CI_SMOKE is the other half of the key.
+    if (DEV_AUTH_REQUESTED) {
       fatal.push(
         'DEV_AUTH=true trusts an unverified x-dev-user header. Anyone could book, ' +
           'cancel, or edit any salon as anyone else.',
       );
     }
-    // Fail at boot, not on the first customer's request.
-    if (!process.env['FIREBASE_SERVICE_ACCOUNT'] && !process.env['GOOGLE_APPLICATION_CREDENTIALS']) {
+    if (ALLOW_UNPAID_BOOKINGS) {
       fatal.push(
-        'No Firebase credentials. Set FIREBASE_SERVICE_ACCOUNT (inline JSON) or ' +
-          'GOOGLE_APPLICATION_CREDENTIALS (path).',
+        'ALLOW_UNPAID_BOOKINGS=true creates bookings that hold a real chair without taking ' +
+          'money. It exists for local work on the booking path and must never be set in production.',
+      );
+    }
+    if (CI_SMOKE) {
+      fatal.push(
+        'CI_SMOKE=true enables the DEV_AUTH bypass and the /api/dev/* routes. ' +
+          'It exists for the smoke test harness and must never be set in production.',
+      );
+    }
+    // Fail at boot, not on the first customer's request.
+    if (!process.env['CLERK_SECRET_KEY']) {
+      fatal.push(
+        'No CLERK_SECRET_KEY. Without it no session token can be verified and every ' +
+          'authenticated request would fail at runtime instead of at boot.',
+      );
+    }
+    if (!process.env['CLERK_PUBLISHABLE_KEY']) {
+      fatal.push(
+        'No CLERK_PUBLISHABLE_KEY. The browser reads it from GET /api/config; without it ' +
+          'the pages load but nobody can sign in.',
       );
     }
     if (!payments.enabled) {
@@ -773,7 +889,17 @@ export function start(): void {
     });
     console.log(`hasino  →  http://localhost:${port}          (customer)`);
     console.log(`        →  http://localhost:${port}/business (salon panel)`);
-    if (DEV_AUTH) console.warn('DEV_AUTH is on — authentication is bypassed. Local use only.');
+    if (DEV_AUTH) {
+      log.warn('DEV_AUTH is on — authentication is bypassed. CI only.');
+    } else if (DEV_AUTH_REQUESTED) {
+      // Ignored, loudly. Silently honouring it would be a server that trusts a
+      // header; silently dropping it would look like the flag was broken.
+      log.warn(
+        'DEV_AUTH=true was ignored: it now also requires CI_SMOKE=true, which exists ' +
+          'for the smoke-test harness. Local development signs in with real Google auth — ' +
+          'set CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in .env. Authentication is ON.',
+      );
+    }
     if (!payments.enabled) console.warn('Razorpay is not configured — bookings will be unpaid.');
   });
 

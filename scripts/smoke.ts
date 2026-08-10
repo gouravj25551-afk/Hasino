@@ -27,7 +27,16 @@ async function call(
 }
 
 const ids = (await call('/api/dev/identities')).body;
-const owner = ids.owners.find((o: any) => o.salon_name === 'Sharma Hair Studio');
+// Positional, not by name. Fixtures come from scripts/ci-fixture.ts and the
+// product must contain no demo salon names to pin against.
+if (!ids.owners || ids.owners.length < 2 || !ids.customers?.length) {
+  console.error(
+    'Not enough fixtures. Run:\n' +
+      '  node scripts/seed-catalog.ts && CI_SMOKE=true node scripts/ci-fixture.ts',
+  );
+  process.exit(1);
+}
+const owner = ids.owners[0];
 const customer = ids.customers[0];
 const asOwner = { 'x-dev-user': owner.dev_token };
 const asCustomer = { 'x-dev-user': customer.dev_token };
@@ -206,7 +215,7 @@ for (const [action, expect] of [['verify', 'verified'], ['start', 'in_progress']
 
 // ---------- ownership ----------
 console.log('\nownership');
-const otherOwner = ids.owners.find((o: any) => o.salon_name !== 'Sharma Hair Studio');
+const otherOwner = ids.owners.find((o: any) => o.dev_token !== owner.dev_token);
 const cross = await call(`/api/business/bookings/${bookingId}/cancel`, {
   method: 'POST', as: { 'x-dev-user': otherOwner.dev_token },
 });

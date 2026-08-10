@@ -1,8 +1,5 @@
 import { el } from '../lib/dom.js';
-import { api, ApiError } from '../lib/api.js';
-import { confirmPhoneLinkOtp, sendPhoneLinkOtp, signInWithGoogle } from '../lib/auth.js';
-import { Button } from '../components/Button.js';
-import { Input } from '../components/Input.js';
+import { awaitClerk, currentUser, signInWithGoogle } from '../lib/auth.js';
 
 function card(...children) {
   const box = el('div', 'panel');
@@ -31,47 +28,60 @@ const GOOGLE_G = `
     <path fill="#fff" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
   </svg>`;
 
-export function renderLogin(container, app) {
+/**
+ * Sign-in is one step and one button.
+ *
+ * Google supplies the whole identity, so a first sign-in creates the account
+ * outright — there is nothing further to collect. The only branch left is
+ * whether the visitor is already signed in, and someone who is must never be
+ * shown a sign-in page: that was the shape of the original loop.
+ *
+ * awaitClerk() before reading currentUser() is what makes that check
+ * meaningful. Clerk restores its session asynchronously, and reading the user
+ * before the restore finishes reports "signed out" for everybody.
+ */
+export async function renderLogin(container, app) {
   container.innerHTML = '';
 
-  if (app.devIdentities) {
-    container.append(
-      card(
-        logo(),
-        el('h1', null, 'DEV_AUTH is on'),
-        el('p', 'sub', 'Use the identity switcher in the top bar instead of signing in with Google.'),
-      ),
-    );
-    return;
+  const ssoError = sessionStorage.getItem('ssoError');
+  sessionStorage.removeItem('ssoError');
+
+  if (await awaitClerk().then(() => currentUser()).catch(() => null)) {
+    try {
+      await app.refreshSession();
+      app.navigate('#/home');
+      return;
+    } catch {
+      // A rejected or expired token genuinely does mean "sign in again",
+      // so fall through to the button.
+    }
   }
 
-  renderGoogleStep(container, app);
+  renderGoogleStep(container, app, ssoError);
 }
 
-function renderGoogleStep(container, app) {
+function renderGoogleStep(container, app, ssoError) {
   container.innerHTML = '';
 
   const status = el('div', 'note');
   status.style.marginTop = '18px';
-  status.style.display = 'none';
+  status.style.display = ssoError ? 'block' : 'none';
+  if (ssoError) status.textContent = ssoError;
 
   const googleBtn = el('button', 'btn primary');
   googleBtn.type = 'button';
   googleBtn.style.cssText = 'width:100%; padding:12px 20px; font-size:15px; border-radius:12px; display:flex; align-items:center; justify-content:center; gap:12px;';
   googleBtn.innerHTML = `${GOOGLE_G}<span>Continue with Google</span>`;
 
+  // Clerk's OAuth is a full-page redirect, so the only outcomes here are
+  // "the browser is leaving" and "it could not even start". What happens on
+  // the way back is decided at /sso-callback, not here.
   googleBtn.onclick = async () => {
     googleBtn.disabled = true;
     status.style.display = 'block';
-    status.textContent = 'Opening Google sign-in…';
+    status.textContent = 'Redirecting to Google…';
     try {
-      const result = await signInWithGoogle();
-      if (!result) {
-        status.textContent = 'Redirecting to Google…';
-        return; // page is about to navigate away for the redirect fallback
-      }
-      status.textContent = 'Signed in — setting up your account…';
-      await afterGoogleSignIn(container, app);
+      await signInWithGoogle();
     } catch (err) {
       status.textContent = err.message || 'Sign-in failed. Please try again.';
       googleBtn.disabled = false;
@@ -90,93 +100,6 @@ function renderGoogleStep(container, app) {
       Object.assign(el('div', 'note', '🔒 Single sign-on powered by Google.'), {
         style: 'margin-top:24px; text-align:left',
       }),
-    ),
-  );
-}
-
-async function afterGoogleSignIn(container, app) {
-  try {
-    app.session = await app.refreshSession();
-    app.navigate('#/home');
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 428) {
-      renderPhoneLink(container, app);
-      return;
-    }
-    throw err;
-  }
-}
-
-function renderPhoneLink(container, app) {
-  container.innerHTML = '';
-
-  const recaptchaHost = el('div');
-  recaptchaHost.id = 'recaptcha-container';
-
-  const phoneField = Input({ label: 'Phone number', type: 'tel', placeholder: '+91 98765 43210' });
-  const otpField = Input({ label: 'Enter the 6-digit code', type: 'text', placeholder: '123456' });
-  otpField.style.display = 'none';
-  const status = el('div', 'note');
-  status.style.marginTop = '14px';
-
-  let confirmation = null;
-
-  const sendBtn = Button({
-    label: 'Send code',
-    variant: 'primary',
-    onClick: async () => {
-      const phone = phoneField.input.value.trim();
-      if (!phone) return;
-      sendBtn.disabled = true;
-      status.textContent = 'Sending code…';
-      try {
-        confirmation = await sendPhoneLinkOtp(phone, 'recaptcha-container');
-        otpField.style.display = '';
-        confirmBtn.style.display = '';
-        sendBtn.style.display = 'none';
-        phoneField.input.disabled = true;
-        status.textContent = 'Code sent — enter it below.';
-      } catch (err) {
-        status.textContent = err.message || 'Could not send that code — check the number and try again.';
-        sendBtn.disabled = false;
-      }
-    },
-  });
-
-  const confirmBtn = Button({
-    label: 'Confirm',
-    variant: 'primary',
-    onClick: async () => {
-      confirmBtn.disabled = true;
-      status.textContent = 'Verifying…';
-      try {
-        await confirmPhoneLinkOtp(confirmation, otpField.input.value.trim());
-        app.session = await app.refreshSession();
-        app.navigate('#/home');
-      } catch (err) {
-        const isTaken = err.code === 'PHONE_TAKEN' || (err instanceof ApiError && err.status === 409);
-        status.textContent = isTaken
-          ? 'That phone number is already linked to another account.'
-          : err.message || 'That code did not verify — try again.';
-        confirmBtn.disabled = false;
-      }
-    },
-  });
-  confirmBtn.style.display = 'none';
-
-  container.append(
-    card(
-      logo(),
-      el('h1', null, 'Add your phone number'),
-      Object.assign(el('p', 'sub', 'Salons need a number to reach you about your booking. One-time step.'), {
-        style: 'margin-bottom:20px',
-      }),
-      phoneField,
-      sendBtn,
-      otpField,
-      confirmBtn,
-      status,
-      recaptchaHost,
     ),
   );
 }

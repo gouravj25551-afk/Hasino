@@ -15,9 +15,19 @@ const CSP = [
   "default-src 'self'",
   // Razorpay's checkout is a script from their CDN that injects an iframe.
   // There is no self-hosted build of it, and taking payments requires it.
-  "script-src 'self' https://checkout.razorpay.com https://*.razorpay.com https://www.gstatic.com https://apis.google.com",
-  "frame-src https://api.razorpay.com https://*.razorpay.com https://*.firebaseapp.com",
-  "connect-src 'self' https://*.razorpay.com https://lumberjack.razorpay.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://*.googleapis.com",
+  // clerk-js is loaded from jsDelivr because this app has no bundler, and
+  // Clerk itself injects a worker and frames from its own hosted domains.
+  // 'unsafe-eval' is deliberately NOT granted; clerk-js does not need it.
+  //
+  // challenges.cloudflare.com is Clerk's bot protection (Turnstile). It was
+  // already trusted in frame-src, but the widget is a *script* that then
+  // creates that frame — without it here the script is blocked, and the only
+  // symptom is that sign-up fails with captcha_invalid. Sign-in is unaffected,
+  // so this breaks new accounts exclusively.
+  "script-src 'self' https://checkout.razorpay.com https://*.razorpay.com https://cdn.jsdelivr.net https://*.clerk.accounts.dev https://clerk.* https://challenges.cloudflare.com",
+  "worker-src 'self' blob:",
+  "frame-src https://api.razorpay.com https://*.razorpay.com https://*.clerk.accounts.dev https://challenges.cloudflare.com",
+  "connect-src 'self' https://*.razorpay.com https://lumberjack.razorpay.com https://*.clerk.accounts.dev https://clerk.* https://api.clerk.com",
   // The customer app has no build step, so component styles are inline.
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https:",

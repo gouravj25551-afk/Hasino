@@ -12,10 +12,16 @@ CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 -- ---------- users ----------
 CREATE TABLE IF NOT EXISTS users (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  phone          text UNIQUE NOT NULL,
-  -- Firebase is the identity provider (spec §7: "auth only, data in Postgres").
-  -- This is the join between the token's subject and the row that owns bookings.
-  firebase_uid   text UNIQUE,
+  -- Optional: sign-in is Google, which carries no phone number. UNIQUE still
+  -- holds for rows that have one (Postgres treats NULLs as distinct), because
+  -- a present number identifies a salon owner an admin onboarded.
+  -- See db/migrations/006_users_phone_optional.sql.
+  phone          text UNIQUE,
+  -- The identity provider's subject claim (spec §7: "auth only, data in
+  -- Postgres"). This is the join between a verified token and the row that
+  -- owns bookings. Named for the role it plays, not for the provider — see
+  -- db/migrations/005_auth_provider_id.sql.
+  auth_provider_id text UNIQUE,
   name           text,
   email          text,
   avatar_url     text,       -- [DEVIATION 5] Google sign-in's `picture` claim
@@ -70,6 +76,22 @@ CREATE TABLE IF NOT EXISTS salons (
 
   strike_count     smallint NOT NULL DEFAULT 0,
   cover_url        text,                                    -- [DEVIATION 6]
+
+  -- [DEVIATION 10] operator columns.
+  --   lat/lng sort by distance but cannot answer "every salon in Pune", which
+  --   is the question the admin panel is built around; parsing a city back out
+  --   of a free-text address is a guess. phone/email are the salon's own
+  --   contact details, distinct from the owner's on users.
+  --   onboarded_by/approved_by/approved_at record who did what, because "why is
+  --   this salon live" gets asked six weeks later.
+  city             text,
+  area             text,
+  phone            text,
+  email            text,
+  onboarded_by     uuid REFERENCES users(id),
+  approved_by      uuid REFERENCES users(id),
+  approved_at      timestamptz,
+
   created_at       timestamptz NOT NULL DEFAULT now()
 );
 
@@ -80,6 +102,33 @@ CREATE TABLE IF NOT EXISTS salons (
 --   the one module the spec says everything rests on. One column now.
 
 CREATE INDEX IF NOT EXISTS salons_geo_idx ON salons (lat, lng) WHERE status = 'active';
+
+-- [DEVIATION 10] the operator's list is always "pending in Bengaluru", never
+--   "every salon ever in Bengaluru", so the index carries status.
+CREATE INDEX IF NOT EXISTS salons_city_idx ON salons (city, status);
+
+-- [DEVIATION 10] one owner, one salon — enforced here rather than only in the
+--   route, because salonForOwner() does `WHERE owner_id = $1` and takes
+--   rows[0]. A second salon under one owner would not error, it would silently
+--   pick one, and which one depends on planner mood. A route check also cannot
+--   hold this against a concurrent insert. A chain needs an organisations
+--   table, not the removal of this index.
+CREATE UNIQUE INDEX IF NOT EXISTS salons_one_per_owner ON salons (owner_id);
+
+-- [DEVIATION 10] why a salon is in the state it is in.
+CREATE TABLE IF NOT EXISTS salon_status_events (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  salon_id    uuid NOT NULL REFERENCES salons(id) ON DELETE CASCADE,
+  from_status text,
+  to_status   text NOT NULL,
+  reason      text,
+  -- Nullable, and deliberately not ON DELETE CASCADE: removing an admin
+  -- account must not erase the record of what they did.
+  actor_id    uuid REFERENCES users(id),
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS salon_status_events_salon_idx
+  ON salon_status_events (salon_id, created_at DESC);
 
 -- [DEVIATION 6] salons.cover_url, salon_photos, favorites
 --   The customer marketplace UI needs salon imagery and a way to save
@@ -108,6 +157,13 @@ CREATE TABLE IF NOT EXISTS services (      -- global master list, admin-managed
   name     text NOT NULL,
   category text NOT NULL
 );
+
+-- [DEVIATION 10] two rows called 'Haircut' would split one service across two
+--   menus and two sets of bookings with nothing to say which is canonical. The
+--   catalogue seed uses this for ON CONFLICT DO NOTHING, and the admin's
+--   create-service route uses it to reject duplicates in the database rather
+--   than in a check-then-insert race.
+CREATE UNIQUE INDEX IF NOT EXISTS services_name_key ON services (name);
 
 CREATE TABLE IF NOT EXISTS salon_services (   -- per-salon price AND duration
   salon_id     uuid NOT NULL REFERENCES salons(id) ON DELETE CASCADE,

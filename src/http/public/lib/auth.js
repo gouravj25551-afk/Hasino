@@ -1,136 +1,191 @@
 /**
- * Firebase Auth: Google sign-in + the phone-link flow that satisfies
- * users.phone NOT NULL. No bundler — the Firebase Web SDK loads as native
- * ES modules straight from the CDN, pinned to one version.
+ * Clerk Auth: Google sign-in, and nothing else.
  *
- * Config comes from GET /api/config (not secret, but environment-specific,
- * so it isn't hardcoded here).
+ * Google supplies the entire identity, so a first sign-in creates the account
+ * outright. There is no phone-link step: users.phone is nullable and the
+ * server no longer answers 428 PHONE_REQUIRED — see
+ * db/migrations/006_users_phone_optional.sql.
+ *
+ * No bundler — @clerk/clerk-js loads as a native ES module straight from the
+ * CDN, pinned to one version, the same way the rest of this app's JavaScript
+ * is served. Clerk's React SDKs are the documented path and would need a build
+ * step; clerk-js is the same library underneath and needs none.
+ *
+ * The publishable key comes from GET /api/config. It is not secret — it ships
+ * to every browser by design — but it is environment-specific, so it is served
+ * from server env rather than hardcoded here.
+ *
+ * The exported surface is deliberately identical to what the Firebase version
+ * exposed, so index.html, business.html, admin.html and views/login.js did not
+ * have to learn a new shape.
  */
 
-const SDK_VERSION = '11.0.2';
+const SDK_VERSION = '6.27.1';
+const SDK_URL = `https://cdn.jsdelivr.net/npm/@clerk/clerk-js@${SDK_VERSION}/dist/clerk.mjs`;
 
-const { initializeApp } = await import(`https://www.gstatic.com/firebasejs/${SDK_VERSION}/firebase-app.js`);
-const {
-  getAuth,
-  GoogleAuthProvider,
-  signInWithPopup,
-  signInWithRedirect,
-  getRedirectResult,
-  onAuthStateChanged,
-  signOut: firebaseSignOut,
-  RecaptchaVerifier,
-  linkWithPhoneNumber,
-} = await import(`https://www.gstatic.com/firebasejs/${SDK_VERSION}/firebase-auth.js`);
-
-let auth = null;
+let clerk = null;
+let loadPromise = null;
 let configPromise = null;
 
-async function ensureApp() {
-  if (auth) return auth;
-  configPromise ??= fetch('/api/config').then((r) => r.json());
-  const { firebase } = await configPromise;
-  if (!firebase.apiKey) {
-    throw new Error('Firebase is not configured on the server (FIREBASE_WEB_API_KEY and friends are unset)');
-  }
-  auth = getAuth(initializeApp(firebase));
-  return auth;
-}
-
-/** Fires `handler(user | null)` immediately and on every sign-in state change. */
-export async function watchAuthState(handler) {
-  const a = await ensureApp();
-  return onAuthStateChanged(a, handler);
+/**
+ * The SDK is fetched lazily, inside here, rather than imported at module
+ * scope.
+ *
+ * clerk-js is 1.5MB. A top-level `await import()` of it would block this
+ * module's evaluation, and therefore the whole app's module graph, on that
+ * download — and if the CDN were unreachable the entire page would fail to
+ * boot rather than just losing sign-in. Browsing is public and must survive an
+ * auth provider that is slow, unconfigured, or down.
+ */
+async function ensureClerk() {
+  if (clerk?.loaded) return clerk;
+  loadPromise ??= (async () => {
+    configPromise ??= fetch('/api/config').then((r) => r.json());
+    const { clerk: cfg } = await configPromise;
+    if (!cfg?.publishableKey) {
+      throw new Error('Clerk is not configured on the server (CLERK_PUBLISHABLE_KEY is unset)');
+    }
+    const mod = await import(SDK_URL);
+    const Clerk = mod.Clerk ?? mod.default;
+    if (typeof Clerk !== 'function') {
+      throw new Error('clerk-js loaded but exported no Clerk constructor');
+    }
+    const instance = new Clerk(cfg.publishableKey);
+    await instance.load({
+      // The app renders its own chrome; Clerk supplies identity, not UI.
+      // Redirects are handled by the hash router.
+      signInUrl: '/#/login',
+      afterSignOutUrl: '/#/home',
+    });
+    clerk = instance;
+    return instance;
+  })();
+  return loadPromise;
 }
 
 /**
- * Google sign-in. Popup first (best UX, no full page reload); falls back to
- * signInWithRedirect if the popup was blocked, which is common on mobile
- * browsers and in-app webviews. A redirect reloads the page, so its result
- * surfaces later through consumeRedirectResult()/watchAuthState(), not the
- * return value here.
+ * Fires `handler(user | null)` once the session is restored, and again on
+ * every change. Clerk restores asynchronously, so the first call is what tells
+ * a page whether it is looking at a signed-out visitor or a slow load.
+ */
+export async function watchAuthState(handler) {
+  const c = await ensureClerk();
+  handler(c.user ?? null);
+  return c.addListener(({ user }) => handler(user ?? null));
+}
+
+/**
+ * The path Clerk returns the browser to after Google, served by the server as
+ * the app shell — see PAGES in src/http/server.ts.
+ *
+ * It is a real path, not a hash route, and that is load-bearing. Clerk appends
+ * its callback parameters (__clerk_status and friends) to this URL as a query
+ * string. Given '/#/login' the browser parses the result as one long fragment,
+ * location.search is empty, and handleRedirectCallback finds nothing to act
+ * on — which is precisely how the sign-in loop used to happen.
+ */
+const CALLBACK_PATH = '/sso-callback';
+
+/** True on the page load that Clerk redirected to after Google. */
+export function isRedirectCallback() {
+  return window.location.pathname === CALLBACK_PATH;
+}
+
+/**
+ * Google sign-in, step 1 of 2.
+ *
+ * Clerk's OAuth is a full redirect rather than a popup, so this never returns
+ * on success — the browser leaves for Google and comes back at CALLBACK_PATH,
+ * where completeRedirectCallback() finishes the handshake. That is why the
+ * caller must treat a resolved promise as "we are navigating", not "we are
+ * signed in".
  */
 export async function signInWithGoogle() {
-  const a = await ensureApp();
-  const provider = new GoogleAuthProvider();
+  const c = await ensureClerk();
   try {
-    return await signInWithPopup(a, provider);
+    await c.client.signIn.authenticateWithRedirect({
+      strategy: 'oauth_google',
+      redirectUrl: window.location.origin + CALLBACK_PATH,
+      redirectUrlComplete: window.location.origin + '/#/home',
+    });
+    return null; // navigating away
   } catch (err) {
-    if (err.code === 'auth/popup-blocked') {
-      await signInWithRedirect(a, provider);
-      return null;
-    }
-    if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
-      throw Object.assign(new Error('Sign-in was cancelled'), { code: 'CANCELLED' });
-    }
-    if (err.code === 'auth/network-request-failed') {
+    if (/network/i.test(err?.message ?? '')) {
       throw Object.assign(new Error('Network error — check your connection and try again'), { code: 'NETWORK' });
     }
     throw err;
   }
 }
 
-/** Call once on app boot to pick up the result of a signInWithRedirect(). */
-export async function consumeRedirectResult() {
-  const a = await ensureApp();
-  try {
-    return await getRedirectResult(a);
-  } catch (err) {
-    console.error('Redirect sign-in failed', err);
-    return null;
-  }
+/**
+ * Google sign-in, step 2 of 2 — run on CALLBACK_PATH and nowhere else.
+ *
+ * This is what turns a returning OAuth redirect into an actual session, and
+ * its absence was the original bug: authenticateWithRedirect() started a flow
+ * that nothing ever finished, so the browser came back with a sign-in attempt
+ * in progress, no session, and a login page that offered to start the whole
+ * thing again.
+ *
+ * Clerk navigates away itself when it is done, so this does not return in the
+ * success case. The destinations matter:
+ *
+ *  - existing user  -> redirectUrlComplete from step 1 ('/#/home')
+ *  - brand-new user -> the sign-in is transferred to a sign-up automatically
+ *                      (transferable defaults to true), and with Google
+ *                      supplying every required attribute that sign-up
+ *                      completes in the same round trip and lands on '/#/home'
+ *                      too. Nothing is collected in between.
+ *
+ * The remaining URLs are stops this app does not use but Clerk may still route
+ * to — an instance reconfigured to require a phone or a second factor, say.
+ * They all point at the login view because that is the only auth UI mounted
+ * here; left unset they default to Clerk's own hosted component routes, which
+ * do not exist in this app and would dead-end.
+ */
+export async function completeRedirectCallback() {
+  const c = await ensureClerk();
+  return c.handleRedirectCallback({
+    continueSignUpUrl: '/#/login',
+    signInFallbackRedirectUrl: '/#/home',
+    signUpFallbackRedirectUrl: '/#/home',
+    signInUrl: '/#/login',
+    signUpUrl: '/#/login',
+    firstFactorUrl: '/#/login',
+    secondFactorUrl: '/#/login',
+    resetPasswordUrl: '/#/login',
+    verifyPhoneNumberUrl: '/#/login',
+    verifyEmailAddressUrl: '/#/login',
+  });
 }
 
 export async function signOut() {
-  const a = await ensureApp();
-  await firebaseSignOut(a);
-}
-
-/** The ID token for `Authorization: Bearer <idToken>`. null when signed out. */
-export async function currentIdToken(forceRefresh = false) {
-  const a = await ensureApp();
-  return a.currentUser ? a.currentUser.getIdToken(forceRefresh) : null;
-}
-
-export function currentUser() {
-  return auth?.currentUser ?? null;
-}
-
-// ---------- phone link: the 428 PHONE_REQUIRED flow ----------
-
-let recaptcha = null;
-
-/** An invisible reCAPTCHA bound to `containerId`. Firebase phone auth requires one. */
-async function getRecaptcha(containerId) {
-  const a = await ensureApp();
-  recaptcha ??= new RecaptchaVerifier(a, containerId, { size: 'invisible' });
-  return recaptcha;
+  const c = await ensureClerk();
+  await c.signOut();
 }
 
 /**
- * Step 1: send the OTP and link it to the CURRENT Google-signed-in user —
- * never a fresh sign-in, so this can't create a second account for the same
- * person. Returns a confirmation handle for confirmPhoneLinkOtp().
+ * The session token for `Authorization: Bearer <token>`, or null when signed
+ * out. Clerk caches it and refreshes shortly before expiry, so this is cheap
+ * to call per request; `forceRefresh` skips the cache after a 401.
  */
-export async function sendPhoneLinkOtp(phoneNumber, containerId) {
-  const a = await ensureApp();
-  if (!a.currentUser) throw new Error('Sign in with Google first');
-  const verifier = await getRecaptcha(containerId);
-  return linkWithPhoneNumber(a.currentUser, phoneNumber, verifier);
+export async function currentIdToken(forceRefresh = false) {
+  const c = await ensureClerk();
+  if (!c.session) return null;
+  return c.session.getToken(forceRefresh ? { skipCache: true } : undefined);
 }
 
-/** Step 2: verify the OTP, completing the link. */
-export async function confirmPhoneLinkOtp(confirmationResult, code) {
-  try {
-    return await confirmationResult.confirm(code);
-  } catch (err) {
-    if (err.code === 'auth/credential-already-in-use' || err.code === 'auth/account-exists-with-different-credential') {
-      throw Object.assign(new Error('That phone number is already linked to another account'), {
-        code: 'PHONE_TAKEN',
-      });
-    }
-    if (err.code === 'auth/invalid-verification-code') {
-      throw Object.assign(new Error('That code is incorrect'), { code: 'BAD_OTP' });
-    }
-    throw err;
-  }
+export function currentUser() {
+  return clerk?.user ?? null;
+}
+
+/**
+ * Resolves once clerk-js has loaded and restored whatever session exists.
+ *
+ * currentUser() is synchronous and reports null until that finishes, so any
+ * "are they signed in?" check that does not await this first answers "no" for
+ * everybody on a cold page load — and, on the login view, offers a signed-in
+ * user the sign-in button.
+ */
+export async function awaitClerk() {
+  await ensureClerk();
 }

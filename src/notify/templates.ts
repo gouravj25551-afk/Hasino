@@ -134,8 +134,23 @@ export const TEMPLATES: Record<string, (p: Payload) => Rendered> = {
       `${s(p, 'customerName', 'A customer')} booked ${s(p, 'services')} for ` +
       `${whenText(p['startAt'], p['timezone'])}.\n\n` +
       `Amount: ${rupees(p['amount'])}\n` +
-      `Phone:  ${s(p, 'customerPhone')}\n\n` +
+      `Contact: ${s(p, 'customerPhone') || s(p, 'customerEmail', 'none on file')}\n\n` +
       `It is already on your Today screen.` +
+      sign('Hasino'),
+  }),
+
+  // To ADMIN_EMAILS. An approval queue nobody is told about is a queue nobody
+  // empties, and the applicant is sitting behind a "under review" screen.
+  salon_application: (p) => ({
+    subject: `Salon application: ${s(p, 'salonName')}`,
+    text:
+      `${s(p, 'salonName')} applied to list on Hasino.\n\n` +
+      `City:    ${s(p, 'city')}\n` +
+      `Address: ${s(p, 'address')}\n` +
+      `Owner:   ${s(p, 'ownerName', 'unknown')} · ${s(p, 'ownerPhone', 'no phone')}\n` +
+      `Email:   ${s(p, 'ownerEmail', 'none')}\n\n` +
+      `It is pending and invisible to customers until approved.\n` +
+      `Review it at /admin#/salon/${s(p, 'salonId')}` +
       sign('Hasino'),
   }),
 };

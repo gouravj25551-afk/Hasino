@@ -4,10 +4,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 export class HttpError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /** Optional machine-readable code, so clients can branch without string matching. */
+  readonly code: string | undefined;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
+    this.code = code;
   }
 }
 

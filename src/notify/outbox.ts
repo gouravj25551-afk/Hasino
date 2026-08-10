@@ -34,6 +34,15 @@ export interface EnqueueInput {
   dedupeKey: string;
   /** for reminders — the row is invisible to the worker until then */
   sendAt?: Date;
+  /**
+   * The caller's clock, defaulting `sendAt` for a send-immediately row.
+   *
+   * dispatchDue() claims rows with `next_attempt_at <= now` against *its* now,
+   * so an enqueue that reaches for the wall clock while the caller is working
+   * from an injected one writes a row that is never due. Every other module
+   * here threads `now`; this one must too.
+   */
+  now?: Date;
 }
 
 export async function enqueueNotification(db: Queryable, input: EnqueueInput): Promise<void> {
@@ -56,7 +65,7 @@ export async function enqueueNotification(db: Queryable, input: EnqueueInput): P
       input.to || 'unknown',
       JSON.stringify(input.payload ?? {}),
       status,
-      input.sendAt ?? new Date(),
+      input.sendAt ?? input.now ?? new Date(),
       input.dedupeKey,
       input.to ? null : 'no address on file for this user',
     ],

@@ -1,3 +1,8 @@
 node_modules/
 .env
+.env.*
+!.env.example
 *.log
+
+# Machine-local Claude Code settings (permission allowlists, paths).
+.claude/settings.local.json

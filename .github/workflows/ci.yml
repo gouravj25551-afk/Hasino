@@ -68,9 +68,17 @@ jobs:
         run: npm test
 
       - name: seed + smoke
+        # The seed is the service catalogue only — a real deployment starts with
+        # no users and no salons. The smoke run has no browser to sign in with,
+        # so ci-fixture.ts supplies the people and salons, and DEV_AUTH needs
+        # CI_SMOKE alongside it before the x-dev-user bypass does anything.
+        env:
+          CI_SMOKE: 'true'
+          ADMIN_EMAILS: ci-admin@hasino.test
         run: |
-          node scripts/seed-demo.ts
-          DEV_AUTH=true RUN_WORKERS=false node src/main.ts &
+          node scripts/seed-catalog.ts
+          node scripts/ci-fixture.ts
+          DEV_AUTH=true CI_SMOKE=true RUN_WORKERS=false node src/main.ts &
           for i in $(seq 1 30); do
             curl -fsS http://localhost:3000/readyz >/dev/null && break
             sleep 1

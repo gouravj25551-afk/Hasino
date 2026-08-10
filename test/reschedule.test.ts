@@ -16,7 +16,8 @@ import { createBooking } from '../src/booking/create.ts';
 import { SlotUnavailableError } from '../src/booking/errors.ts';
 import { customerCancelBooking, transition } from '../src/booking/status.ts';
 import { rescheduleBooking } from '../src/booking/reschedule.ts';
-import { NOW, at, hhmm } from './helpers.ts';
+import { DATE, NOW, at, hhmm } from './helpers.ts';
+import { addDays } from '../src/time/tz.ts';
 import { type Fixture, bookingStatus, chairsHeld, connect, seed } from './db.ts';
 
 let pool: pg.Pool | null = null;
@@ -150,12 +151,21 @@ describe('reschedule', () => {
     if (!pool) return t.skip('no test database reachable');
     const db = pool;
     const fx = await seed(db, { onlineCapacity: 1 });
+
+    // The fixture salon opens 10:00-13:00, so once `now` has advanced past
+    // closing the only bookable slots are on a later day. Both halves below
+    // move `now` forward, so both must target the next day — aiming at a slot
+    // that has already passed would fail on the 15-minute lead rule and never
+    // reach the window check this test exists to exercise.
+    const tomorrow = addDays(DATE, 1);
+
     const original = await booked(db, fx, at('11:00'));
     await customerCancelBooking(db, fx.customerIds[0]!, original.id, NOW);
 
+    // 10 hours after the cancellation: inside the 36-hour window.
     const inside = await rescheduleBooking(
       db,
-      { bookingId: original.id, customerId: fx.customerIds[0]!, startAt: at('12:00') },
+      { bookingId: original.id, customerId: fx.customerIds[0]!, startAt: at('12:00', tomorrow) },
       { now: new Date(NOW.getTime() + 10 * 3600_000) },
     );
     assert.equal(await bookingStatus(db, inside.booking.id), 'booked');
@@ -163,11 +173,13 @@ describe('reschedule', () => {
     const other = await booked(db, fx, at('10:00'), 0);
     await customerCancelBooking(db, fx.customerIds[0]!, other.id, NOW);
 
+    // 37 hours after: the window has closed, even though the target slot is
+    // itself perfectly bookable.
     await assert.rejects(
       () =>
         rescheduleBooking(
           db,
-          { bookingId: other.id, customerId: fx.customerIds[0]!, startAt: at('12:30') },
+          { bookingId: other.id, customerId: fx.customerIds[0]!, startAt: at('12:30', addDays(DATE, 2)) },
           { now: new Date(NOW.getTime() + 37 * 3600_000) },
         ),
       (err: Error) => err.name === 'RescheduleWindowError',

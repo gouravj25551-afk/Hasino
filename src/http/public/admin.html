@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hasino — admin</title>
+<link rel="stylesheet" href="/brand.css">
+</head>
+<body>
+
+<div class="topbar">
+  <a class="lockup" href="#/overview"><span class="wordmark">has<span class="i">i</span>no</span></a>
+  <span class="pill bad">admin</span>
+  <nav>
+    <a href="#/overview" data-nav="overview">Overview</a>
+    <a href="#/salons"   data-nav="salons">Salons <span id="pendingBadge"></span></a>
+    <a href="#/onboard"  data-nav="onboard">Onboard</a>
+    <a href="#/catalog"  data-nav="catalog">Catalogue</a>
+  </nav>
+  <span class="spacer"></span>
+  <div class="row" id="whoami" style="gap:10px"></div>
+  <a class="btn sm" href="/">← Customer app</a>
+</div>
+
+<div class="wrap" id="view"></div>
+
+<script type="module" src="/admin.js"></script>
+</body>
+</html>

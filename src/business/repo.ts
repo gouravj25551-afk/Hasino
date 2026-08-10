@@ -268,11 +268,15 @@ export async function listBookingsForDay(
     verify_code: string | null;
     refund_status: string;
     customer_name: string | null;
-    customer_phone: string;
+    customer_phone: string | null;
+    customer_email: string | null;
     services: string[];
   }>(
     `SELECT b.id, b.start_at, b.end_at, b.status, b.amount, b.verify_code, b.refund_status,
             u.name AS customer_name, u.phone AS customer_phone,
+            -- The only contact a Google-only account has: phone is now
+            -- optional and most customers will never have one.
+            u.email AS customer_email,
             coalesce(array_agg(sv.name ORDER BY sv.name)
                      FILTER (WHERE sv.name IS NOT NULL), '{}') AS services
        FROM bookings b
@@ -286,7 +290,7 @@ export async function listBookingsForDay(
         -- who may never arrive, with [Verify] buttons that must not work.
         -- 'expired' is the same customer, thirty seconds later.
         AND b.status NOT IN ('pending_payment','expired')
-      GROUP BY b.id, u.name, u.phone
+      GROUP BY b.id, u.name, u.phone, u.email
       ORDER BY b.start_at`,
     [salonId, start, end],
   );
@@ -300,6 +304,7 @@ export async function listBookingsForDay(
     refundStatus: r.refund_status,
     customerName: r.customer_name,
     customerPhone: r.customer_phone,
+    customerEmail: r.customer_email,
     services: r.services,
   }));
 }

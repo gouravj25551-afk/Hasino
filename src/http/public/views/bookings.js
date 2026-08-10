@@ -5,6 +5,7 @@ import { EmptyState } from '../components/EmptyState.js';
 import { SkeletonList } from '../components/Skeleton.js';
 import { Button } from '../components/Button.js';
 import { Modal } from '../components/Modal.js';
+import { ask } from '../lib/dialog.js';
 import { dateLong, rupees, time } from '../lib/format.js';
 
 const TABS = [
@@ -86,11 +87,17 @@ export async function renderBookings(container, app) {
             tab.id === 'upcoming'
               ? async (id) => {
                   const target = bookings.find((x) => x.id === id);
-                  const message =
-                    target?.status === 'pending_payment'
-                      ? 'Give up this slot? Nothing has been charged.'
-                      : 'Cancel this booking? Under our terms a customer cancellation is not refunded, but you can move it to another time free of charge for the next 36 hours.';
-                  if (!confirm(message)) return;
+                  const givingUpHold = target?.status === 'pending_payment';
+                  const ok = await ask({
+                    title: givingUpHold ? 'Give up this slot?' : 'Cancel this booking?',
+                    message: givingUpHold
+                      ? 'Nothing has been charged.'
+                      : 'Under our terms a customer cancellation is not refunded, but you can move it to another time free of charge for the next 36 hours.',
+                    confirmLabel: givingUpHold ? 'Give up the slot' : 'Cancel booking',
+                    cancelLabel: 'Keep it',
+                    danger: true,
+                  });
+                  if (!ok) return;
                   await api(`/api/me/bookings/${id}/cancel`, { method: 'POST' });
                   await refresh();
                 }

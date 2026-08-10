@@ -145,14 +145,14 @@ export async function transition(
     if (to === 'cancelled_by_salon') {
       await queueRefundForBooking(tx, bookingId, 'cancelled by salon', now);
       await cancelPending(tx, bookingId, ['booking_reminder']);
-      await notifyCancellation(tx, bookingId, 'booking_cancelled_by_salon');
+      await notifyCancellation(tx, bookingId, 'booking_cancelled_by_salon', now);
     }
 
     if (to === 'cancelled_by_customer') {
       // §4: no refund. The customer gets 36 hours to move the booking instead,
       // which is what the email says.
       await cancelPending(tx, bookingId, ['booking_reminder']);
-      await notifyCancellation(tx, bookingId, 'booking_cancelled_by_customer');
+      await notifyCancellation(tx, bookingId, 'booking_cancelled_by_customer', now);
     }
 
     if (to === 'no_show' || to === 'completed') {
@@ -194,6 +194,7 @@ async function notifyCancellation(
   tx: Pool | PoolClient,
   bookingId: string,
   template: 'booking_cancelled_by_salon' | 'booking_cancelled_by_customer',
+  now: Date,
 ): Promise<void> {
   const res = await tx.query<{
     customer_id: string;
@@ -231,6 +232,7 @@ async function notifyCancellation(
       rescheduleDeadline: r.reschedule_deadline ? r.reschedule_deadline.toISOString() : null,
     },
     dedupeKey: `${template}:${bookingId}`,
+    now,
   });
 }
 
@@ -267,7 +269,7 @@ export async function closeForDay(
       const outcome = await queueRefundForBooking(tx, row.id, 'salon closed for the day', now);
       if (outcome === 'queued') refundsQueued += 1;
       await cancelPending(tx, row.id, ['booking_reminder']);
-      await notifyCancellation(tx, row.id, 'booking_cancelled_by_salon');
+      await notifyCancellation(tx, row.id, 'booking_cancelled_by_salon', now);
     }
 
     return {
@@ -306,7 +308,7 @@ export async function customerCancelBooking(
     // §4: customer cancels -> no refund, 36 hours to reschedule. No refund row
     // is queued, deliberately; the email explains the window instead.
     await cancelPending(tx, bookingId, ['booking_reminder']);
-    await notifyCancellation(tx, bookingId, 'booking_cancelled_by_customer');
+    await notifyCancellation(tx, bookingId, 'booking_cancelled_by_customer', now);
 
     return { id: bookingId, status: 'cancelled_by_customer', salonId: row.salon_id };
   });
