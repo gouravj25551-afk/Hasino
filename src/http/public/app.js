@@ -7,9 +7,9 @@
  * code out is the right trade; the alternative weakens CSP for every page
  * to save one file.
  */
-import { register, start, go, activeSection } from './lib/router.js';
-import { api, ApiError } from './lib/api.js';
-import { watchAuthState, consumeRedirectResult, signOut } from './lib/auth.js';
+import { register, start, go, currentHash, activeSection } from './lib/router.js';
+import { api } from './lib/api.js';
+import { watchAuthState, isRedirectCallback, completeRedirectCallback, signOut } from './lib/auth.js';
 import { TopBar, highlightTopBarNav } from './components/TopBar.js';
 import { BottomNav } from './components/BottomNav.js';
 import { el } from './lib/dom.js';
@@ -38,9 +38,8 @@ const app = {
 };
 
 /**
- * Throws on failure (including 428 PHONE_REQUIRED) so callers that need to
- * distinguish "not signed in" from "needs a phone" can. Callers that just
- * want a best-effort refresh catch it themselves.
+ * Throws on failure so callers that need to tell "signed in" from "not" can.
+ * Callers that just want a best-effort refresh catch it themselves.
  */
 async function refreshSession() {
   const session = await api('/api/me');
@@ -98,11 +97,31 @@ async function boot() {
   // payment step. Public endpoint; failure is not fatal to browsing.
   app.config = await fetch('/api/config').then((r) => r.json()).catch(() => null);
 
+  // Coming back from Google. Finish the OAuth handshake before anything else
+  // runs: this page is not a route, it carries Clerk's callback parameters in
+  // its query string, and Clerk navigates on to the real destination itself.
+  // Booting the router here instead would leave the sign-in half-finished,
+  // which is the loop this replaced.
+  if (isRedirectCallback()) {
+    try {
+      await completeRedirectCallback();
+      return; // navigating away
+    } catch (err) {
+      console.error('sign-in could not be completed', err);
+      // Land on the login view rather than a blank callback page. The reason
+      // rides in sessionStorage because it cannot ride in the hash — the
+      // router matches /^#\/login$/ exactly and a query string there would
+      // miss every route and bounce to #/home.
+      sessionStorage.setItem('ssoError', err?.message ?? 'Sign-in could not be completed');
+      location.replace('/#/login');
+      return;
+    }
+  }
+
   {
     // Browsing is public even if Clerk was never configured on this deploy —
     // only sign-in itself should fail, visibly, when attempted.
     try {
-      await consumeRedirectResult().catch(() => {});
       await watchAuthState(async (fbUser) => {
         if (!fbUser) {
           app.session = null;
@@ -111,11 +130,17 @@ async function boot() {
         }
         try {
           await refreshSession();
-        } catch (err) {
+          // The session can land after the login view has already painted —
+          // Clerk restores asynchronously. Leaving the user on a sign-in page
+          // they no longer need is the same dead end as the original loop,
+          // just one step later.
+          if (currentHash() === '#/login') go('#/home');
+        } catch {
+          // A Clerk session whose token the server will not accept — revoked,
+          // expired, or issued by a different instance. Browsing stays public,
+          // so this drops to signed-out rather than interrupting the page.
           app.session = null;
           renderChrome();
-          // A persisted Google sign-in that never finished the phone-link step.
-          if (err instanceof ApiError && err.status === 428) go('#/login');
         }
       });
     } catch (err) {

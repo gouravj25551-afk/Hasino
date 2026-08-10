@@ -33,17 +33,35 @@ export class AdminError extends Error {
 
 // ---------- validation ----------
 
-/**
- * E.164. The phone is the join between an admin-created owner row and the
- * Google account that will later adopt it, so a malformed one does not fail
- * here — it fails weeks later as an owner who cannot sign in.
- */
+/** E.164. Stored so the platform can ring the owner; not an identity. */
 const E164 = /^\+[1-9]\d{7,14}$/;
 
 export function validatePhone(phone: string): string {
   const trimmed = phone.trim();
   if (!E164.test(trimmed)) {
     throw new AdminError(400, 'BAD_PHONE', 'phone must be E.164, e.g. +919876543210');
+  }
+  return trimmed;
+}
+
+/**
+ * The owner's email is the join between the row created here and the Google
+ * account that will later adopt it, so a typo does not fail here — it fails
+ * weeks later as an owner who cannot sign in and a salon nobody can open.
+ *
+ * Deliberately a shape check and nothing cleverer: the address is proven by
+ * Google at sign-in, and this only has to stop the obvious mistakes. Lowercased
+ * because the match at sign-in is case-insensitive and storing it as typed
+ * makes the stored value look different from the one that matched.
+ */
+export function validateEmail(email: string): string {
+  const trimmed = email.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    throw new AdminError(
+      400,
+      'BAD_EMAIL',
+      "owner email must be a valid address — it is how the owner's Google sign-in finds this salon",
+    );
   }
   return trimmed;
 }
@@ -108,7 +126,7 @@ export interface AdminSalonRow {
   commissionBps: number;
   ownerId: string;
   ownerName: string | null;
-  ownerPhone: string;
+  ownerPhone: string | null;
   ownerEmail: string | null;
   ownerHasSignedIn: boolean;
   serviceCount: number;
@@ -128,7 +146,7 @@ export async function listSalonsForAdmin(
   const res = await db.query<{
     id: string; name: string; city: string | null; area: string | null; address: string;
     status: SalonStatus; commission_bps: number; owner_id: string; owner_name: string | null;
-    owner_phone: string; owner_email: string | null; owner_signed_in: boolean;
+    owner_phone: string | null; owner_email: string | null; owner_signed_in: boolean;
     service_count: string; booking_count: string; created_at: Date; approved_at: Date | null;
   }>(
     `SELECT s.id, s.name, s.city, s.area, s.address, s.status, s.commission_bps,
@@ -198,7 +216,7 @@ export interface OnboardInput {
   status?: 'pending' | 'active';
   phone?: string | null;
   email?: string | null;
-  owner: { phone: string; name?: string | null; email?: string | null };
+  owner: { phone: string; email: string; name?: string | null };
 }
 
 const DEFAULT_HOURS = {
@@ -212,11 +230,16 @@ const DEFAULT_HOURS = {
  * Create a salon and the owner row that will later be adopted by a Google
  * sign-in.
  *
- * The owner is upserted by phone and left WITHOUT a auth_provider_id on purpose.
- * resolveSession's `ON CONFLICT (phone) DO UPDATE` sets auth_provider_id on first
- * sign-in and does not touch role, so the 'business' assigned here survives.
- * That one clause is the whole owner-onboarding mechanism; nothing else here
- * may set auth_provider_id.
+ * The owner row is created WITHOUT an auth_provider_id on purpose.
+ * resolveSession's claimByEmail() sets it on that owner's first sign-in,
+ * matching on the verified email address and leaving role alone, so the
+ * 'business' assigned here survives. That is the whole owner-onboarding
+ * mechanism; nothing else here may set auth_provider_id.
+ *
+ * Which is why owner.email is required rather than optional. It used to be
+ * the phone number that did this matching, and an email was a nicety; now it
+ * is the only join key there is, and an owner row without one can never be
+ * claimed by anybody — a salon that silently cannot be signed into.
  */
 export async function onboardSalon(
   db: Pool,
@@ -225,6 +248,7 @@ export async function onboardSalon(
   now: Date = new Date(),
 ): Promise<{ salonId: string; ownerId: string; ownerExisted: boolean }> {
   const phone = validatePhone(input.owner.phone);
+  const ownerEmail = validateEmail(input.owner.email);
   validateCoords(input.lat, input.lng);
   const timezone = validateTimezone(input.timezone ?? 'Asia/Kolkata');
   const commissionBps = validateCommissionBps(
@@ -239,9 +263,12 @@ export async function onboardSalon(
   if (!input.city.trim()) throw new AdminError(400, 'BAD_CITY', 'city is required');
 
   return withTransaction(db, async (tx) => {
+    // Matched on email, because that is what the owner's Google sign-in will
+    // match on. Looking them up by phone here while sign-in looks them up by
+    // email is how one person ends up with two rows.
     const existing = await tx.query<{ id: string; role: string }>(
-      `SELECT id, role FROM users WHERE phone = $1 FOR UPDATE`,
-      [phone],
+      `SELECT id, role FROM users WHERE lower(email) = $1 FOR UPDATE`,
+      [ownerEmail],
     );
 
     let ownerId: string;
@@ -254,14 +281,14 @@ export async function onboardSalon(
         throw new AdminError(
           409,
           'OWNER_HAS_SALON',
-          'That phone number already owns a salon. One owner, one salon — register a separate owner.',
+          'That email address already owns a salon. One owner, one salon — register a separate owner.',
         );
       }
       if (owner.role === 'admin') {
         throw new AdminError(
           409,
           'OWNER_IS_ADMIN',
-          'That phone number belongs to a platform admin. Use a separate account for the salon owner.',
+          'That email address belongs to a platform admin. Use a separate account for the salon owner.',
         );
       }
       // A customer who is now opening a salon keeps their bookings and gains
@@ -272,15 +299,15 @@ export async function onboardSalon(
         `UPDATE users
             SET role = 'business',
                 name  = coalesce(name, $2),
-                email = coalesce(email, $3),
+                phone = coalesce(phone, $3),
                 updated_at = now()
           WHERE id = $1`,
-        [ownerId, input.owner.name ?? null, input.owner.email ?? null],
+        [ownerId, input.owner.name ?? null, phone],
       );
     } else {
       const created = await tx.query<{ id: string }>(
         `INSERT INTO users (phone, name, email, role) VALUES ($1, $2, $3, 'business') RETURNING id`,
-        [phone, input.owner.name ?? null, input.owner.email ?? null],
+        [phone, input.owner.name ?? null, ownerEmail],
       );
       ownerId = created.rows[0]!.id;
     }
@@ -506,7 +533,7 @@ export async function adminSalonDetail(db: Queryable, salonId: string) {
     id: string; name: string; address: string; city: string | null; area: string | null;
     lat: number; lng: number; timezone: string; status: SalonStatus; commission_bps: number;
     phone: string | null; email: string | null; created_at: Date; approved_at: Date | null;
-    owner_id: string; owner_name: string | null; owner_phone: string; owner_email: string | null;
+    owner_id: string; owner_name: string | null; owner_phone: string | null; owner_email: string | null;
     owner_signed_in: boolean;
   }>(
     `SELECT s.id, s.name, s.address, s.city, s.area, s.lat, s.lng, s.timezone, s.status,
@@ -690,7 +717,9 @@ export interface ApplyInput {
  */
 export async function applyForSalon(
   db: Pool,
-  applicant: { userId: string; phone: string; name: string | null; email: string | null },
+  // phone is nullable: a Google sign-in carries none, and the number the admin
+  // actually needs to ring is the salon's own, which is a field on the form.
+  applicant: { userId: string; phone: string | null; name: string | null; email: string | null },
   input: ApplyInput,
 ): Promise<{ salonId: string }> {
   validateCoords(input.lat, input.lng);

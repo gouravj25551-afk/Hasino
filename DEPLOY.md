@@ -71,11 +71,15 @@ The four `CLERK_*` values are not secret — they ship to the browser via
 staging and production can point at different projects. The two **secrets**
 (`RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`) never leave the server.
 
-In the Clerk dashboard also enable **Google** and **Phone** under
-Authentication → Sign-in method, and add your production domain under
-Authentication → Settings → Authorized domains. Google sign-in carries no phone
-number, so the client walks the `428 PHONE_REQUIRED` phone-link flow before the
-account can book.
+In the Clerk dashboard also enable **Google** under Authentication → Sign-in
+method, and add your production domain under Authentication → Settings →
+Authorized domains. Google supplies the whole identity, so a first sign-in
+creates the account outright — nothing else is collected. Leave **Phone** off:
+turning it on makes Clerk park new sign-ups at `missing_requirements` waiting
+for a number this app never asks for.
+
+Clerk must also be allowed to redirect back to `/sso-callback`, which is a real
+served path rather than a hash route — see `PAGES` in `src/http/server.ts`.
 
 `CLERK_SECRET_KEY` (a file path) works instead of
 `CLERK_SECRET_KEY` and is what Cloud Run injects for free.
@@ -155,9 +159,10 @@ channels and parks those rows as `skipped` rather than dropping them — switchi
 one on is a worker change, not a backfill. For salon bookings in India, WhatsApp
 is probably what customers actually read.
 
-**Google/Apple sign-in needs a phone link.** `users.phone` is `NOT NULL UNIQUE`
-and a salon has to be able to ring the customer, so a token without a phone gets
-`428 PHONE_REQUIRED`.
+**Most customers have no phone number on file.** `users.phone` is nullable
+(migration `006`) because Google carries no number and nothing asks for one. A
+salon reaches a customer by email; a number is present only on owner rows an
+admin typed one into. Anything rendering a customer phone must handle null.
 
 ## Workers
 

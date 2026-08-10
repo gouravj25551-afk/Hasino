@@ -30,13 +30,21 @@ export function renderProfile(container, app) {
 
   list.append(el('div', 'item', '⚙️ Account settings — coming soon'));
 
-  // Salon owners already have a salon; sending them here would only 409.
-  if (session.role === 'business') {
-    const panel = el('a', 'item', '💈 My salon panel');
-    panel.href = '/business';
-    panel.style.cssText = 'text-decoration:none; color:inherit';
-    list.append(panel);
-  } else if (session.role === 'customer') {
+  // One entry per role. Admin used to fall through both branches and get
+  // nothing, which left the admin panel with no link anywhere in the app.
+  const panelItem = (label, href) => {
+    const a = el('a', 'item', label);
+    a.href = href;
+    a.style.cssText = 'text-decoration:none; color:inherit';
+    return a;
+  };
+
+  if (session.role === 'admin') {
+    list.append(panelItem('🛡️ Admin dashboard', '/admin'));
+  } else if (session.role === 'business') {
+    // Salon owners already have a salon; sending them to apply would only 409.
+    list.append(panelItem('💈 My salon panel', '/business'));
+  } else {
     const apply = el('div', 'item', '💈 List your salon on Hasino');
     apply.style.cursor = 'pointer';
     apply.onclick = () => app.navigate('#/apply');

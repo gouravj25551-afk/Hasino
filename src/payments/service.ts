@@ -74,7 +74,7 @@ interface BookingContext {
   salonAddress: string;
   customerName: string | null;
   customerEmail: string | null;
-  customerPhone: string;
+  customerPhone: string | null;
   ownerEmail: string | null;
   ownerId: string;
   services: string;
@@ -93,7 +93,7 @@ async function bookingContext(db: Queryable, bookingId: string): Promise<Booking
     salon_address: string;
     customer_name: string | null;
     customer_email: string | null;
-    customer_phone: string;
+    customer_phone: string | null;
     owner_email: string | null;
     owner_id: string;
     services: string | null;
@@ -143,7 +143,10 @@ export interface CheckoutSession {
   keyId: string;
   /** when the chair stops being held, so the UI can count down */
   holdExpiresAt: string | null;
-  prefill: { name: string | null; email: string | null; contact: string };
+  // All three are hints Razorpay's checkout pre-fills; null simply leaves the
+  // field for the customer to type. contact is nullable because a Google
+  // sign-in supplies no phone number.
+  prefill: { name: string | null; email: string | null; contact: string | null };
   salonName: string;
 }
 
@@ -502,6 +505,9 @@ async function queueBookingNotifications(
     salonAddress: ctx.salonAddress,
     customerName: ctx.customerName,
     customerPhone: ctx.customerPhone,
+    // The salon's fallback way to reach a customer who has no number on file,
+    // which is every account created by Google sign-in.
+    customerEmail: ctx.customerEmail,
     startAt: ctx.startAt.toISOString(),
     timezone: ctx.timezone,
     amount: ctx.amount,

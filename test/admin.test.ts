@@ -300,7 +300,7 @@ describe('admin onboarding', () => {
     const admin = await makeAdmin(db);
     const input = {
       address: '1 Road', city: 'Pune', lat: 18.52, lng: 73.85,
-      owner: { phone: '+919812340102' },
+      owner: { phone: '+919812340102', email: 'owner919812340102@x.com' },
     };
     await onboardSalon(db, admin, { ...input, name: 'First' });
     await assert.rejects(
@@ -317,17 +317,17 @@ describe('admin onboarding', () => {
     const base = { name: 'X', address: 'A', city: 'C', lat: 12.9, lng: 77.6 };
 
     await assert.rejects(
-      onboardSalon(db, admin, { ...base, owner: { phone: '9876543210' } }),
+      onboardSalon(db, admin, { ...base, owner: { phone: '9876543210', email: 'owner9876543210@x.com' } }),
       (e: AdminError) => e.code === 'BAD_PHONE',
     );
     await assert.rejects(
-      onboardSalon(db, admin, { ...base, lat: 999, owner: { phone: '+919812340103' } }),
+      onboardSalon(db, admin, { ...base, lat: 999, owner: { phone: '+919812340103', email: 'owner919812340103@x.com' } }),
       (e: AdminError) => e.code === 'BAD_LAT',
     );
     // A bad zone stores happily and then throws inside zonedTimeToUtc on every
     // availability request, which reads as a broken engine rather than a typo.
     await assert.rejects(
-      onboardSalon(db, admin, { ...base, timezone: 'Mars/Olympus', owner: { phone: '+919812340104' } }),
+      onboardSalon(db, admin, { ...base, timezone: 'Mars/Olympus', owner: { phone: '+919812340104', email: 'owner919812340104@x.com' } }),
       (e: AdminError) => e.code === 'BAD_TIMEZONE',
     );
   });
@@ -341,7 +341,7 @@ describe('salon status machine', () => {
     const admin = await makeAdmin(db);
     const { salonId } = await onboardSalon(db, admin, {
       name: 'Hidden Cuts', address: '1 Road', city: 'Pune', lat: 18.52, lng: 73.85,
-      owner: { phone: '+919812340105' }, status: 'pending',
+      owner: { phone: '+919812340105', email: 'owner919812340105@x.com' }, status: 'pending',
     });
 
     const pendingList = await listSalons(db);
@@ -363,7 +363,7 @@ describe('salon status machine', () => {
     const admin = await makeAdmin(db);
     const { salonId } = await onboardSalon(db, admin, {
       name: 'X', address: 'A', city: 'C', lat: 12.9, lng: 77.6,
-      owner: { phone: '+919812340106' }, status: 'pending',
+      owner: { phone: '+919812340106', email: 'owner919812340106@x.com' }, status: 'pending',
     });
 
     // pending -> suspended is not a step that means anything
@@ -386,7 +386,7 @@ describe('salon status machine', () => {
     const admin = await makeAdmin(db);
     const { salonId } = await onboardSalon(db, admin, {
       name: 'X', address: 'A', city: 'C', lat: 12.9, lng: 77.6,
-      owner: { phone: '+919812340107' }, status: 'pending',
+      owner: { phone: '+919812340107', email: 'owner919812340107@x.com' }, status: 'pending',
     });
     await changeSalonStatus(db, admin, salonId, 'active', { reason: 'docs verified' });
 
@@ -444,7 +444,7 @@ describe('catalogue', () => {
     const admin = await makeAdmin(db);
     const { salonId } = await onboardSalon(db, admin, {
       name: 'X', address: 'A', city: 'C', lat: 12.9, lng: 77.6,
-      owner: { phone: '+919812340108' },
+      owner: { phone: '+919812340108', email: 'owner919812340108@x.com' },
     });
     const svc = await addCatalogueService(db, 'Hot Towel Shave', 'beard');
     await db.query(

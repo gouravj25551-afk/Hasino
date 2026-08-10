@@ -134,9 +134,9 @@ if [ -z "${CLERK_PUBLISHABLE_KEY:-}" ] || [ -z "${CLERK_SECRET_KEY:-}" ]; then
   echo
   echo "  1. https://dashboard.clerk.com — create or open an application"
   echo "  2. User & Authentication > Social Connections — enable Google"
-  echo "  3. User & Authentication > Email, Phone, Username — enable Phone number"
-  echo "       (Google carries no phone number, and users.phone is required;"
-  echo "        it is also how a salon owner claims the account an admin made)"
+  echo "  3. User & Authentication > Email, Phone, Username — leave Phone OFF"
+  echo "       (Google supplies the whole identity; requiring a phone parks"
+  echo "        every new sign-up waiting for input this app never asks for)"
   echo "  4. Domains — add http://localhost:$PORT"
   echo "  5. API keys — copy both keys"
   echo

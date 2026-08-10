@@ -70,7 +70,12 @@ async function applyAdminPolicy(
 export interface Session {
   userId: string;
   role: 'customer' | 'business' | 'admin';
-  phone: string;
+  /**
+   * Null for anyone who signed in with Google and never had a number recorded
+   * — which is now every new account. Present on rows an admin onboarded, and
+   * on accounts created before the number stopped being required.
+   */
+  phone: string | null;
   name: string | null;
   email: string | null;
   avatarUrl: string | null;
@@ -88,14 +93,75 @@ export interface Session {
  *    propagation, becomes a salon owner or admin. Elevation is an admin
  *    action against the database.
  *
- * 2. Linking by phone is safe *only* because the identity provider has
- *    already verified ownership of that number. We never accept a
- *    client-supplied phone.
+ * 2. Adopting a pre-existing row is safe *only* because the identity provider
+ *    has already verified ownership of the identifier being matched. A
+ *    client-supplied value is never accepted, and an unverified claim is
+ *    treated as absent — see claimByEmail.
  *
- * 3. users.phone is NOT NULL UNIQUE, and a salon has to be able to ring the
- *    customer. Google sign-in carries no phone, so the client must link a
- *    phone credential before the account can exist. 428 tells it to do that.
+ * 3. Google carries no phone number, so a first sign-in creates the account
+ *    from the Google identity alone. This used to answer 428 PHONE_REQUIRED
+ *    instead and make the client collect a number first; that step is gone,
+ *    and users.phone is nullable to match.
  */
+/**
+ * Adopt a row an admin created before its owner ever signed in.
+ *
+ * This is the join that used to run on the phone number: an admin onboards a
+ * salon, which writes a `business` users row, and the owner takes ownership of
+ * it on their first Google sign-in. Google carries no phone, so the verified
+ * email address is what identifies them now.
+ *
+ * The trust model is unchanged and rests entirely on `emailVerified`. An
+ * unverified address is a string the person signing up chose, and honouring it
+ * here would let anyone claim a salon by typing its owner's address into a
+ * throwaway account. So an unverified email claims nothing — it is treated
+ * exactly as if it were absent.
+ *
+ * Only a row that has never been signed into is adoptable. The
+ * `auth_provider_id IS NULL` guard is what makes that safe: without it, two
+ * Google accounts sharing an address on different providers could hand one
+ * person the other's booking history. Returns null when there is nothing to
+ * claim, and the caller creates a fresh account.
+ */
+async function claimByEmail(db: Queryable, token: VerifiedToken): Promise<Session | null> {
+  if (!token.email || token.emailVerified !== true) return null;
+
+  const res = await db.query<{
+    id: string;
+    role: Session['role'];
+    phone: string | null;
+    name: string | null;
+    email: string | null;
+    avatar_url: string | null;
+    blocked_until: Date | null;
+  }>(
+    `UPDATE users
+        SET auth_provider_id = $1,
+            name       = coalesce(name, $3),
+            avatar_url = coalesce(avatar_url, $4),
+            updated_at = now()
+      WHERE auth_provider_id IS NULL
+        AND lower(email) = lower($2)
+      RETURNING id, role, phone, name, email, avatar_url, blocked_until`,
+    [token.uid, token.email, token.name ?? null, token.picture ?? null],
+  );
+
+  const row = res.rows[0];
+  if (!row) return null;
+
+  return {
+    userId: row.id,
+    // role is deliberately untouched above, so the 'business' an admin
+    // assigned survives its owner's first sign-in. Admin is re-derived.
+    role: await applyAdminPolicy(db, row.id, row.role, token),
+    phone: row.phone,
+    name: row.name,
+    email: row.email,
+    avatarUrl: row.avatar_url,
+    blockedUntil: row.blocked_until,
+  };
+}
+
 export async function resolveSession(
   db: Queryable,
   token: VerifiedToken,
@@ -139,55 +205,36 @@ export async function resolveSession(
     };
   }
 
-  // users.phone is NOT NULL UNIQUE, and a salon has to be able to ring the
-  // customer. Google sign-in carries no phone, so the client must link a
-  // phone credential before the account can exist. 428 tells it to do that.
-  if (!token.phone) {
-    throw new AuthError(
-      428,
-      'PHONE_REQUIRED',
-      'Link a verified phone number to this account before booking',
-    );
-  }
+  // No row carries this provider id yet, so this is a first sign-in. Before
+  // creating an account, see whether an admin already made one for this person
+  // — a salon owner's row exists before its owner has ever signed in, and
+  // creating a second row here would leave them a customer staring at a panel
+  // they cannot open.
+  const claimed = await claimByEmail(db, token);
+  if (claimed) return claimed;
 
-  const linked = await db.query<{
+  const created = await db.query<{
     id: string;
     role: Session['role'];
-    phone: string;
+    phone: string | null;
     name: string | null;
     email: string | null;
     avatar_url: string | null;
     blocked_until: Date | null;
   }>(
-    `INSERT INTO users (phone, auth_provider_id, name, email, avatar_url, role)
-     VALUES ($1, $2, $3, $4, $5, 'customer')
-     ON CONFLICT (phone) DO UPDATE
-       SET auth_provider_id = EXCLUDED.auth_provider_id,
-           name  = coalesce(users.name, EXCLUDED.name),
-           email = coalesce(users.email, EXCLUDED.email),
-           avatar_url = coalesce(users.avatar_url, EXCLUDED.avatar_url),
-           updated_at = now()
-     WHERE users.auth_provider_id IS NULL OR users.auth_provider_id = EXCLUDED.auth_provider_id
+    // phone is left NULL: Google does not supply one and nothing is asked of
+    // the user. A number arrives later only if an admin records one.
+    `INSERT INTO users (auth_provider_id, name, email, avatar_url, role)
+     VALUES ($1, $2, $3, $4, 'customer')
      RETURNING id, role, phone, name, email, avatar_url, blocked_until`,
-    [token.phone, token.uid, token.name ?? null, token.email ?? null, token.picture ?? null],
+    [token.uid, token.name ?? null, token.email ?? null, token.picture ?? null],
   );
 
-  const row = linked.rows[0];
-  if (!row) {
-    // The phone belongs to a row already bound to a *different* provider id.
-    // Silently rebinding would hand one person another's booking history.
-    throw new AuthError(
-      409,
-      'PHONE_TAKEN',
-      'That phone number is already linked to another account',
-    );
-  }
-
+  const row = created.rows[0]!;
   return {
     userId: row.id,
-    // The INSERT above always writes 'customer'; ON CONFLICT deliberately does
-    // not touch role, so an admin-created 'business' row survives its owner's
-    // first Google sign-in. Admin is then re-derived from ADMIN_EMAILS.
+    // The INSERT above always writes 'customer'. Roles are never taken from a
+    // token; admin is re-derived from ADMIN_EMAILS.
     role: await applyAdminPolicy(db, row.id, row.role, token),
     phone: row.phone,
     name: row.name,

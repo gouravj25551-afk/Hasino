@@ -1,6 +1,10 @@
 /**
- * Clerk Auth: Google sign-in, plus the phone-link step that satisfies
- * users.phone NOT NULL.
+ * Clerk Auth: Google sign-in, and nothing else.
+ *
+ * Google supplies the entire identity, so a first sign-in creates the account
+ * outright. There is no phone-link step: users.phone is nullable and the
+ * server no longer answers 428 PHONE_REQUIRED — see
+ * db/migrations/006_users_phone_optional.sql.
  *
  * No bundler — @clerk/clerk-js loads as a native ES module straight from the
  * CDN, pinned to one version, the same way the rest of this app's JavaScript
@@ -71,19 +75,37 @@ export async function watchAuthState(handler) {
 }
 
 /**
- * Google sign-in.
+ * The path Clerk returns the browser to after Google, served by the server as
+ * the app shell — see PAGES in src/http/server.ts.
+ *
+ * It is a real path, not a hash route, and that is load-bearing. Clerk appends
+ * its callback parameters (__clerk_status and friends) to this URL as a query
+ * string. Given '/#/login' the browser parses the result as one long fragment,
+ * location.search is empty, and handleRedirectCallback finds nothing to act
+ * on — which is precisely how the sign-in loop used to happen.
+ */
+const CALLBACK_PATH = '/sso-callback';
+
+/** True on the page load that Clerk redirected to after Google. */
+export function isRedirectCallback() {
+  return window.location.pathname === CALLBACK_PATH;
+}
+
+/**
+ * Google sign-in, step 1 of 2.
  *
  * Clerk's OAuth is a full redirect rather than a popup, so this never returns
- * on success — the browser leaves and comes back at the redirect URL, where
- * watchAuthState picks the session up. That is why the caller must treat a
- * resolved promise as "we are navigating", not "we are signed in".
+ * on success — the browser leaves for Google and comes back at CALLBACK_PATH,
+ * where completeRedirectCallback() finishes the handshake. That is why the
+ * caller must treat a resolved promise as "we are navigating", not "we are
+ * signed in".
  */
 export async function signInWithGoogle() {
   const c = await ensureClerk();
   try {
     await c.client.signIn.authenticateWithRedirect({
       strategy: 'oauth_google',
-      redirectUrl: window.location.origin + '/#/login',
+      redirectUrl: window.location.origin + CALLBACK_PATH,
       redirectUrlComplete: window.location.origin + '/#/home',
     });
     return null; // navigating away
@@ -96,13 +118,44 @@ export async function signInWithGoogle() {
 }
 
 /**
- * Kept for API compatibility with the shell's boot sequence. Clerk finishes
- * the OAuth handshake inside load(), so by the time anything calls this the
- * session already exists or does not; there is no separate result to consume.
+ * Google sign-in, step 2 of 2 — run on CALLBACK_PATH and nowhere else.
+ *
+ * This is what turns a returning OAuth redirect into an actual session, and
+ * its absence was the original bug: authenticateWithRedirect() started a flow
+ * that nothing ever finished, so the browser came back with a sign-in attempt
+ * in progress, no session, and a login page that offered to start the whole
+ * thing again.
+ *
+ * Clerk navigates away itself when it is done, so this does not return in the
+ * success case. The destinations matter:
+ *
+ *  - existing user  -> redirectUrlComplete from step 1 ('/#/home')
+ *  - brand-new user -> the sign-in is transferred to a sign-up automatically
+ *                      (transferable defaults to true), and with Google
+ *                      supplying every required attribute that sign-up
+ *                      completes in the same round trip and lands on '/#/home'
+ *                      too. Nothing is collected in between.
+ *
+ * The remaining URLs are stops this app does not use but Clerk may still route
+ * to — an instance reconfigured to require a phone or a second factor, say.
+ * They all point at the login view because that is the only auth UI mounted
+ * here; left unset they default to Clerk's own hosted component routes, which
+ * do not exist in this app and would dead-end.
  */
-export async function consumeRedirectResult() {
+export async function completeRedirectCallback() {
   const c = await ensureClerk();
-  return c.user ? { user: c.user } : null;
+  return c.handleRedirectCallback({
+    continueSignUpUrl: '/#/login',
+    signInFallbackRedirectUrl: '/#/home',
+    signUpFallbackRedirectUrl: '/#/home',
+    signInUrl: '/#/login',
+    signUpUrl: '/#/login',
+    firstFactorUrl: '/#/login',
+    secondFactorUrl: '/#/login',
+    resetPasswordUrl: '/#/login',
+    verifyPhoneNumberUrl: '/#/login',
+    verifyEmailAddressUrl: '/#/login',
+  });
 }
 
 export async function signOut() {
@@ -125,70 +178,14 @@ export function currentUser() {
   return clerk?.user ?? null;
 }
 
-// ---------- phone link: the 428 PHONE_REQUIRED flow ----------
-
 /**
- * Google carries no phone number, and users.phone is NOT NULL UNIQUE because a
- * salon has to be able to ring the customer. It is also how a salon owner
- * claims the account an admin created for them — resolveSession matches on the
- * verified number. So a new Google account links a phone before it can exist.
+ * Resolves once clerk-js has loaded and restored whatever session exists.
  *
- * Unlike the Firebase version this needs no reCAPTCHA container: Clerk handles
- * bot protection itself, so the caller no longer passes a container id. The
- * argument is still accepted and ignored, so the login view did not have to
- * change shape.
+ * currentUser() is synchronous and reports null until that finishes, so any
+ * "are they signed in?" check that does not await this first answers "no" for
+ * everybody on a cold page load — and, on the login view, offers a signed-in
+ * user the sign-in button.
  */
-export async function sendPhoneLinkOtp(phoneNumber, _containerId) {
-  const c = await ensureClerk();
-  if (!c.user) throw new Error('Sign in with Google first');
-
-  try {
-    const created = await c.user.createPhoneNumber({ phoneNumber });
-    await created.prepareVerification();
-    // Returned as a handle so confirmPhoneLinkOtp mirrors the old signature.
-    return created;
-  } catch (err) {
-    const message = clerkMessage(err);
-    if (/already.*(in use|exists|taken)/i.test(message)) {
-      throw Object.assign(new Error('That phone number is already linked to another account'), {
-        code: 'PHONE_TAKEN',
-      });
-    }
-    if (/invalid/i.test(message)) {
-      throw Object.assign(new Error('That does not look like a valid phone number'), { code: 'BAD_PHONE' });
-    }
-    throw Object.assign(new Error(message), { code: 'SEND_FAILED' });
-  }
-}
-
-/** Step 2: verify the OTP, completing the link. */
-export async function confirmPhoneLinkOtp(phoneNumberResource, code) {
-  try {
-    const verified = await phoneNumberResource.attemptVerification({ code });
-    if (verified?.verification?.status !== 'verified') {
-      throw Object.assign(new Error('That code is incorrect'), { code: 'BAD_OTP' });
-    }
-    // The server reads the phone from Clerk's Backend API, and only trusts a
-    // number whose verification status is 'verified'. Reload so the next
-    // /api/me sees it rather than racing the propagation.
-    await clerk?.user?.reload?.();
-    return verified;
-  } catch (err) {
-    if (err?.code === 'BAD_OTP') throw err;
-    const message = clerkMessage(err);
-    if (/already.*(in use|exists|taken)/i.test(message)) {
-      throw Object.assign(new Error('That phone number is already linked to another account'), {
-        code: 'PHONE_TAKEN',
-      });
-    }
-    if (/incorrect|invalid|expired/i.test(message)) {
-      throw Object.assign(new Error('That code is incorrect or has expired'), { code: 'BAD_OTP' });
-    }
-    throw err;
-  }
-}
-
-/** Clerk puts the useful text in errors[0], not in message. */
-function clerkMessage(err) {
-  return err?.errors?.[0]?.longMessage ?? err?.errors?.[0]?.message ?? err?.message ?? 'Unknown error';
+export async function awaitClerk() {
+  await ensureClerk();
 }

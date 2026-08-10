@@ -8,6 +8,7 @@
  * to save one file.
  */
 import { currentIdToken, watchAuthState, signOut } from './lib/auth.js';
+import { ask } from './lib/dialog.js';
 
 const $  = (s, r = document) => r.querySelector(s);
 const el = (t, cls, txt) => { const n = document.createElement(t); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
@@ -137,7 +138,13 @@ async function todayView() {
 
   const close = el('button', 'btn danger', 'Close for this day');
   close.onclick = async () => {
-    if (!confirm(`Cancel every booking on ${currentDate} and queue refunds?\n\nThis cannot be undone.`)) return;
+    const ok = await ask({
+      title: `Close for ${currentDate}?`,
+      message: 'Every booking on this day is cancelled and refunds are queued. This cannot be undone.',
+      confirmLabel: 'Close for the day',
+      danger: true,
+    });
+    if (!ok) return;
     const r = await api('/api/business/close-today', { method: 'POST', body: JSON.stringify({ date: currentDate }) });
     toast(view, `Cancelled ${r.cancelled} booking(s).\n${r.refunds}`);
     todayView();
@@ -159,7 +166,9 @@ async function todayView() {
 
     const grow = el('div', 'grow');
     grow.append(el('div', null, b.customerName || 'Customer'));
-    grow.append(el('div', 'meta', `${b.customerPhone} · ${b.services.join(', ') || '—'}`));
+    // Google sign-in carries no phone, so most customers have none on file.
+    const contact = b.customerPhone || b.customerEmail || 'no contact on file';
+    grow.append(el('div', 'meta', `${contact} · ${b.services.join(', ') || '—'}`));
     item.append(grow);
 
     if (b.refundStatus !== 'none') item.append(el('span', 'pill warn', 'refund ' + b.refundStatus));
@@ -175,13 +184,26 @@ async function todayView() {
 
     if (b.status === 'booked') {
       const verify = el('button', 'btn sm primary', 'Verify code');
-      verify.onclick = () => {
-        const code = prompt("Enter the customer's 6-digit code:");
-        if (code) send('verify', { code: code.trim() });
+      verify.onclick = async () => {
+        const answer = await ask({
+          title: 'Verify booking',
+          message: `${b.customerName || 'The customer'} reads you the code from their booking.`,
+          confirmLabel: 'Verify',
+          input: { label: "Customer's 6-digit code", placeholder: '123456', type: 'text' },
+        });
+        if (answer?.value) send('verify', { code: answer.value });
       };
       act.append(verify);
       const ns = el('button', 'btn sm danger', 'No-show');
-      ns.onclick = () => confirm('Mark as no-show? The customer is not refunded.') && send('no-show');
+      ns.onclick = async () => {
+        const ok = await ask({
+          title: 'Mark as a no-show?',
+          message: 'The customer is not refunded.',
+          confirmLabel: 'Mark no-show',
+          danger: true,
+        });
+        if (ok) send('no-show');
+      };
       act.append(ns);
     }
     if (b.status === 'verified') {
@@ -196,7 +218,16 @@ async function todayView() {
     }
     if (['booked', 'verified', 'in_progress'].includes(b.status)) {
       const cancel = el('button', 'btn sm', 'Cancel');
-      cancel.onclick = () => confirm('Cancel this booking and queue a refund?') && send('cancel');
+      cancel.onclick = async () => {
+        const ok = await ask({
+          title: 'Cancel this booking?',
+          message: 'A refund is queued for the customer.',
+          confirmLabel: 'Cancel booking',
+          cancelLabel: 'Keep it',
+          danger: true,
+        });
+        if (ok) send('cancel');
+      };
       act.append(cancel);
     }
     item.append(act);
@@ -547,7 +578,19 @@ async function renderPendingBanner() {
 
 window.addEventListener('hashchange', renderPendingBanner);
 
-watchAuthState(async () => {
+/**
+ * Identity changes only — see the same guard in admin.js. watchAuthState also
+ * fires on Clerk's routine token refresh, and render() rebuilds the current
+ * view, so without this an owner editing their menu or timings loses whatever
+ * they had typed about once a minute.
+ */
+let lastUserId;
+
+watchAuthState(async (user) => {
+  const userId = user?.id ?? null;
+  if (userId === lastUserId) return;
+  lastUserId = userId;
+
   const me = await initIdentity();
   if (!me) return renderNotAnOwner({ status: 401 });
   if (me.role !== 'business') return renderNotAnOwner({ status: 403 });

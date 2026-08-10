@@ -8,6 +8,7 @@
  * to save one file.
  */
 import { currentIdToken, watchAuthState, signOut } from './lib/auth.js';
+import { ask, notify } from './lib/dialog.js';
 
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
@@ -158,7 +159,7 @@ async function salonsView() {
 
         const owner = el('div');
         owner.style.minWidth = '190px';
-        owner.append(el('div', null, s.ownerName || s.ownerPhone));
+        owner.append(el('div', null, s.ownerName || s.ownerEmail || s.ownerPhone || '—'));
         owner.append(el('div', 'meta', s.ownerHasSignedIn ? 'signed in' : 'never signed in'));
         item.append(owner);
 
@@ -207,7 +208,7 @@ async function salonView(salonId) {
   const o = el('div', 'list');
   const oi = el('div', 'item');
   oi.append(el('div', 'grow', s.owner.name || '(no name yet)'));
-  oi.append(el('span', 'meta', s.owner.phone));
+  if (s.owner.phone) oi.append(el('span', 'meta', s.owner.phone));
   if (s.owner.email) oi.append(el('span', 'meta', s.owner.email));
   oi.append(s.owner.hasSignedIn
     ? el('span', 'pill ok', 'signed in')
@@ -216,7 +217,7 @@ async function salonView(salonId) {
   ownerPanel.append(o);
   if (!s.owner.hasSignedIn) {
     ownerPanel.append(el('div', 'note',
-      `This owner has not signed in yet. They sign in with Google and link ${s.owner.phone} when prompted; ` +
+      `This owner has not signed in yet. They sign in with Google as ${s.owner.email ?? '(no email on file)'}; ` +
       'the account they get is already attached to this salon. No further action here.'));
   }
   view.append(ownerPanel);
@@ -276,7 +277,7 @@ async function salonView(salonId) {
     for (const b of s.recentBookings) {
       const it = el('div', 'item');
       it.append(el('div', 'when', when(b.startAt)));
-      it.append(el('div', 'grow', b.customerName || b.customerPhone));
+      it.append(el('div', 'grow', b.customerName || b.customerPhone || 'Customer'));
       it.append(el('strong', null, rupees(b.amount)));
       it.append(el('span', 'pill', b.status.replace(/_/g, ' ')));
       bl.append(it);
@@ -295,29 +296,55 @@ async function salonView(salonId) {
  */
 async function changeStatus(salon, to) {
   const deactivating = to !== 'active';
-  let cancelFutureBookings = false;
-  let reason = '';
+  const offerCancel = deactivating && salon.futureBookings > 0;
 
-  if (deactivating && salon.futureBookings > 0) {
-    cancelFutureBookings = confirm(
-      `This salon has ${salon.futureBookings} upcoming booking(s).\n\n` +
-      `OK  — cancel them now and queue refunds (customers are told)\n` +
-      `Cancel — leave them standing (customers will still turn up)`,
-    );
-  }
-  reason = prompt(`Reason for moving this salon to "${to}"?`, '') ?? '';
+  // One dialog, asking both questions at once. This used to be a confirm()
+  // followed by a prompt(); prompt() throws outright where dialogs are not
+  // supported, and because it sat outside the try below, the throw rejected
+  // this function into an onclick that ignored the promise. The button did
+  // nothing at all, with nothing logged and nothing shown.
+  const answer = await ask({
+    title:
+      to === 'active'
+        ? (salon.status === 'pending' ? 'Approve and activate this salon?' : 'Reactivate this salon?')
+        : to === 'suspended' ? 'Suspend this salon?' : 'Ban this salon?',
+    message:
+      to === 'active'
+        ? 'It becomes visible to customers and can take bookings immediately.'
+        : offerCancel
+          ? `This salon has ${salon.futureBookings} upcoming booking(s).\n` +
+            'No new bookings can be made either way. The ones already promised are ' +
+            'left standing unless you cancel them here — otherwise those customers ' +
+            'still turn up.'
+          : 'No new bookings can be made while it is in this state.',
+    confirmLabel: to === 'active' ? 'Approve & activate' : to === 'suspended' ? 'Suspend' : 'Ban',
+    danger: deactivating,
+    input: { label: 'Reason (optional)', placeholder: 'Recorded in the status history' },
+    ...(offerCancel
+      ? { checkbox: { label: `Cancel those ${salon.futureBookings} booking(s) and queue refunds`, checked: false } }
+      : {}),
+  });
+
+  if (!answer) return; // dismissed
 
   try {
     const result = await api(`/api/admin/salons/${salon.id}/status`, {
       method: 'POST',
-      body: JSON.stringify({ status: to, reason: reason || null, cancelFutureBookings }),
+      body: JSON.stringify({
+        status: to,
+        reason: answer.value || null,
+        cancelFutureBookings: answer.checked,
+      }),
     });
-    if (result.cancelledBookings) {
-      alert(`${result.cancelledBookings} booking(s) cancelled, ${result.refundsQueued} refund(s) queued.`);
-    }
     salonView(salon.id);
+    if (result.cancelledBookings) {
+      await notify({
+        title: 'Status changed',
+        message: `${result.cancelledBookings} booking(s) cancelled, ${result.refundsQueued} refund(s) queued.`,
+      });
+    }
   } catch (err) {
-    alert(`Could not change status: ${err.message}`);
+    await notify({ title: 'Could not change status', message: err.message, tone: 'bad' });
   }
 }
 
@@ -361,7 +388,7 @@ async function salonServicesPanel(salonId, services) {
         });
         save.textContent = 'Saved';
       } catch (err) {
-        alert(err.message);
+        await notify({ title: 'Could not save', message: err.message, tone: 'bad' });
         save.textContent = 'Save';
       } finally {
         save.disabled = false;
@@ -422,7 +449,7 @@ async function salonHoursPanel(salonId, hours) {
         });
         save.textContent = 'Saved';
       } catch (err) {
-        alert(err.message);
+        await notify({ title: 'Could not save', message: err.message, tone: 'bad' });
       } finally {
         save.disabled = false;
         setTimeout(() => { save.textContent = 'Save'; }, 1200);
@@ -443,7 +470,7 @@ function onboardView() {
   const view = $('#view');
   view.innerHTML = '';
   view.append(el('h1', null, 'Onboard a salon'));
-  view.append(el('p', 'sub', 'Creates the salon and an owner account. The owner claims it by signing in with Google and linking this phone number — no SQL, and nothing to send them but the number they already have.'));
+  view.append(el('p', 'sub', 'Creates the salon and an owner account. The owner claims it by signing in with Google using the email address below — so it must be the address on their Google account, or they will get a fresh customer account instead of this salon.'));
 
   const panel = el('div', 'panel');
   const grid = el('div', 'grid two');
@@ -489,9 +516,9 @@ function onboardView() {
     field('Commission (bps)', commission, 'Blank uses PLATFORM_COMMISSION_BPS'),
     field('Salon phone', salonPhone),
     field('Salon email', salonEmail),
-    field('Owner phone *', ownerPhone, 'E.164. This is what they link at sign-in.'),
+    field('Owner phone *', ownerPhone, 'E.164. So the platform can ring them; not used at sign-in.'),
     field('Owner name', ownerName),
-    field('Owner email', ownerEmail),
+    field('Owner email *', ownerEmail, 'Their Google address. This is what they sign in with.'),
     field('Status', status),
   );
   panel.append(grid);
@@ -517,7 +544,7 @@ function onboardView() {
         owner: {
           phone: ownerPhone.value.trim(),
           name: ownerName.value.trim() || null,
-          email: ownerEmail.value.trim() || null,
+          email: ownerEmail.value.trim(),
         },
       };
       if (commission.value !== '') body.commissionBps = Number(commission.value);
@@ -526,7 +553,7 @@ function onboardView() {
       out.append(el('div', 'out ok',
         `Created. Seven days of default hours (10:00–20:00, 1 chair, 30 min) are in place.\n` +
         `The owner ${created.ownerExisted ? 'already existed and was promoted' : 'was created'} — ` +
-        `they sign in with Google and link ${body.owner.phone}.`));
+        `they sign in with Google as ${body.owner.email}.`));
       const go = el('a', 'btn sm primary', 'Open salon →');
       go.href = `#/salon/${created.salonId}`;
       out.append(go);
@@ -578,9 +605,15 @@ async function catalogView() {
         ? 'In use by a salon menu — removing it would rewrite booking history'
         : 'Not used by any salon';
       del.onclick = async () => {
-        if (!confirm(`Delete "${sv.name}" from the catalogue?`)) return;
+        const ok = await ask({
+          title: `Delete "${sv.name}" from the catalogue?`,
+          message: 'Salons already offering it keep their own copy; this only removes it from the list new salons pick from.',
+          confirmLabel: 'Delete',
+          danger: true,
+        });
+        if (!ok) return;
         try { await api(`/api/admin/services/${sv.id}`, { method: 'DELETE' }); draw(); }
-        catch (err) { alert(err.message); }
+        catch (err) { await notify({ title: 'Could not delete', message: err.message, tone: 'bad' }); }
       };
       it.append(del);
       list.append(it);
@@ -687,7 +720,26 @@ function renderNotAdmin(kind) {
 
 window.addEventListener('hashchange', render);
 
-watchAuthState(async () => {
+/**
+ * Re-render the panel when the *identity* changes, and at no other time.
+ *
+ * watchAuthState fires on every Clerk resource change, not just sign-in and
+ * sign-out — a session token refresh, which Clerk does on its own about once a
+ * minute, emits too. Calling render() on each of those rebuilds the current
+ * view from scratch, and onboardView() starts with `view.innerHTML = ''`. An
+ * admin halfway through typing a salon watched the form empty itself roughly
+ * every minute, which looks exactly like the page reloading.
+ *
+ * undefined rather than null as the initial value, so the very first callback
+ * always gets through: signed out is a real state and null is its id.
+ */
+let lastUserId;
+
+watchAuthState(async (user) => {
+  const userId = user?.id ?? null;
+  if (userId === lastUserId) return; // same person, just a refreshed token
+  lastUserId = userId;
+
   const me = await initIdentity();
   if (!me) return renderNotAdmin('anon');
   if (me.role !== 'admin') return renderNotAdmin('forbidden');

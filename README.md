@@ -3,7 +3,7 @@
 Salon booking marketplace. The availability engine, booking create, Razorpay
 payments, the money ledger, and two web surfaces over them.
 
-Clerk (Google sign-in with the one-time phone-link step) and Razorpay
+Clerk (Google sign-in, one step, no phone number) and Razorpay
 are both implemented. A booking now holds a chair while the customer pays and
 only becomes real once the money is verified — see
 [the payment hold](#the-payment-hold) for why that ordering matters.
@@ -87,9 +87,10 @@ No SQL, either way:
 
 1. **Admin onboards it** — `/admin` → Onboard. Creates the salon plus a `users`
    row with `role='business'` and no `auth_provider_id`. The owner then signs in
-   with Google, links that phone at the existing `428 PHONE_REQUIRED` step, and
-   the row is adopted with its role intact. That one `ON CONFLICT (phone)`
-   clause in `resolveSession` is the whole mechanism.
+   with Google using the email address the admin recorded, and the row is
+   adopted with its role intact. `claimByEmail()` in `resolveSession` is the
+   whole mechanism — which is why owner email is required at onboarding, and
+   must be their actual Google address.
 2. **The salon applies** — a signed-in customer uses "List your salon". Lands as
    `pending`, invisible to customers, and emails `ADMIN_EMAILS`. They can set up
    their menu and hours while they wait.

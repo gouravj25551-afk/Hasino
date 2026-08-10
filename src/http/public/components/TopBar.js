@@ -3,9 +3,26 @@ import { Avatar } from './Avatar.js';
 import { Button } from './Button.js';
 
 /**
- * `user` is a Session shape ({name, email, avatarUrl}) or null when signed
- * out. `onLocationClick` is a no-op hook — there is no real location search
- * yet, only the label the customer flow already shows.
+ * The panel a signed-in user is entitled to, or null for a plain customer.
+ *
+ * Showing this is a convenience, not a permission check — /admin and /business
+ * are public shells and every byte of data behind them is authorised
+ * server-side on each request. Hiding the link protects nothing; it just keeps
+ * a door out of sight of the people it would only 403 for.
+ *
+ * Roles do not nest (see requireRole in src/auth/session.ts), so an admin gets
+ * the admin panel and nothing else — /business would find no salon they own.
+ */
+function panelFor(role) {
+  if (role === 'admin') return { href: '/admin', label: 'Admin' };
+  if (role === 'business') return { href: '/business', label: 'Salon panel' };
+  return null;
+}
+
+/**
+ * `user` is a Session shape ({name, email, avatarUrl, role}) or null when
+ * signed out. `onLocationClick` is a no-op hook — there is no real location
+ * search yet, only the label the customer flow already shows.
  */
 export function TopBar({ user, locationLabel = 'Bengaluru', onLocationClick, onSignIn } = {}) {
   const bar = el('div', 'topbar');
@@ -32,6 +49,15 @@ export function TopBar({ user, locationLabel = 'Bengaluru', onLocationClick, onS
 
   const widget = el('div', 'row');
   if (user) {
+    // Sits next to the avatar so it is reachable from every customer page.
+    // Both panels link back with "← Customer app", closing the round trip.
+    const panel = panelFor(user.role);
+    if (panel) {
+      const panelLink = el('a', 'btn sm', panel.label);
+      panelLink.href = panel.href;
+      widget.append(panelLink);
+    }
+
     const link = el('a', 'row');
     link.href = '#/profile';
     link.style.textDecoration = 'none';

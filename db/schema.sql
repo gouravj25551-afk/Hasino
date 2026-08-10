@@ -12,7 +12,11 @@ CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 -- ---------- users ----------
 CREATE TABLE IF NOT EXISTS users (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  phone          text UNIQUE NOT NULL,
+  -- Optional: sign-in is Google, which carries no phone number. UNIQUE still
+  -- holds for rows that have one (Postgres treats NULLs as distinct), because
+  -- a present number identifies a salon owner an admin onboarded.
+  -- See db/migrations/006_users_phone_optional.sql.
+  phone          text UNIQUE,
   -- The identity provider's subject claim (spec §7: "auth only, data in
   -- Postgres"). This is the join between a verified token and the row that
   -- owns bookings. Named for the role it plays, not for the provider — see

@@ -134,8 +134,9 @@ export async function adminRoutes(
         email: optionalStr(body, 'email') ?? null,
         owner: {
           phone: str(o, 'phone'),
+          // Required: it is how the owner's Google sign-in finds this row.
+          email: str(o, 'email'),
           name: typeof o['name'] === 'string' ? o['name'] : null,
-          email: typeof o['email'] === 'string' ? o['email'] : null,
         },
       });
       // A brand new salon has no cached window, but an admin re-onboarding

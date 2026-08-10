@@ -100,6 +100,7 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'admin.js',
   'lib/api.js',
   'lib/auth.js',
+  'lib/dialog.js',
   'lib/dom.js',
   'lib/format.js',
   'lib/payments.js',
@@ -136,6 +137,13 @@ const PAGES: Record<string, string> = {
   // of data behind it is authorised server-side, and the panel must never
   // rely on a hidden nav link for that.
   '/admin': 'admin.html',
+  // Where Clerk returns the browser after Google. It has to be a real path
+  // rather than a hash route: Clerk appends its callback parameters as a
+  // query string, and on a '/#/login' target they would land inside the
+  // fragment, where location.search cannot see them and the sign-in can
+  // never be completed. Serves the app shell, which finishes the handshake
+  // and then navigates on — see app.js and lib/auth.js.
+  '/sso-callback': 'index.html',
 };
 
 function requireDevAuth(): void {
