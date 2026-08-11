@@ -407,6 +407,13 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
         ...(typeof body['timezone'] === 'string' ? { timezone: body['timezone'] } : {}),
         phone: typeof body['phone'] === 'string' ? body['phone'] : null,
         email: typeof body['email'] === 'string' ? body['email'] : null,
+        description: typeof body['description'] === 'string' ? body['description'] : null,
+        coverUrl: typeof body['coverUrl'] === 'string' ? body['coverUrl'] : null,
+        photoUrls: Array.isArray(body['photoUrls'])
+          ? body['photoUrls'].filter((u): u is string => typeof u === 'string')
+          : [],
+        openAt: typeof body['openAt'] === 'string' ? body['openAt'] : null,
+        closeAt: typeof body['closeAt'] === 'string' ? body['closeAt'] : null,
       },
     );
     return json(res, 201, { ...result, status: 'pending' });
@@ -492,9 +499,20 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
 
   if (method === 'GET' && path === '/api/me') {
     const s = await session(db, req);
+    // The application a customer already has in flight, if any. Without it the
+    // app would keep offering "List your salon" to someone who applied last
+    // week — applying is what creates the salon, so a second attempt only 409s.
+    // Not part of resolveSession: this is one query for one endpoint, not
+    // something every authenticated request should pay for.
+    const application = await db.query<{ id: string; status: string; name: string }>(
+      `SELECT id, status, name FROM salons WHERE owner_id = $1`,
+      [s.userId],
+    );
+    const salon = application.rows[0];
     return json(res, 200, {
       id: s.userId,
       role: s.role,
+      salon: salon ? { id: salon.id, name: salon.name, status: salon.status } : null,
       phone: s.phone,
       name: s.name,
       email: s.email,

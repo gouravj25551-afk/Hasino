@@ -34,7 +34,7 @@ async function api(path, opts = {}) {
   return body;
 }
 
-const STATUS_TONE = { pending: 'warn', active: 'ok', suspended: 'bad', banned: 'bad' };
+const STATUS_TONE = { pending: 'warn', active: 'ok', suspended: 'bad', banned: 'bad', rejected: 'bad' };
 const statusPill = s => el('span', 'pill ' + (STATUS_TONE[s] ?? ''), s);
 
 function errorBox(err) {
@@ -98,7 +98,7 @@ async function salonsView() {
   const row = el('div', 'row');
 
   const tabs = el('div', 'row');
-  for (const [label, value] of [['Pending','pending'],['Active','active'],['Suspended','suspended'],['Banned','banned'],['All','']]) {
+  for (const [label, value] of [['Pending','pending'],['Active','active'],['Suspended','suspended'],['Rejected','rejected'],['Banned','banned'],['All','']]) {
     const b = el('button', 'btn sm' + (salonFilters.status === value ? ' primary' : ''), label);
     b.onclick = () => { salonFilters.status = value; salonsView(); };
     tabs.append(b);
@@ -202,6 +202,70 @@ async function salonView(salonId) {
   head.append(el('div', 'meta', `Onboarded ${day(s.createdAt)}${s.approvedAt ? ` · approved ${day(s.approvedAt)}` : ''}`));
   view.append(head);
 
+  // ---- the application itself ----
+  // Everything the owner submitted, in one panel, because approving a salon
+  // means judging a business and a name plus an address judges nothing.
+  const appPanel = el('div', 'panel');
+  appPanel.append(el('h2', null, s.status === 'pending' ? 'Application' : 'Salon details'));
+
+  const facts = el('div', 'list');
+  const fact = (k, v) => {
+    const it = el('div', 'item');
+    it.append(el('div', 'meta', k));
+    it.append(el('div', 'grow', v || '—'));
+    return it;
+  };
+  facts.append(fact('Phone', s.phone));
+  facts.append(fact('Email', s.email));
+  facts.append(fact('Address', [s.address, s.area, s.city].filter(Boolean).join(', ')));
+  facts.append(fact('Location', `${s.lat}, ${s.lng}`));
+  const map = el('a', 'btn sm', 'Open in maps ↗');
+  map.href = `https://www.google.com/maps/search/?api=1&query=${s.lat},${s.lng}`;
+  map.target = '_blank';
+  map.rel = 'noopener noreferrer';
+  const mapRow = el('div', 'item');
+  mapRow.append(el('div', 'meta', 'Verify'));
+  mapRow.append(el('div', 'grow'), map);
+  facts.append(mapRow);
+  appPanel.append(facts);
+
+  if (s.description) {
+    appPanel.append(el('h3', null, 'Description'));
+    appPanel.append(el('p', 'sub', s.description));
+  }
+
+  // Photos are the strongest signal an admin has that a real shop exists, so
+  // they are shown, not linked.
+  const gallery = [...(s.coverUrl ? [{ url: s.coverUrl, label: 'Storefront' }] : []),
+                   ...(s.photos ?? []).map((url) => ({ url, label: '' }))];
+  if (gallery.length) {
+    appPanel.append(el('h3', null, 'Photos'));
+    const strip = el('div', 'row');
+    strip.style.cssText = 'flex-wrap:wrap; gap:10px';
+    for (const g of gallery) {
+      const link = el('a');
+      link.href = g.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      const img = el('img');
+      img.src = g.url;
+      img.alt = g.label || 'Salon photo';
+      img.loading = 'lazy';
+      img.style.cssText = 'width:150px; height:110px; object-fit:cover; border-radius:10px; display:block';
+      // A dead link is itself a signal worth seeing.
+      img.onerror = () => { link.replaceWith(el('div', 'out bad', 'image failed to load')); };
+      link.append(img);
+      const cell = el('div');
+      cell.append(link);
+      if (g.label) cell.append(el('div', 'meta', g.label));
+      strip.append(cell);
+    }
+    appPanel.append(strip);
+  } else {
+    appPanel.append(el('div', 'note', 'No photos submitted.'));
+  }
+  view.append(appPanel);
+
   // ---- owner ----
   const ownerPanel = el('div', 'panel');
   ownerPanel.append(el('h2', null, 'Owner'));
@@ -213,6 +277,10 @@ async function salonView(salonId) {
   oi.append(s.owner.hasSignedIn
     ? el('span', 'pill ok', 'signed in')
     : el('span', 'pill warn', 'never signed in'));
+  // Approval is what turns a customer into a salon owner, so the role is the
+  // clearest read on whether that has happened yet.
+  oi.append(el('span', 'pill ' + (s.owner.role === 'business' ? 'ok' : ''),
+    s.owner.role === 'business' ? 'salon owner' : s.owner.role));
   o.append(oi);
   ownerPanel.append(o);
   if (!s.owner.hasSignedIn) {
@@ -226,16 +294,35 @@ async function salonView(salonId) {
   const statusPanel = el('div', 'panel');
   statusPanel.append(el('h2', null, 'Status'));
   const actions = el('div', 'row');
-  const LEGAL = { pending: ['active','banned'], active: ['suspended','banned'], suspended: ['active','banned'], banned: [] };
+  // Mirrors ALLOWED_STATUS in src/admin/repo.ts. The server is the authority —
+  // it refuses an illegal transition regardless of what this renders.
+  const LEGAL = {
+    pending: ['active', 'rejected', 'banned'],
+    active: ['suspended', 'banned'],
+    suspended: ['active', 'banned'],
+    rejected: ['pending', 'banned'],
+    banned: [],
+  };
+  const LABEL = {
+    active: s.status === 'pending' ? 'Approve & activate' : 'Reactivate',
+    rejected: 'Reject',
+    pending: 'Reopen for review',
+    suspended: 'Suspend',
+    banned: 'Ban',
+  };
   for (const to of LEGAL[s.status] ?? []) {
-    const b = el('button', 'btn sm' + (to === 'active' ? ' primary' : ' danger'),
-      to === 'active' ? (s.status === 'pending' ? 'Approve & activate' : 'Reactivate') :
-      to === 'suspended' ? 'Suspend' : 'Ban');
+    const tone = to === 'active' ? ' primary' : to === 'pending' ? '' : ' danger';
+    const b = el('button', 'btn sm' + tone, LABEL[to]);
     b.onclick = () => changeStatus(s, to);
     actions.append(b);
   }
   if (!(LEGAL[s.status] ?? []).length) {
     actions.append(el('div', 'meta', 'Banned is terminal — this salon cannot be reinstated.'));
+  }
+  if (s.status === 'pending') {
+    statusPanel.append(el('div', 'note',
+      'Approving makes this salon visible to customers and turns its owner into a salon owner. '
+      + 'Until then they are a plain customer with no panel.'));
   }
   statusPanel.append(actions);
 

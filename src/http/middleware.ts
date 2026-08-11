@@ -11,32 +11,82 @@ import { HttpError } from './respond.ts';
 
 // ------------------------------------------------------------------ security
 
-const CSP = [
-  "default-src 'self'",
-  // Razorpay's checkout is a script from their CDN that injects an iframe.
-  // There is no self-hosted build of it, and taking payments requires it.
-  // clerk-js is loaded from jsDelivr because this app has no bundler, and
-  // Clerk itself injects a worker and frames from its own hosted domains.
-  // 'unsafe-eval' is deliberately NOT granted; clerk-js does not need it.
-  //
-  // challenges.cloudflare.com is Clerk's bot protection (Turnstile). It was
-  // already trusted in frame-src, but the widget is a *script* that then
-  // creates that frame — without it here the script is blocked, and the only
-  // symptom is that sign-up fails with captcha_invalid. Sign-in is unaffected,
-  // so this breaks new accounts exclusively.
-  "script-src 'self' https://checkout.razorpay.com https://*.razorpay.com https://cdn.jsdelivr.net https://*.clerk.accounts.dev https://clerk.* https://challenges.cloudflare.com",
-  "worker-src 'self' blob:",
-  "frame-src https://api.razorpay.com https://*.razorpay.com https://*.clerk.accounts.dev https://challenges.cloudflare.com",
-  "connect-src 'self' https://*.razorpay.com https://lumberjack.razorpay.com https://*.clerk.accounts.dev https://clerk.* https://api.clerk.com",
-  // The customer app has no build step, so component styles are inline.
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: https:",
-  "font-src 'self' data:",
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-].join('; ');
+/**
+ * The Clerk Frontend API host this deploy talks to, read out of the
+ * publishable key.
+ *
+ * The key is `pk_<env>_<base64 host>` — the host is not a secret, it is where
+ * every browser is about to send its session traffic. Deriving it beats naming
+ * it in a second environment variable that can disagree with the key, and it
+ * beats a wildcard: this returns the one host that is actually correct for the
+ * instance the keys belong to.
+ *
+ * Returns null for a missing or malformed key, in which case the CSP simply
+ * carries no Clerk host and sign-in is visibly broken rather than silently
+ * over-permitted.
+ */
+export function clerkFrontendApiHost(publishableKey: string | undefined): string | null {
+  const encoded = publishableKey?.split('_')[2];
+  if (!encoded) return null;
+  try {
+    // Clerk pads the encoded host with a trailing '$'.
+    const host = Buffer.from(encoded, 'base64').toString('utf8').replace(/\$+$/, '');
+    // A host and nothing else: no scheme, no path, no room for a stray
+    // wildcard or space to widen the policy.
+    return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(host) ? host : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Built per deploy rather than as a constant, because the Clerk host differs
+ * between instances.
+ *
+ * This used to carry `https://clerk.*`, which is not valid CSP — a wildcard is
+ * only allowed as the leftmost label, so browsers discarded the token entirely
+ * and said so in the console. It happened to be harmless on a development
+ * instance, where the neighbouring `*.clerk.accounts.dev` covers the real
+ * host, and would have failed on the first production deploy: a production
+ * instance serves its Frontend API from `clerk.<yourdomain>`, which nothing
+ * else here matches. Sign-in would have been blocked with a CSP violation.
+ */
+export function contentSecurityPolicy(publishableKey = process.env['CLERK_PUBLISHABLE_KEY']): string {
+  const clerkHost = clerkFrontendApiHost(publishableKey);
+  // The exact instance host (production is clerk.<yourdomain>), plus the
+  // development wildcard, which is what *.clerk.accounts.dev instances use.
+  const clerk = ['https://*.clerk.accounts.dev', ...(clerkHost ? [`https://${clerkHost}`] : [])].join(' ');
+
+  return [
+    "default-src 'self'",
+    // Razorpay's checkout is a script from their CDN that injects an iframe.
+    // There is no self-hosted build of it, and taking payments requires it.
+    // clerk-js is loaded from jsDelivr because this app has no bundler, and
+    // Clerk itself injects a worker and frames from its own hosted domains.
+    // 'unsafe-eval' is deliberately NOT granted; clerk-js does not need it.
+    //
+    // challenges.cloudflare.com is Clerk's bot protection (Turnstile). It was
+    // already trusted in frame-src, but the widget is a *script* that then
+    // creates that frame — without it here the script is blocked, and the only
+    // symptom is that sign-up fails with captcha_invalid. Sign-in is
+    // unaffected, so this breaks new accounts exclusively.
+    `script-src 'self' https://checkout.razorpay.com https://*.razorpay.com https://cdn.jsdelivr.net ${clerk} https://challenges.cloudflare.com`,
+    "worker-src 'self' blob:",
+    `frame-src https://api.razorpay.com https://*.razorpay.com ${clerk} https://challenges.cloudflare.com`,
+    `connect-src 'self' https://*.razorpay.com https://lumberjack.razorpay.com ${clerk} https://api.clerk.com`,
+    // The customer app has no build step, so component styles are inline.
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: https:",
+    "font-src 'self' data:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join('; ');
+}
+
+// Computed once: the key cannot change without restarting the process.
+const CSP = contentSecurityPolicy();
 
 export function securityHeaders(res: ServerResponse, isProd: boolean): void {
   res.setHeader('x-content-type-options', 'nosniff');

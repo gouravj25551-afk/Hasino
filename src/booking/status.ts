@@ -1,3 +1,5 @@
+import { randomInt } from 'node:crypto';
+
 import type { Pool, PoolClient } from '../db/pool.ts';
 import { withTransaction } from '../db/pool.ts';
 import { cancelPending, enqueueNotification } from '../notify/outbox.ts';
@@ -74,9 +76,16 @@ export function canTransition(from: BookingStatus, to: BookingStatus): boolean {
   return TRANSITIONS[from]?.includes(to) ?? false;
 }
 
-/** Spec §4: 6 digits. Uniform over 000000-999999, no modulo bias. */
+/**
+ * Spec §4: 6 digits. Uniform over 000000-999999, no modulo bias.
+ *
+ * randomInt, not Math.random: this code is the only thing standing between a
+ * booking and "service delivered", and it will gate settlement. Math.random is
+ * seeded predictably enough that observing a few codes narrows the next ones —
+ * cheap to get right, and not worth arguing about later.
+ */
 export function generateVerifyCode(): string {
-  return String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
+  return String(randomInt(0, 1_000_000)).padStart(6, '0');
 }
 
 /** Spec §4: no_show / cancel -> reschedule allowed within 36 hours. */

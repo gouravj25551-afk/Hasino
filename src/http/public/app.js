@@ -64,6 +64,22 @@ async function doSignOut() {
   go('#/home');
 }
 
+/**
+ * Where a just-signed-in person goes, honouring the button they picked before
+ * they left for Google.
+ *
+ * Read once and cleared: the choice belongs to that sign-in, and a stale
+ * 'salon' would send them to the application form every time they signed in.
+ * Anyone who already owns a salon goes to their panel instead — asking them to
+ * apply again would only 409.
+ */
+function afterSignInDestination() {
+  const intent = sessionStorage.getItem('postSignIn');
+  sessionStorage.removeItem('postSignIn');
+  if (app.session?.role === 'business') return '#/home';
+  return intent === 'salon' ? '#/apply' : '#/home';
+}
+
 function renderChrome() {
   topbarRoot.innerHTML = '';
   const bar = TopBar({
@@ -134,7 +150,7 @@ async function boot() {
           // Clerk restores asynchronously. Leaving the user on a sign-in page
           // they no longer need is the same dead end as the original loop,
           // just one step later.
-          if (currentHash() === '#/login') go('#/home');
+          if (currentHash() === '#/login') go(afterSignInDestination());
         } catch {
           // A Clerk session whose token the server will not accept — revoked,
           // expired, or issued by a different instance. Browsing stays public,
