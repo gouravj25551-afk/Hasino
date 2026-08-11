@@ -49,8 +49,11 @@ CREATE TABLE IF NOT EXISTS salons (
   lat              double precision NOT NULL,
   lng              double precision NOT NULL,
   timezone         text NOT NULL DEFAULT 'Asia/Kolkata',  -- [DEVIATION 1]
+  -- 'pending' is an application awaiting review — the salon row IS the
+  -- application. 'rejected' is a turned-down one, distinct from 'banned':
+  -- banned is terminal, rejected can be reopened. See migration 007.
   status           text NOT NULL DEFAULT 'pending'
-                   CHECK (status IN ('pending','active','suspended','banned')),
+                   CHECK (status IN ('pending','active','suspended','banned','rejected')),
   -- Razorpay Partner sub-merchant (build order step 4, gated on the Partner
   -- application). Not the model the payment code runs on today — see
   -- rzp_route_account_id below and README "Where the money goes".
@@ -76,6 +79,9 @@ CREATE TABLE IF NOT EXISTS salons (
 
   strike_count     smallint NOT NULL DEFAULT 0,
   cover_url        text,                                    -- [DEVIATION 6]
+  -- What the owner writes about the salon on the application form; the admin
+  -- is judging a business, and a name and an address judge nothing.
+  description      text,
 
   -- [DEVIATION 10] operator columns.
   --   lat/lng sort by distance but cannot answer "every salon in Pune", which

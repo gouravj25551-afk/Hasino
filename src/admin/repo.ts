@@ -18,7 +18,7 @@ import { cancelPending, enqueueNotification } from '../notify/outbox.ts';
 
 type Queryable = Pool | PoolClient;
 
-export type SalonStatus = 'pending' | 'active' | 'suspended' | 'banned';
+export type SalonStatus = 'pending' | 'active' | 'suspended' | 'banned' | 'rejected';
 
 export class AdminError extends Error {
   readonly status: number;
@@ -104,9 +104,15 @@ export function validateCommissionBps(bps: number): number {
  * customers is not un-banned by clicking the wrong button twice.
  */
 const ALLOWED_STATUS: Record<SalonStatus, SalonStatus[]> = {
-  pending: ['active', 'banned'],
+  // An application is approved, turned down, or — for an outright fraudulent
+  // one — banned. 'rejected' rather than 'banned' for the ordinary no, because
+  // banned is terminal and a rejection usually means "not like this".
+  pending: ['active', 'rejected', 'banned'],
   active: ['suspended', 'banned'],
   suspended: ['active', 'banned'],
+  // Reopened for review, never straight to live: a rejected application has to
+  // go back through the same approval as every other one.
+  rejected: ['pending', 'banned'],
   banned: [],
 };
 
@@ -459,6 +465,25 @@ export async function changeSalonStatus(
       [salonId, to, goingLive, adminUserId, now],
     );
 
+    // Approval is what makes someone a salon owner — not their application,
+    // and not their Google account. It happens here, in the same transaction
+    // as the status change, so a salon can never be live with an owner who
+    // cannot open the panel, or the reverse.
+    //
+    // Only ever a promotion from 'customer'. An admin who owns a salon keeps
+    // 'admin' (applyForSalon refuses them anyway), and the role is not taken
+    // away on suspend: a suspended owner still needs to read their bookings
+    // and fix whatever got them suspended.
+    if (goingLive) {
+      await tx.query(
+        `UPDATE users
+            SET role = 'business', updated_at = now()
+          WHERE id = (SELECT owner_id FROM salons WHERE id = $1)
+            AND role = 'customer'`,
+        [salonId],
+      );
+    }
+
     let cancelledBookings = 0;
     let refundsQueued = 0;
 
@@ -533,19 +558,29 @@ export async function adminSalonDetail(db: Queryable, salonId: string) {
     id: string; name: string; address: string; city: string | null; area: string | null;
     lat: number; lng: number; timezone: string; status: SalonStatus; commission_bps: number;
     phone: string | null; email: string | null; created_at: Date; approved_at: Date | null;
+    description: string | null; cover_url: string | null;
     owner_id: string; owner_name: string | null; owner_phone: string | null; owner_email: string | null;
-    owner_signed_in: boolean;
+    owner_signed_in: boolean; owner_role: string;
   }>(
     `SELECT s.id, s.name, s.address, s.city, s.area, s.lat, s.lng, s.timezone, s.status,
             s.commission_bps, s.phone, s.email, s.created_at, s.approved_at,
+            s.description, s.cover_url,
             u.id AS owner_id, u.name AS owner_name, u.phone AS owner_phone,
-            u.email AS owner_email, (u.auth_provider_id IS NOT NULL) AS owner_signed_in
+            u.email AS owner_email, (u.auth_provider_id IS NOT NULL) AS owner_signed_in,
+            u.role AS owner_role
        FROM salons s JOIN users u ON u.id = s.owner_id
       WHERE s.id = $1`,
     [salonId],
   );
   const s = salon.rows[0];
   if (!s) throw new AdminError(404, 'NOT_FOUND', 'No such salon');
+
+  // The gallery the applicant submitted. This is most of what the admin is
+  // actually judging, so it is part of the detail rather than a second call.
+  const photos = await db.query<{ url: string }>(
+    `SELECT url FROM salon_photos WHERE salon_id = $1 ORDER BY sort, id`,
+    [salonId],
+  );
 
   const bookings = await db.query<{
     id: string; start_at: Date; end_at: Date; status: string; amount: number;
@@ -573,10 +608,16 @@ export async function adminSalonDetail(db: Queryable, salonId: string) {
     commissionBps: s.commission_bps,
     phone: s.phone,
     email: s.email,
+    description: s.description,
+    coverUrl: s.cover_url,
+    photos: photos.rows.map((p) => p.url),
     createdAt: s.created_at.toISOString(),
     approvedAt: s.approved_at ? s.approved_at.toISOString() : null,
     owner: {
       id: s.owner_id,
+      // Shown so the admin can see that approval is what grants this — a
+      // pending application's owner is still a plain customer.
+      role: s.owner_role,
       name: s.owner_name,
       phone: s.owner_phone,
       email: s.owner_email,
@@ -701,6 +742,45 @@ export interface ApplyInput {
   timezone?: string;
   phone?: string | null;
   email?: string | null;
+  /** What the admin reads to decide this is a real salon. */
+  description?: string | null;
+  /** Storefront shot — the card image, and the one that shows a real shop. */
+  coverUrl?: string | null;
+  /** Gallery, in the order given. */
+  photoUrls?: string[];
+  /** Applied to all seven days; the owner refines them in their panel later. */
+  openAt?: string | null;
+  closeAt?: string | null;
+}
+
+/** 'HH:MM', 24-hour. salon_hours stores a wall-clock time. */
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function validateHhmm(value: string, field: string): string {
+  if (!HHMM.test(value)) throw new AdminError(400, 'BAD_HOURS', `${field} must be HH:MM, e.g. 09:30`);
+  return value;
+}
+
+/**
+ * Only http(s), and only a bare URL.
+ *
+ * These are rendered into <img src> in both panels and the customer app. A
+ * `javascript:` or `data:` URL there is stored XSS with an admin as the most
+ * likely viewer — the one person who opens every application that gets
+ * submitted.
+ */
+function validatePhotoUrl(value: string): string {
+  const trimmed = value.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new AdminError(400, 'BAD_PHOTO_URL', `${trimmed.slice(0, 60)} is not a valid URL`);
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new AdminError(400, 'BAD_PHOTO_URL', 'photo URLs must be http(s)');
+  }
+  return trimmed;
 }
 
 /**
@@ -730,6 +810,15 @@ export async function applyForSalon(
 
   const commissionBps = validateCommissionBps(Number(process.env['PLATFORM_COMMISSION_BPS'] ?? 1500));
 
+  const openAt = validateHhmm(input.openAt?.trim() || DEFAULT_HOURS.openAt, 'openAt');
+  const closeAt = validateHhmm(input.closeAt?.trim() || DEFAULT_HOURS.closeAt, 'closeAt');
+  if (openAt >= closeAt) {
+    // Lexicographic works on zero-padded HH:MM and says what it means.
+    throw new AdminError(400, 'BAD_HOURS', 'closing time must be after opening time');
+  }
+  const coverUrl = input.coverUrl?.trim() ? validatePhotoUrl(input.coverUrl) : null;
+  const photoUrls = (input.photoUrls ?? []).filter((u) => u.trim()).map(validatePhotoUrl).slice(0, 12);
+
   return withTransaction(db, async (tx) => {
     const owns = await tx.query<{ id: string }>(
       `SELECT id FROM salons WHERE owner_id = $1 FOR UPDATE`,
@@ -750,28 +839,41 @@ export async function applyForSalon(
 
     const salon = await tx.query<{ id: string }>(
       `INSERT INTO salons (owner_id, name, address, city, area, lat, lng, timezone,
-                           status, commission_bps, phone, email)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,$11)
+                           status, commission_bps, phone, email, description, cover_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,$11,$12,$13)
        RETURNING id`,
       [
         applicant.userId, input.name.trim(), input.address.trim(), input.city.trim(),
         input.area?.trim() || null, input.lat, input.lng, timezone, commissionBps,
         input.phone ?? null, input.email ?? null,
+        input.description?.trim() || null, coverUrl,
       ],
     );
     const salonId = salon.rows[0]!.id;
 
-    await tx.query(`UPDATE users SET role = 'business', updated_at = now() WHERE id = $1`, [applicant.userId]);
+    for (const [i, url] of photoUrls.entries()) {
+      await tx.query(
+        `INSERT INTO salon_photos (salon_id, url, sort) VALUES ($1, $2, $3)`,
+        [salonId, url, i],
+      );
+    }
 
-    // Same seven default rows as admin onboarding, for the same reason: the
-    // applicant can set their hours up while they wait, and an approved salon
-    // is never live-with-no-hours.
+    // The applicant is deliberately NOT promoted here. Signing in with Google
+    // proves who they are; it proves nothing about the salon. Granting
+    // 'business' on submission would hand the panel — and a live-looking salon
+    // — to anyone who filled in a form, which is the whole thing approval
+    // exists to prevent. The role is granted by changeSalonStatus() when an
+    // admin approves, and only then.
+
+    // Seven default rows so an approved salon is never live-with-no-hours: the
+    // availability engine reads a missing weekday as closed, correctly, and the
+    // operator has no way to tell that from a bug.
     for (let weekday = 0; weekday < 7; weekday++) {
       await tx.query(
         `INSERT INTO salon_hours (salon_id, weekday, open_at, close_at, break_start,
                                   break_end, online_capacity, slot_interval_min)
          VALUES ($1, $2, $3, $4, NULL, NULL, $5, $6)`,
-        [salonId, weekday, DEFAULT_HOURS.openAt, DEFAULT_HOURS.closeAt,
+        [salonId, weekday, openAt, closeAt,
          DEFAULT_HOURS.onlineCapacity, DEFAULT_HOURS.slotIntervalMin],
       );
     }

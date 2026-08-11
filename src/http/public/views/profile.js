@@ -45,7 +45,16 @@ export function renderProfile(container, app) {
     // Salon owners already have a salon; sending them to apply would only 409.
     list.append(panelItem('💈 My salon panel', '/business'));
   } else {
-    const apply = el('div', 'item', '💈 List your salon on Hasino');
+    // A customer who has already applied gets the state of that application,
+    // not an invitation to apply again. Applying creates the salon, so the
+    // second attempt is a 409 either way.
+    const pending = session.salon?.status === 'pending';
+    const label = pending
+      ? '💈 Salon application — under review'
+      : session.salon?.status === 'rejected'
+        ? '💈 Salon application — not approved'
+        : '💈 List your salon on Hasino';
+    const apply = el('div', 'item', label);
     apply.style.cursor = 'pointer';
     apply.onclick = () => app.navigate('#/apply');
     list.append(apply);

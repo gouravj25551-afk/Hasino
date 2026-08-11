@@ -24,7 +24,7 @@ import { deactivateService, listHours, listServiceSetup, saveHours, upsertServic
 import { salonBalance } from '../payments/ledger.ts';
 import { HttpError, bool, int, json, readJson, str, uuid } from './respond.ts';
 
-const STATUSES = new Set<SalonStatus>(['pending', 'active', 'suspended', 'banned']);
+const STATUSES = new Set<SalonStatus>(['pending', 'active', 'suspended', 'banned', 'rejected']);
 
 function num(body: Record<string, unknown>, field: string): number {
   const v = body[field];

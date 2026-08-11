@@ -68,38 +68,63 @@ function renderGoogleStep(container, app, ssoError) {
   status.style.display = ssoError ? 'block' : 'none';
   if (ssoError) status.textContent = ssoError;
 
-  const googleBtn = el('button', 'btn primary');
-  googleBtn.type = 'button';
-  googleBtn.style.cssText = 'width:100%; padding:12px 20px; font-size:15px; border-radius:12px; display:flex; align-items:center; justify-content:center; gap:12px;';
-  googleBtn.innerHTML = `${GOOGLE_G}<span>Continue with Google</span>`;
-
-  // Clerk's OAuth is a full-page redirect, so the only outcomes here are
-  // "the browser is leaving" and "it could not even start". What happens on
-  // the way back is decided at /sso-callback, not here.
-  googleBtn.onclick = async () => {
-    googleBtn.disabled = true;
+  /**
+   * Both buttons run the same Google sign-in, because with OAuth there is no
+   * separate "sign up" — the first sign-in creates the account. What differs
+   * is only where the person lands afterwards, so the choice is remembered as
+   * an intent and read once on the way back.
+   *
+   * sessionStorage rather than the URL: the OAuth round trip rewrites the
+   * whole location, and the hash router matches /^#\/login$/ exactly, so a
+   * query parameter would miss every route and bounce to #/home.
+   */
+  const start = async (button, intent) => {
+    sessionStorage.setItem('postSignIn', intent);
+    for (const b of [customerBtn, salonBtn]) b.disabled = true;
     status.style.display = 'block';
     status.textContent = 'Redirecting to Google…';
     try {
       await signInWithGoogle();
     } catch (err) {
+      sessionStorage.removeItem('postSignIn');
       status.textContent = err.message || 'Sign-in failed. Please try again.';
-      googleBtn.disabled = false;
+      for (const b of [customerBtn, salonBtn]) b.disabled = false;
     }
   };
+
+  const bigBtn = (cls, label) => {
+    const b = el('button', cls);
+    b.type = 'button';
+    b.style.cssText =
+      'width:100%; padding:12px 20px; font-size:15px; border-radius:12px; '
+      + 'display:flex; align-items:center; justify-content:center; gap:12px;';
+    b.innerHTML = `${GOOGLE_G}<span>${label}</span>`;
+    return b;
+  };
+
+  const customerBtn = bigBtn('btn primary', 'Sign up as Customer');
+  const salonBtn = bigBtn('btn', 'List your Salon');
+  salonBtn.style.marginTop = '12px';
+
+  customerBtn.onclick = () => start(customerBtn, 'customer');
+  salonBtn.onclick = () => start(salonBtn, 'salon');
 
   container.append(
     card(
       logo(),
       el('h1', null, 'Welcome to Hasino'),
-      Object.assign(el('p', 'sub', 'Discover and book top salons & barbers near you in seconds.'), {
+      Object.assign(el('p', 'sub', 'Book top salons & barbers near you — or list your own.'), {
         style: 'margin-bottom:28px',
       }),
-      googleBtn,
+      customerBtn,
+      salonBtn,
       status,
-      Object.assign(el('div', 'note', '🔒 Single sign-on powered by Google.'), {
-        style: 'margin-top:24px; text-align:left',
-      }),
+      Object.assign(
+        el('div', 'note',
+          '🔒 Both use the same Google sign-in. Listing a salon opens an application — '
+          + 'a Hasino admin reviews it before it goes live.'),
+        { style: 'margin-top:24px; text-align:left' },
+      ),
     ),
   );
 }
