@@ -12,8 +12,8 @@ import { BookingError, SlotUnavailableError } from '../booking/errors.ts';
 import { ForbiddenError, listCustomerBookings } from '../business/repo.ts';
 import { addFavorite, getBooking, getSalon, listFavorites, listSalons, removeFavorite } from '../salons/repo.ts';
 import { businessRoutes } from './routes-business.ts';
-import { adminRoutes } from './routes-admin.ts';
-import { AdminError, applyForSalon } from '../admin/repo.ts';
+import { AdminError, applyForSalon, listCatalogue } from '../admin/repo.ts';
+import { reverseGeocode, searchPlaces } from '../geo/geocode.ts';
 import {
   HttpError,
   json,
@@ -63,15 +63,6 @@ const TRUST_PROXY = process.env['TRUST_PROXY'] === 'true';
 const verifier = verifierFromEnv(DEV_AUTH);
 const payments = paymentsConfigFromEnv(CI_SMOKE);
 
-/**
- * Create bookings without taking money, for local work on the booking path.
- *
- * Opt-in and named for what it does, rather than inferred from DEV_AUTH. With
- * no keys and no flag, POST /api/bookings is a 503 — a server that silently
- * hands out free chairs is worse than one that says it cannot take payment.
- * start() refuses to boot with this in production.
- */
-const ALLOW_UNPAID_BOOKINGS = process.env['ALLOW_UNPAID_BOOKINGS'] === 'true';
 const cache = new MemorySnapshotCache();
 const allowedOrigins = originsFromEnv();
 
@@ -90,19 +81,18 @@ const limits = {
 const assets = loadAssets(new URL('./public/', import.meta.url), [
   'index.html',
   'business.html',
-  'admin.html',
   'brand.css',
   'app.css',
   // Page shells. External rather than inline so the CSP can stay
   // `script-src 'self'` with no 'unsafe-inline'.
   'app.js',
   'business.js',
-  'admin.js',
   'lib/api.js',
   'lib/auth.js',
   'lib/dialog.js',
   'lib/dom.js',
   'lib/format.js',
+  'lib/location.js',
   'lib/payments.js',
   'lib/router.js',
   'components/Avatar.js',
@@ -112,6 +102,7 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'components/BottomSheet.js',
   'components/Button.js',
   'components/EmptyState.js',
+  'components/LocationSheet.js',
   'components/Input.js',
   'components/Modal.js',
   'components/Rating.js',
@@ -133,10 +124,6 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
 const PAGES: Record<string, string> = {
   '/': 'index.html',
   '/business': 'business.html',
-  // Public shell, like /business. Serving HTML to anyone is fine; every byte
-  // of data behind it is authorised server-side, and the panel must never
-  // rely on a hidden nav link for that.
-  '/admin': 'admin.html',
   // Where Clerk returns the browser after Google. It has to be a real path
   // rather than a hash route: Clerk appends its callback parameters as a
   // query string, and on a '/#/login' target they would land inside the
@@ -283,6 +270,12 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
   // signature is the authentication) and it must read the raw body, so nothing
   // may parse it first.
   if (method === 'POST' && path === '/api/webhooks/razorpay') {
+    // With no provider configured there is nothing that could legitimately
+    // post here, and the config carries a stub secret — so this would be an
+    // open endpoint running HMAC against a value that is in the source code.
+    if (payments.provider !== 'razorpay') {
+      throw new HttpError(404, 'Not found');
+    }
     const raw = await readRawBody(req);
     const sig = req.headers['x-razorpay-signature'];
     const eventId = req.headers['x-razorpay-event-id'];
@@ -327,7 +320,12 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
         publishableKey: process.env['CLERK_PUBLISHABLE_KEY'] ?? null,
       },
       // The public key id only. The secret signs, and never leaves the server.
+      // `provider` so the UI can say "coming soon" rather than "misconfigured"
+      // — one of those is a promise and the other is a bug report. keyId is
+      // public by design (Razorpay checkout needs it in the browser); the
+      // secret never leaves the server.
       razorpay: { keyId: payments.enabled ? payments.keyId : null, enabled: payments.enabled },
+      payments: { provider: payments.provider, enabled: payments.enabled },
       devAuth: DEV_AUTH,
     });
   }
@@ -402,8 +400,9 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
         address: String(body['address'] ?? ''),
         city: String(body['city'] ?? ''),
         area: typeof body['area'] === 'string' ? body['area'] : null,
-        lat: Number(body['lat']),
-        lng: Number(body['lng']),
+        // Optional: geocoded from the address when absent.
+        ...(typeof body['lat'] === 'number' ? { lat: body['lat'] } : {}),
+        ...(typeof body['lng'] === 'number' ? { lng: body['lng'] } : {}),
         ...(typeof body['timezone'] === 'string' ? { timezone: body['timezone'] } : {}),
         phone: typeof body['phone'] === 'string' ? body['phone'] : null,
         email: typeof body['email'] === 'string' ? body['email'] : null,
@@ -414,22 +413,27 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
           : [],
         openAt: typeof body['openAt'] === 'string' ? body['openAt'] : null,
         closeAt: typeof body['closeAt'] === 'string' ? body['closeAt'] : null,
+        services: Array.isArray(body['services'])
+          ? body['services'].flatMap((raw) => {
+              if (typeof raw !== 'object' || raw === null) return [];
+              const svc = raw as Record<string, unknown>;
+              if (typeof svc['serviceId'] !== 'string' || typeof svc['price'] !== 'number') return [];
+              return [{
+                serviceId: svc['serviceId'],
+                price: svc['price'],
+                ...(typeof svc['durationMin'] === 'number' ? { durationMin: svc['durationMin'] } : {}),
+              }];
+            })
+          : [],
       },
     );
     return json(res, 201, { ...result, status: 'pending' });
   }
 
-  // ---------- admin panel ----------
-  // Authenticated and role-checked before the body is parsed, the same
-  // ordering POST /api/bookings uses: an unauthorised request should not get
-  // 64KB of parsing done on its behalf.
-  if (seg[0] === 'api' && seg[1] === 'admin') {
-    const s = await session(db, req);
-    requireRole(s, 'admin');
-    const handled = await adminRoutes(db, req, res, { seg, method, url, adminUserId: s.userId, cache });
-    if (handled) return;
-    throw new HttpError(404, `No route for ${method} ${path}`);
-  }
+  // There is deliberately no /api/admin/* here. The admin panel is a separate
+  // process bound to loopback — see src/http/admin-server.ts. Mounting it here
+  // as well would put the operator's surface on the public internet behind
+  // nothing but a role check, which is the arrangement this replaced.
 
   // ---------- business panel ----------
   if (seg[0] === 'api' && seg[1] === 'business') {
@@ -438,6 +442,37 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     const handled = await businessRoutes(db, req, res, { seg, method, url, ownerId: s.userId, cache });
     if (handled) return;
     throw new HttpError(404, `No route for ${method} ${path}`);
+  }
+
+  // ---------- where am I / where is that ----------
+  // Public: a customer picks their location before signing in, and both are
+  // reads of a public gazetteer with nothing user-specific in them. Rate
+  // limited by the global bucket, and cached upstream in src/geo/geocode.ts.
+  if (method === 'GET' && path === '/api/geo/reverse') {
+    const lat = Number(url.searchParams.get('lat'));
+    const lng = Number(url.searchParams.get('lng'));
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      throw new HttpError(400, 'lat and lng must be numbers');
+    }
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      throw new HttpError(400, 'lat and lng must be a real coordinate');
+    }
+    // null rather than 404: "we could not name this point" is a normal answer
+    // and the client falls back to asking the customer to type a city.
+    return json(res, 200, { place: await reverseGeocode(lat, lng) });
+  }
+
+  if (method === 'GET' && path === '/api/geo/search') {
+    const q = url.searchParams.get('q') ?? '';
+    return json(res, 200, { places: await searchPlaces(q) });
+  }
+
+  // The service catalogue an applicant picks their menu from. Public because
+  // the application form needs it before anyone is a salon owner — it is a
+  // list of service names, the same one every salon's menu is built from, and
+  // carries nothing about any particular salon.
+  if (method === 'GET' && path === '/api/services') {
+    return json(res, 200, { services: await listCatalogue(db) });
   }
 
   // ---------- customer ----------
@@ -605,15 +640,6 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     const serviceIds = stringArray(body['serviceIds'], 'serviceIds');
     const startAt = isoDate(body['startAt']);
 
-    if (!payments.enabled && !ALLOW_UNPAID_BOOKINGS) {
-      throw new HttpError(
-        503,
-        'Payments are not configured on this server, so bookings cannot be taken. ' +
-          'Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET, or ALLOW_UNPAID_BOOKINGS=true for local use.',
-        'PAYMENTS_DISABLED',
-      );
-    }
-
     const out = await withIdempotency<BookingResponse>(db, req, customer.userId, 'POST /api/bookings', body, async () => {
       const booking = await createBooking(
         db,
@@ -621,10 +647,10 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
         { cache, holdTtlMs: payments.enabled ? payments.holdTtlMs : 0 },
       );
 
-      if (!payments.enabled) {
-        // Reachable only with ALLOW_UNPAID_BOOKINGS — the guard above this
-        // block 503s otherwise, and start() refuses to boot with the flag in
-        // production, so this cannot silently ship.
+      if (payments.provider === 'none') {
+        // No provider chosen yet. The chair is really reserved and the booking
+        // is real; what has not happened is a payment, and `paid: false` says
+        // so rather than implying one succeeded.
         return {
           status: 201,
           body: {
@@ -635,7 +661,7 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
             amount: booking.amount,
             status: booking.status,
             paid: false,
-            warning: 'Payments are not configured on this server; the booking was created unpaid.',
+            warning: 'Payments are not enabled yet — this booking is reserved without payment.',
           },
         };
       }
@@ -738,7 +764,7 @@ function isoDate(value: unknown): Date {
  * detail: an unexpected error's message can contain a SQL fragment or a
  * connection string, and the customer does not need either.
  */
-function respondToError(res: ServerResponse, err: unknown): void {
+export function respondToError(res: ServerResponse, err: unknown): void {
   if (res.headersSent) return;
 
   if (err instanceof RateLimitError) {
@@ -836,12 +862,6 @@ export function start(): void {
           'cancel, or edit any salon as anyone else.',
       );
     }
-    if (ALLOW_UNPAID_BOOKINGS) {
-      fatal.push(
-        'ALLOW_UNPAID_BOOKINGS=true creates bookings that hold a real chair without taking ' +
-          'money. It exists for local work on the booking path and must never be set in production.',
-      );
-    }
     if (CI_SMOKE) {
       fatal.push(
         'CI_SMOKE=true enables the DEV_AUTH bypass and the /api/dev/* routes. ' +
@@ -861,17 +881,20 @@ export function start(): void {
           'the pages load but nobody can sign in.',
       );
     }
-    if (!payments.enabled) {
+    // Payment credentials are deliberately NOT fatal any more. Hasino has not
+    // chosen a provider yet, and running with provider 'none' is a supported
+    // state: bookings are taken, no money moves, and nothing pretends
+    // otherwise. Refusing to boot would only mean the choice of provider
+    // blocks the pilot.
+    //
+    // The guard that matters is still here: a provider that IS configured must
+    // have its webhook secret, because a half-configured Razorpay debits
+    // customers whose webhooks then fail their signature check.
+    if (payments.provider === 'razorpay' && !process.env['RAZORPAY_WEBHOOK_SECRET']) {
       fatal.push(
-        'No Razorpay credentials. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET. ' +
-          'Without them the server would take bookings without taking money.',
-      );
-    }
-    if (!process.env['RAZORPAY_WEBHOOK_SECRET']) {
-      fatal.push(
-        'No RAZORPAY_WEBHOOK_SECRET. Without it every webhook fails its signature ' +
-          'check, and any customer who closes the tab mid-payment is debited with ' +
-          'no booking.',
+        'RAZORPAY_KEY_ID/SECRET are set but RAZORPAY_WEBHOOK_SECRET is not. Every webhook ' +
+          'would fail its signature check, and any customer who closes the tab mid-payment ' +
+          'is debited with no booking. Set it, or set PAYMENTS_PROVIDER=none.',
       );
     }
 

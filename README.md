@@ -23,7 +23,8 @@ is missing.
 no identity dropdown: local development signs in with Google exactly the way
 production does, so a sign-in bug is found here rather than on the first
 deploy. You need a Clerk application and a `.env` — `npm run dev` prints the
-steps. Set `ADMIN_EMAILS` to your own Google address and you land on `/admin`,
+steps. Set `ADMIN_EMAILS` to your own Google address, then `npm run admin` for
+the private panel on `127.0.0.1:4000`,
 where you onboard the first salon.
 
 The long way, if you prefer it:
@@ -38,13 +39,21 @@ DATABASE_URL=postgres://localhost:5432/hasino_dev npm start
 `db:seed` loads the twelve-service global catalogue and nothing else. It
 creates no users and no salons, truncates nothing, and is safe to re-run.
 
-Payments are off unless `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` are set.
-With them absent, `POST /api/bookings` returns **503 `PAYMENTS_DISABLED`**
-unless you also set `ALLOW_UNPAID_BOOKINGS=true`, which creates a `booked` row
-that holds a real chair with no money attached and says so in the response and
-in the UI. A server that silently hands out free chairs is worse than one that
-admits it cannot take payment. Production refuses to boot with that flag, or
-without real keys.
+**No payment provider is configured yet, and that is a supported state.**
+`PAYMENTS_PROVIDER` is `razorpay` when `RAZORPAY_KEY_ID` and
+`RAZORPAY_KEY_SECRET` are set, and `none` otherwise; setting it to `none`
+explicitly stops payments without deleting a credential.
+
+With `none`, a booking is created `booked` and `paid: false`, holding a real
+chair with no money attached, and both the response and the UI say so — the
+customer is told online payment is coming and to pay at the salon. The
+completion OTP still gates service and the ledger still records what a salon is
+owed. Nothing pretends a payment succeeded, and no card details are collected
+or stored.
+
+Adding Razorpay, Cashfree or anyone else is a new `RazorpayClient`
+implementation plus a value in `PaymentProvider` — the rest of the system asks
+`payments.provider`, never a key.
 
 `db/schema.sql` is the whole schema, so a fresh database needs nothing else.
 For a database that already has data:
@@ -64,9 +73,9 @@ Three surfaces:
 |---|---|
 | `localhost:3000` | **Customer** — browse, pick services, book, my bookings |
 | `localhost:3000/business` | **Salon owner** — one salon's services, timings, today, money |
-| `localhost:3000/admin` | **Hasino admin** — onboard salons, approve them, the catalogue |
+| `127.0.0.1:4000` | **Hasino admin** — a *separate process* (`npm run admin`), never deployed. Approve or reject applications, manage salons and the catalogue. The public app has no admin route, asset or API. |
 
-All three sign in with Google. Each page is served to anyone; every byte of
+All three sign in with Google. The two public pages are served to anyone; every byte of
 data behind it is authorised server-side, so the panels never rely on a hidden
 nav link.
 
@@ -85,7 +94,7 @@ the salon is named explicitly.
 
 No SQL, either way:
 
-1. **Admin onboards it** — `/admin` → Onboard. Creates the salon plus a `users`
+1. **Admin onboards it** — the private admin panel → Onboard. Creates the salon plus a `users`
    row with `role='business'` and no `auth_provider_id`. The owner then signs in
    with Google using the email address the admin recorded, and the row is
    adopted with its role intact. `claimByEmail()` in `resolveSession` is the

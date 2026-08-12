@@ -169,7 +169,12 @@ body {
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 13px 22px;
+  /* The extra top padding is the status bar / notch. Android 15 and up draw
+     apps edge to edge whether they ask to or not, and index.html sets
+     viewport-fit=cover, so without this the location chip sits under the
+     clock. env() is 0px in a desktop browser, which is why this is one rule
+     rather than a media query. */
+  padding: calc(13px + env(safe-area-inset-top)) 22px 13px;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
   position: sticky;
@@ -368,6 +373,9 @@ td input, td select { min-width: 72px; }
   left: 0;
   right: 0;
   height: 64px;
+  /* Clears the gesture bar, for the same reason as the top bar above. */
+  padding-bottom: env(safe-area-inset-bottom);
+  box-sizing: content-box;
   background: var(--surface);
   border-top: 1px solid var(--line);
   z-index: 100;

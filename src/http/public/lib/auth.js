@@ -28,6 +28,34 @@ let loadPromise = null;
 let configPromise = null;
 
 /**
+ * The routes of the app using this module.
+ *
+ * Clerk has to be told where to send the browser — for a sign-in page, for the
+ * landing spot afterwards, for every step of a redirect flow it might need to
+ * resume. Those URLs were hardcoded to the customer app's hash routes, which
+ * is fine while there is one app and wrong the moment there are two: the admin
+ * panel has no '#/login' and no '#/home', so Clerk sent it to a route that
+ * does not exist and the router quietly fell back to '#/overview' — a sign-in
+ * that appears to do nothing.
+ *
+ * Defaults are the customer app's, so index.html needs no change. The admin
+ * panel calls configureAuthRoutes() with its own.
+ */
+const routes = { signIn: '/#/login', home: '/#/home' };
+
+/**
+ * Must be called before anything triggers clerk-js to load, because load()
+ * takes these. Calling it later would leave the SDK configured for whichever
+ * app got there first.
+ */
+export function configureAuthRoutes(next) {
+  if (clerk || loadPromise) {
+    throw new Error('configureAuthRoutes() must be called before Clerk loads');
+  }
+  Object.assign(routes, next);
+}
+
+/**
  * The SDK is fetched lazily, inside here, rather than imported at module
  * scope.
  *
@@ -54,8 +82,8 @@ async function ensureClerk() {
     await instance.load({
       // The app renders its own chrome; Clerk supplies identity, not UI.
       // Redirects are handled by the hash router.
-      signInUrl: '/#/login',
-      afterSignOutUrl: '/#/home',
+      signInUrl: routes.signIn,
+      afterSignOutUrl: routes.home,
     });
     clerk = instance;
     return instance;
@@ -106,7 +134,7 @@ export async function signInWithGoogle() {
     await c.client.signIn.authenticateWithRedirect({
       strategy: 'oauth_google',
       redirectUrl: window.location.origin + CALLBACK_PATH,
-      redirectUrlComplete: window.location.origin + '/#/home',
+      redirectUrlComplete: window.location.origin + routes.home,
     });
     return null; // navigating away
   } catch (err) {
@@ -145,16 +173,16 @@ export async function signInWithGoogle() {
 export async function completeRedirectCallback() {
   const c = await ensureClerk();
   return c.handleRedirectCallback({
-    continueSignUpUrl: '/#/login',
-    signInFallbackRedirectUrl: '/#/home',
-    signUpFallbackRedirectUrl: '/#/home',
-    signInUrl: '/#/login',
-    signUpUrl: '/#/login',
-    firstFactorUrl: '/#/login',
-    secondFactorUrl: '/#/login',
-    resetPasswordUrl: '/#/login',
-    verifyPhoneNumberUrl: '/#/login',
-    verifyEmailAddressUrl: '/#/login',
+    continueSignUpUrl: routes.signIn,
+    signInFallbackRedirectUrl: routes.home,
+    signUpFallbackRedirectUrl: routes.home,
+    signInUrl: routes.signIn,
+    signUpUrl: routes.signIn,
+    firstFactorUrl: routes.signIn,
+    secondFactorUrl: routes.signIn,
+    resetPasswordUrl: routes.signIn,
+    verifyPhoneNumberUrl: routes.signIn,
+    verifyEmailAddressUrl: routes.signIn,
   });
 }
 

@@ -103,7 +103,9 @@ function renderGoogleStep(container, app, ssoError) {
   };
 
   const customerBtn = bigBtn('btn primary', 'Sign up as Customer');
-  const salonBtn = bigBtn('btn', 'List your Salon');
+  // "Apply", not "List" — a salon is not listed by signing up. The button
+  // opens an application that a Hasino admin reviews.
+  const salonBtn = bigBtn('btn', 'Apply as a Salon');
   salonBtn.style.marginTop = '12px';
 
   customerBtn.onclick = () => start(customerBtn, 'customer');
@@ -121,8 +123,8 @@ function renderGoogleStep(container, app, ssoError) {
       status,
       Object.assign(
         el('div', 'note',
-          '🔒 Both use the same Google sign-in. Listing a salon opens an application — '
-          + 'a Hasino admin reviews it before it goes live.'),
+          '🔒 Both use the same Google sign-in. Applying as a salon opens an application — '
+          + 'a Hasino admin reviews it before your salon goes live.'),
         { style: 'margin-top:24px; text-align:left' },
       ),
     ),

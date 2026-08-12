@@ -7,10 +7,12 @@
  * code out is the right trade; the alternative weakens CSP for every page
  * to save one file.
  */
-import { register, start, go, currentHash, activeSection } from './lib/router.js';
+import { register, start, go, reload, currentHash, activeSection } from './lib/router.js';
 import { api } from './lib/api.js';
 import { watchAuthState, isRedirectCallback, completeRedirectCallback, signOut } from './lib/auth.js';
 import { TopBar, highlightTopBarNav } from './components/TopBar.js';
+import { LocationSheet } from './components/LocationSheet.js';
+import { getLocation } from './lib/location.js';
 import { BottomNav } from './components/BottomNav.js';
 import { el } from './lib/dom.js';
 
@@ -31,6 +33,9 @@ const bottomNavRoot = document.getElementById('bottomNav');
 const app = {
   session: null,       // GET /api/me response, or null when signed out
   config: null,        // GET /api/config — tells the UI whether payments exist
+  // The customer's chosen place, from localStorage. Read once at boot so
+  // every view sees the same value; the sheet updates it in place.
+  location: getLocation(),
   navigate: go,
   refreshSession,
   requireSession,
@@ -84,6 +89,17 @@ function renderChrome() {
   topbarRoot.innerHTML = '';
   const bar = TopBar({
     user: app.session,
+    locationLabel: app.location?.label,
+    onLocationClick: () =>
+      LocationSheet({
+        onPick: (loc) => {
+          app.location = loc;
+          renderChrome();
+          // The list on screen was sorted for the old location, so it is now
+          // wrong rather than merely stale.
+          reload();
+        },
+      }),
     onSignIn: () => go('#/login'),
   });
   topbarRoot.append(bar);

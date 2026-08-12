@@ -244,6 +244,84 @@ describe('self-serve application', () => {
     );
   });
 
+  it('a rejected application can be resubmitted, and goes back for review', async (t) => {
+    if (!pool) return t.skip('no test database reachable');
+    const db = pool;
+    await reset(db);
+    const me = await customer(db, '+919700000015');
+    const { salonId } = await applyForSalon(db, me, FORM);
+    const admin = await db.query<{ id: string }>(
+      `INSERT INTO users (phone, role) VALUES ('+917000000093','admin') RETURNING id`,
+    );
+    await changeSalonStatus(db, admin.rows[0]!.id, salonId, 'rejected', { reason: 'blurry photos' });
+
+    const again = await applyForSalon(db, me, { ...FORM, name: 'Corner Barbers v2' });
+
+    // The same row, so the admin still sees it was turned down once.
+    assert.equal(again.salonId, salonId, 'resubmission must update the row, not replace it');
+    const row = await db.query<{ status: string; name: string }>(
+      `SELECT status, name FROM salons WHERE id = $1`, [salonId],
+    );
+    assert.equal(row.rows[0]!.status, 'pending', 'a resubmission is reviewed again, not made live');
+    assert.equal(row.rows[0]!.name, 'Corner Barbers v2');
+
+    const role = await db.query<{ role: string }>(`SELECT role FROM users WHERE id = $1`, [me.userId]);
+    assert.equal(role.rows[0]!.role, 'customer', 'resubmitting grants nothing');
+
+    const events = await db.query<{ to_status: string }>(
+      `SELECT to_status FROM salon_status_events WHERE salon_id = $1 ORDER BY created_at`, [salonId],
+    );
+    assert.deepEqual(events.rows.map((r) => r.to_status), ['pending', 'rejected', 'pending']);
+  });
+
+  it('refuses a second application while one is live or pending', async (t) => {
+    if (!pool) return t.skip('no test database reachable');
+    const db = pool;
+    await reset(db);
+    const me = await customer(db, '+919700000016');
+    await applyForSalon(db, me, FORM);
+    // Only 'rejected' reopens the form. Pending is still under review.
+    await assert.rejects(
+      applyForSalon(db, me, { ...FORM, name: 'Second' }),
+      (e: AdminError) => e.code === 'ALREADY_OWNS_SALON',
+    );
+  });
+
+  it('stores the menu the applicant priced', async (t) => {
+    if (!pool) return t.skip('no test database reachable');
+    const db = pool;
+    await reset(db);
+    const me = await customer(db, '+919700000017');
+    // reset() truncates the catalogue, so this seeds the one service it needs
+    // rather than skipping and silently proving nothing.
+    const svc = await db.query<{ id: string }>(
+      `INSERT INTO services (name, category) VALUES ('Haircut','hair') RETURNING id`,
+    );
+    const { salonId } = await applyForSalon(db, me, {
+      ...FORM,
+      services: [{ serviceId: svc.rows[0]!.id, price: 29900, durationMin: 30 }],
+    });
+    const menu = await db.query<{ price: number; active: boolean }>(
+      `SELECT price, active FROM salon_services WHERE salon_id = $1`, [salonId],
+    );
+    assert.equal(menu.rows[0]!.price, 29900);
+    assert.equal(menu.rows[0]!.active, true);
+  });
+
+  it('refuses a negative price', async (t) => {
+    if (!pool) return t.skip('no test database reachable');
+    const db = pool;
+    await reset(db);
+    const me = await customer(db, '+919700000018');
+    const svc = await db.query<{ id: string }>(
+      `INSERT INTO services (name, category) VALUES ('Haircut','hair') RETURNING id`,
+    );
+    await assert.rejects(
+      applyForSalon(db, me, { ...FORM, services: [{ serviceId: svc.rows[0]!.id, price: -1 }] }),
+      (e: AdminError) => e.code === 'BAD_PRICE',
+    );
+  });
+
   it('rejects coordinates and timezones that would break availability later', async (t) => {
     if (!pool) return t.skip('no test database reachable');
     const db = pool;

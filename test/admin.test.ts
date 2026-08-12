@@ -53,7 +53,7 @@ async function paidBookingFixture(db: pg.Pool) {
   const admin = await makeAdmin(db);
   const client = new StubRazorpayClient();
   const cfg: PaymentsConfig = {
-    client, keyId: 'rzp_test_admin', keySecret: client.keySecret,
+    provider: 'razorpay', client, keyId: 'rzp_test_admin', keySecret: client.keySecret,
     webhookSecret: 'whsec_admin', commissionBps: 1500, holdTtlMs: 8 * 60_000, enabled: true,
   };
 

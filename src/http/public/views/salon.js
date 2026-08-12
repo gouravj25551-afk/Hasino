@@ -330,7 +330,8 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
         close();
 
         if (!booking.checkout) {
-          // Payments are off and ALLOW_UNPAID_BOOKINGS let this through. There
+          // No payment provider is configured, so the booking is already
+          // reserved and there is nothing to pay. There
           // is no Pay screen to send them to, and pretending otherwise is how
           // a customer ends up believing they paid.
           app.navigate('#/bookings');

@@ -166,10 +166,12 @@ echo
 echo "  customer app   http://localhost:$PORT"
 echo "  salon panel    http://localhost:$PORT/business"
 echo
-echo "  admin panel    http://localhost:$PORT/admin"
+echo "  admin panel    npm run admin  ->  http://127.0.0.1:4000"
+echo "                 (separate private process; this server has no admin route)"
 echo
-dim "Sign in with Google via Clerk. ADMIN_EMAILS=${ADMIN_EMAILS} gets /admin."
-dim "The database has a service catalogue and nothing else — onboard a salon from /admin."
+dim "Sign in with Google via Clerk. ADMIN_EMAILS=${ADMIN_EMAILS} gets the admin panel."
+dim "The database has a service catalogue and nothing else — salons apply from the app,"
+dim "and you approve them in the admin panel."
 dim "Emails are printed to this terminal instead of being sent."
 echo
 

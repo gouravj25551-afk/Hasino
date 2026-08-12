@@ -3,6 +3,72 @@ import { Avatar } from '../components/Avatar.js';
 import { Button } from '../components/Button.js';
 import { EmptyState } from '../components/EmptyState.js';
 
+/**
+ * What this account's salon is, if anything.
+ *
+ * One section with five states rather than one link with a changing label,
+ * because they are genuinely different things: an invitation, an application
+ * in progress, a refusal, a live salon, and a suspended one. Showing "list
+ * your salon" to someone who applied last week — or to an approved owner —
+ * is the version of this that reads as the product having forgotten them.
+ *
+ * Approval is what turns the invitation into a dashboard. Nothing here can
+ * grant it; the server decides and this only reports.
+ */
+function salonSection(app, session) {
+  const panel = el('div', 'panel');
+  const salon = session.salon;
+
+  // Approved. role and salon.status move together — changeSalonStatus sets
+  // both in one transaction — but the dashboard is offered on the role, which
+  // is what /api/business/* actually checks.
+  if (session.role === 'business' && salon) {
+    panel.append(el('h2', null, 'My Salon'));
+    panel.append(el('div', null, salon.name));
+    if (salon.status !== 'active') {
+      panel.append(el('div', 'note',
+        salon.status === 'suspended'
+          ? 'Suspended — not taking bookings. Contact Hasino support.'
+          : `Status: ${salon.status}.`));
+    }
+    const open = el('a', 'btn primary', 'Open Salon Dashboard');
+    open.href = '/business';
+    panel.append(open);
+    return panel;
+  }
+
+  if (salon?.status === 'pending') {
+    panel.append(el('h2', null, 'Salon Application'));
+    panel.append(el('div', null, salon.name));
+    panel.append(el('div', 'pill warn', '⏳ Under review'));
+    panel.append(el('div', 'note',
+      'A Hasino admin is reviewing it. Your salon dashboard unlocks as soon as it is approved.'));
+    return panel;
+  }
+
+  if (salon?.status === 'rejected') {
+    panel.append(el('h2', null, 'Salon Application'));
+    panel.append(el('div', null, salon.name));
+    panel.append(el('div', 'pill bad', 'Not approved'));
+    panel.append(el('div', 'note',
+      'You can update the details and submit it again — it goes back for review.'));
+    const again = Button({ label: 'View / reapply', onClick: () => app.navigate('#/apply') });
+    panel.append(again);
+    return panel;
+  }
+
+  // Never applied.
+  panel.append(el('h2', null, 'Become a Hasino Salon'));
+  panel.append(el('p', 'sub',
+    'Take bookings from customers near you. Applications are reviewed by a Hasino admin.'));
+  panel.append(Button({
+    label: 'Apply as a Salon',
+    variant: 'primary',
+    onClick: () => app.navigate('#/apply'),
+  }));
+  return panel;
+}
+
 export function renderProfile(container, app) {
   const session = app.requireSession();
   if (!session) return;
@@ -30,37 +96,12 @@ export function renderProfile(container, app) {
 
   list.append(el('div', 'item', '⚙️ Account settings — coming soon'));
 
-  // One entry per role. Admin used to fall through both branches and get
-  // nothing, which left the admin panel with no link anywhere in the app.
-  const panelItem = (label, href) => {
-    const a = el('a', 'item', label);
-    a.href = href;
-    a.style.cssText = 'text-decoration:none; color:inherit';
-    return a;
-  };
-
-  if (session.role === 'admin') {
-    list.append(panelItem('🛡️ Admin dashboard', '/admin'));
-  } else if (session.role === 'business') {
-    // Salon owners already have a salon; sending them to apply would only 409.
-    list.append(panelItem('💈 My salon panel', '/business'));
-  } else {
-    // A customer who has already applied gets the state of that application,
-    // not an invitation to apply again. Applying creates the salon, so the
-    // second attempt is a 409 either way.
-    const pending = session.salon?.status === 'pending';
-    const label = pending
-      ? '💈 Salon application — under review'
-      : session.salon?.status === 'rejected'
-        ? '💈 Salon application — not approved'
-        : '💈 List your salon on Hasino';
-    const apply = el('div', 'item', label);
-    apply.style.cursor = 'pointer';
-    apply.onclick = () => app.navigate('#/apply');
-    list.append(apply);
-  }
-
   container.append(list);
+
+  // The salon story, whatever stage it is at. There is deliberately no admin
+  // entry: the admin panel is a separate private process, not a page of this
+  // app, and an operator opens it on their own machine.
+  container.append(salonSection(app, session));
 
   container.append(
     Button({

@@ -406,7 +406,22 @@ export class StubRazorpayClient implements RazorpayClient {
 
 // ------------------------------------------------------------------- config
 
+/**
+ * Which provider is taking money, if any.
+ *
+ * 'none' is a deliberate, production-legal state, not a misconfiguration.
+ * Hasino has not chosen a payment provider yet, and the booking system works
+ * without one: a chair is reserved, the completion OTP still gates service,
+ * and the ledger still records what a salon is owed. What does not happen is
+ * money moving.
+ *
+ * Adding Cashfree or anyone else means a new RazorpayClient implementation and
+ * a new value here — the rest of the system asks `provider`, never a key.
+ */
+export type PaymentProvider = 'none' | 'razorpay';
+
 export interface PaymentsConfig {
+  provider: PaymentProvider;
   client: RazorpayClient;
   keyId: string;
   keySecret: string;
@@ -428,14 +443,16 @@ export const DEFAULT_HOLD_TTL_MS = 8 * 60_000;
  * data says once there is any.
  */
 /**
- * `enabled` follows the keys, not the auth mode.
+ * The provider follows the keys, not the auth mode.
  *
  * It used to read `enabled: devAuth`, so removing the local DEV_AUTH bypass
  * would have switched payments off as a side effect — the right outcome
  * reached by accident, and one the next person to tidy that line would
- * re-break. Real keys mean real payments. No keys means no payments, and what
- * happens then is ALLOW_UNPAID_BOOKINGS' decision, made explicitly in
- * server.ts rather than inferred here.
+ * re-break. Real keys mean real payments. No keys means provider 'none',
+ * which is a supported way to run: bookings are taken and no money moves.
+ *
+ * PAYMENTS_PROVIDER=none forces that off even when keys are present, so a
+ * deployment can stop taking money without anyone having to delete a secret.
  *
  * `ciSmoke` is the one exception, and it is deliberate rather than incidental:
  * the smoke suite's most valuable checks are the hold -> pay -> confirm path
@@ -450,8 +467,17 @@ export function paymentsConfigFromEnv(ciSmoke: boolean): PaymentsConfig {
   const commissionBps = Number(process.env['PLATFORM_COMMISSION_BPS'] ?? 1500);
   const holdTtlMs = Number(process.env['PAYMENT_HOLD_TTL_MS'] ?? DEFAULT_HOLD_TTL_MS);
 
-  if (keyId && keySecret) {
+  // An explicit 'none' wins over the presence of keys: turning payments off
+  // should not require deleting a credential, which is the sort of change
+  // nobody remembers how to undo.
+  const forced = process.env['PAYMENTS_PROVIDER'];
+  if (forced && forced !== 'none' && forced !== 'razorpay') {
+    throw new Error(`PAYMENTS_PROVIDER must be 'none' or 'razorpay', got "${forced}"`);
+  }
+
+  if (keyId && keySecret && forced !== 'none') {
     return {
+      provider: 'razorpay',
       client: new HttpRazorpayClient({ keyId, keySecret }),
       keyId,
       keySecret,
@@ -463,16 +489,24 @@ export function paymentsConfigFromEnv(ciSmoke: boolean): PaymentsConfig {
   }
 
   // No keys. The stub signs with the same HMAC Razorpay uses, so CI exercises
-  // the real signature check. Outside CI this is inert: enabled stays false,
-  // and whether an unpaid booking may be created is ALLOW_UNPAID_BOOKINGS.
+  // the real signature check. Outside CI this is inert: the provider is
+  // 'none', bookings are taken without payment, and no money moves.
   const stub = new StubRazorpayClient('stub_secret');
+  // An explicit PAYMENTS_PROVIDER=none wins even here. CI_SMOKE otherwise
+  // hands the smoke suite a signing stub so the hold -> pay -> confirm path
+  // and the last-chair race can run at all, but a deployment that has said
+  // "no payments" must mean it whatever else is set.
+  const provider: PaymentProvider = forced === 'none' ? 'none' : ciSmoke ? 'razorpay' : 'none';
   return {
+    provider,
     client: stub,
     keyId: 'rzp_test_stub',
     keySecret: stub.keySecret,
     webhookSecret: 'stub_webhook_secret',
     commissionBps,
     holdTtlMs,
-    enabled: ciSmoke,
+    // Always the same question as `provider`. Two fields that can disagree is
+    // how a config reports 'none' while still opening a checkout.
+    enabled: provider === 'razorpay',
   };
 }

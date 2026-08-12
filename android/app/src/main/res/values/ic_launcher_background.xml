@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The brand purple, matching the wordmark in brand.css. Adaptive icons
+     supply the field as a colour and the glyph as a separate layer, so Android
+     can mask it to whatever shape the launcher uses. -->
+<resources>
+    <color name="ic_launcher_background">#9b8ae8</color>
+</resources>

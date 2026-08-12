@@ -64,7 +64,8 @@ Set these on the host:
 | `PORT` | usually injected by the host |
 | `DEV_AUTH` | **leave unset** — the server refuses to start with it |
 | `CI_SMOKE` | **leave unset** — same |
-| `ALLOW_UNPAID_BOOKINGS` | **leave unset** — same |
+| `PAYMENTS_PROVIDER` | `none` until a provider is chosen; bookings work without one |
+| `RAZORPAY_*` | all optional — the server boots and takes bookings without them |
 
 The four `CLERK_*` values are not secret — they ship to the browser via
 `GET /api/config`, alongside `RAZORPAY_KEY_ID`. They are environment variables so
@@ -220,3 +221,57 @@ UPDATE bookings SET status = 'expired'
 ```
 
 Anyone mid-payment is then refunded by the normal late-capture path.
+
+
+## The admin panel is not deployed
+
+`npm start` runs the public application: the customer app and the salon panel.
+It has no admin route, no admin asset and no `/api/admin/*`. There is nothing
+to protect with a firewall rule because there is nothing there.
+
+The admin panel is a second process you run on your own machine:
+
+```bash
+npm run admin      # http://127.0.0.1:4000
+```
+
+It binds to loopback. That is not a configuration you can get wrong from the
+outside — the operating system will not accept a connection to a loopback
+socket from another host, whatever the firewall or the reverse proxy say. In
+production it refuses to start on any other interface.
+
+### Administering production data
+
+The admin panel reads `DATABASE_URL`, exactly as the public app does. To work
+against production, tunnel to the production database and point the panel at
+the tunnel:
+
+```bash
+ssh -N -L 5433:<db-host>:5432 <your-server>          # in one terminal
+DATABASE_URL=postgres://user:pass@localhost:5433/hasino npm run admin
+```
+
+An approval made this way writes the same row the deployed app reads, so the
+salon is live the moment you click Approve. There is no local copy of the data,
+nothing to sync, and no second source of truth.
+
+No Clerk dashboard change is needed for local use. A **development** instance
+accepts any localhost origin, and has no Domains list to add one to; the panel
+signs in on `127.0.0.1:4000` by itself. A Clerk session belongs to one origin,
+so being signed in on the public app grants nothing here — that is the
+separation working, not a fault.
+
+`lib/auth.js` is shared by both apps, and its default redirect URLs are the
+customer app's hash routes. The panel calls `configureAuthRoutes()` with its
+own before Clerk loads. Without that, Clerk sends the browser to `#/login`,
+which this router does not have, and the sign-in silently falls back to
+`#/overview` looking like a button that does nothing.
+
+One thing to decide later: a Clerk **production** instance is locked to your
+own domain, so pointing the local panel at one is not the same as pointing it
+at a dev instance. The simplest answer is to keep using the development
+instance for the admin panel, or to give the panel its own Clerk application.
+
+`ADMIN_EMAILS` still decides who gets in, and every route still runs
+`requireRole(s, 'admin')` against a verified Clerk token. Being on loopback is
+not the authorisation: anyone with an account on the laptop can reach the port.

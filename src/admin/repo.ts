@@ -14,6 +14,7 @@
 import type { Pool, PoolClient } from '../db/pool.ts';
 import { withTransaction } from '../db/pool.ts';
 import { queueRefundForBooking } from '../payments/service.ts';
+import { geocodeAddress } from '../geo/geocode.ts';
 import { cancelPending, enqueueNotification } from '../notify/outbox.ts';
 
 type Queryable = Pool | PoolClient;
@@ -64,6 +65,46 @@ export function validateEmail(email: string): string {
     );
   }
   return trimmed;
+}
+
+/**
+ * Where a salon is, from what the operator actually knows.
+ *
+ * Coordinates are optional on both onboarding paths now. When they are given
+ * — an owner standing in their own shop, tapping "use my location" — they are
+ * trusted and validated. When they are not, the address is geocoded.
+ *
+ * Hand-typed coordinates were the previous default and they were silently
+ * wrong: a Jind salon stored at 12.83, 12.32 is a point in Chad, and nothing
+ * in the product says so. It just sorts last, forever, for everyone.
+ *
+ * A failed geocode is an error rather than a guess. A salon at the wrong
+ * coordinates is worse than one that could not be created: it takes bookings
+ * from people who will not find it.
+ */
+export async function resolveCoords(input: {
+  lat?: number | null;
+  lng?: number | null;
+  address: string;
+  area?: string | null;
+  city: string;
+}): Promise<{ lat: number; lng: number }> {
+  if (typeof input.lat === 'number' && typeof input.lng === 'number') {
+    validateCoords(input.lat, input.lng);
+    return { lat: input.lat, lng: input.lng };
+  }
+
+  const place = await geocodeAddress({ address: input.address, area: input.area ?? null, city: input.city });
+  if (!place) {
+    throw new AdminError(
+      400,
+      'ADDRESS_NOT_FOUND',
+      `Could not find "${[input.address, input.area, input.city].filter(Boolean).join(', ')}" on the map. `
+        + 'Check the address and city, or supply lat and lng directly.',
+    );
+  }
+  validateCoords(place.lat, place.lng);
+  return { lat: place.lat, lng: place.lng };
 }
 
 export function validateCoords(lat: number, lng: number): void {
@@ -215,8 +256,9 @@ export interface OnboardInput {
   address: string;
   city: string;
   area?: string | null;
-  lat: number;
-  lng: number;
+  /** Optional. Geocoded from the address when absent — see resolveCoords. */
+  lat?: number | null;
+  lng?: number | null;
   timezone?: string;
   commissionBps?: number;
   status?: 'pending' | 'active';
@@ -255,7 +297,7 @@ export async function onboardSalon(
 ): Promise<{ salonId: string; ownerId: string; ownerExisted: boolean }> {
   const phone = validatePhone(input.owner.phone);
   const ownerEmail = validateEmail(input.owner.email);
-  validateCoords(input.lat, input.lng);
+  const { lat, lng } = await resolveCoords(input);
   const timezone = validateTimezone(input.timezone ?? 'Asia/Kolkata');
   const commissionBps = validateCommissionBps(
     input.commissionBps ?? Number(process.env['PLATFORM_COMMISSION_BPS'] ?? 1500),
@@ -326,7 +368,7 @@ export async function onboardSalon(
        RETURNING id`,
       [
         ownerId, input.name.trim(), input.address.trim(), input.city.trim(),
-        input.area?.trim() || null, input.lat, input.lng, timezone, status, commissionBps,
+        input.area?.trim() || null, lat, lng, timezone, status, commissionBps,
         input.phone ?? null, input.email ?? null, adminUserId,
         status === 'active' ? adminUserId : null,
         status === 'active' ? now : null,
@@ -737,8 +779,9 @@ export interface ApplyInput {
   address: string;
   city: string;
   area?: string | null;
-  lat: number;
-  lng: number;
+  /** Optional. Geocoded from the address when absent — see resolveCoords. */
+  lat?: number | null;
+  lng?: number | null;
   timezone?: string;
   phone?: string | null;
   email?: string | null;
@@ -751,6 +794,14 @@ export interface ApplyInput {
   /** Applied to all seven days; the owner refines them in their panel later. */
   openAt?: string | null;
   closeAt?: string | null;
+  /**
+   * The menu, picked from the public service catalogue. Priced here so the
+   * admin can see what this salon intends to charge before approving it — a
+   * salon with no menu is invisible to customers anyway, so collecting it at
+   * application time is one less thing an approved owner has to do before they
+   * are of any use.
+   */
+  services?: Array<{ serviceId: string; price: number; durationMin?: number }>;
 }
 
 /** 'HH:MM', 24-hour. salon_hours stores a wall-clock time. */
@@ -802,7 +853,7 @@ export async function applyForSalon(
   applicant: { userId: string; phone: string | null; name: string | null; email: string | null },
   input: ApplyInput,
 ): Promise<{ salonId: string }> {
-  validateCoords(input.lat, input.lng);
+  const { lat, lng } = await resolveCoords(input);
   const timezone = validateTimezone(input.timezone ?? 'Asia/Kolkata');
   if (!input.name.trim()) throw new AdminError(400, 'BAD_NAME', 'name is required');
   if (!input.address.trim()) throw new AdminError(400, 'BAD_ADDRESS', 'address is required');
@@ -819,15 +870,32 @@ export async function applyForSalon(
   const coverUrl = input.coverUrl?.trim() ? validatePhotoUrl(input.coverUrl) : null;
   const photoUrls = (input.photoUrls ?? []).filter((u) => u.trim()).map(validatePhotoUrl).slice(0, 12);
 
+  // Priced in paise, like everything else that touches money here. A price of
+  // zero is a free service and legitimate; a negative one is not.
+  const services = (input.services ?? []).filter((x) => x && x.serviceId);
+  for (const svc of services) {
+    if (!Number.isInteger(svc.price) || svc.price < 0 || svc.price > 10_000_00) {
+      throw new AdminError(400, 'BAD_PRICE', 'each service price must be a whole number of paise, 0 to 1000000');
+    }
+    if (svc.durationMin !== undefined && (!Number.isInteger(svc.durationMin) || svc.durationMin < 5 || svc.durationMin > 480)) {
+      throw new AdminError(400, 'BAD_DURATION', 'each service duration must be 5 to 480 minutes');
+    }
+  }
+
   return withTransaction(db, async (tx) => {
-    const owns = await tx.query<{ id: string }>(
-      `SELECT id FROM salons WHERE owner_id = $1 FOR UPDATE`,
+    const owns = await tx.query<{ id: string; status: SalonStatus }>(
+      `SELECT id, status FROM salons WHERE owner_id = $1 FOR UPDATE`,
       [applicant.userId],
     );
-    if (owns.rows.length > 0) {
+    const existing = owns.rows[0];
+
+    // A turned-down application can be resubmitted. It goes back to 'pending'
+    // and is reviewed again like any other — reapplying is not a way around
+    // approval, it is a way to fix whatever the rejection was about. Every
+    // other state is a real conflict: one owner, one salon.
+    if (existing && existing.status !== 'rejected') {
       throw new AdminError(409, 'ALREADY_OWNS_SALON', 'You already have a salon on Hasino.');
     }
-
     const role = await tx.query<{ role: string }>(`SELECT role FROM users WHERE id = $1`, [applicant.userId]);
     if (role.rows[0]?.role === 'admin') {
       throw new AdminError(
@@ -837,24 +905,60 @@ export async function applyForSalon(
       );
     }
 
-    const salon = await tx.query<{ id: string }>(
-      `INSERT INTO salons (owner_id, name, address, city, area, lat, lng, timezone,
-                           status, commission_bps, phone, email, description, cover_url)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,$11,$12,$13)
-       RETURNING id`,
-      [
-        applicant.userId, input.name.trim(), input.address.trim(), input.city.trim(),
-        input.area?.trim() || null, input.lat, input.lng, timezone, commissionBps,
-        input.phone ?? null, input.email ?? null,
-        input.description?.trim() || null, coverUrl,
-      ],
-    );
+    // A resubmission updates the row it was rejected on rather than replacing
+    // it. salon_status_events cascades on delete, so recreating the row would
+    // erase the fact that this application was once turned down — which is the
+    // first thing an admin looking at it again should see.
+    const fields = [
+      applicant.userId, input.name.trim(), input.address.trim(), input.city.trim(),
+      input.area?.trim() || null, lat, lng, timezone, commissionBps,
+      input.phone ?? null, input.email ?? null,
+      input.description?.trim() || null, coverUrl,
+    ];
+    const salon = existing
+      ? await tx.query<{ id: string }>(
+          `UPDATE salons
+              SET owner_id = $1, name = $2, address = $3, city = $4, area = $5,
+                  lat = $6, lng = $7, timezone = $8, status = 'pending',
+                  commission_bps = $9, phone = $10, email = $11,
+                  description = $12, cover_url = $13
+            WHERE id = $14
+            RETURNING id`,
+          [...fields, existing.id],
+        )
+      : await tx.query<{ id: string }>(
+          `INSERT INTO salons (owner_id, name, address, city, area, lat, lng, timezone,
+                               status, commission_bps, phone, email, description, cover_url)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,$11,$12,$13)
+           RETURNING id`,
+          fields,
+        );
     const salonId = salon.rows[0]!.id;
+
+    if (existing) {
+      // The previous submission's menu, photos and hours are replaced by this
+      // one; leaving them would merge two different applications.
+      await tx.query(`DELETE FROM salon_photos WHERE salon_id = $1`, [salonId]);
+      await tx.query(`DELETE FROM salon_services WHERE salon_id = $1`, [salonId]);
+      await tx.query(`DELETE FROM salon_hours WHERE salon_id = $1`, [salonId]);
+    }
 
     for (const [i, url] of photoUrls.entries()) {
       await tx.query(
         `INSERT INTO salon_photos (salon_id, url, sort) VALUES ($1, $2, $3)`,
         [salonId, url, i],
+      );
+    }
+
+    for (const svc of services) {
+      // ON CONFLICT because a form can submit the same service twice; the last
+      // price wins rather than the insert blowing up the whole application.
+      await tx.query(
+        `INSERT INTO salon_services (salon_id, service_id, price, duration_min, buffer_min, active)
+         VALUES ($1, $2, $3, $4, 0, true)
+         ON CONFLICT (salon_id, service_id) DO UPDATE
+           SET price = EXCLUDED.price, duration_min = EXCLUDED.duration_min, active = true`,
+        [salonId, svc.serviceId, svc.price, svc.durationMin ?? 30],
       );
     }
 
@@ -880,8 +984,13 @@ export async function applyForSalon(
 
     await tx.query(
       `INSERT INTO salon_status_events (salon_id, from_status, to_status, reason, actor_id)
-       VALUES ($1, NULL, 'pending', 'self-serve application', $2)`,
-      [salonId, applicant.userId],
+       VALUES ($1, $2, 'pending', $3, $4)`,
+      [
+        salonId,
+        existing ? 'rejected' : null,
+        existing ? 'resubmitted by the applicant' : 'self-serve application',
+        applicant.userId,
+      ],
     );
 
     // Tell whoever empties the queue. Best-effort, inside the transaction so a

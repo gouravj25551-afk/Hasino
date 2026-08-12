@@ -17,13 +17,18 @@
     "test": "node --test --test-concurrency=1 test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.ts",
-    "db:fixture": "CI_SMOKE=true node scripts/ci-fixture.ts"
+    "db:fixture": "CI_SMOKE=true node scripts/ci-fixture.ts",
+    "admin": "node src/admin-main.ts",
+    "admin:watch": "node --watch src/admin-main.ts"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
     "@clerk/backend": "^3.16.1",
     "pg": "^8.13.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
     "typescript": "^5.7.2"

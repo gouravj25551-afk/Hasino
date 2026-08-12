@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Hasino</string>
+    <string name="title_activity_main">Hasino</string>
+    <string name="package_name">com.hasino.app</string>
+    <string name="custom_url_scheme">com.hasino.app</string>
+</resources>
