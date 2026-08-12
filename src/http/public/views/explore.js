@@ -4,6 +4,7 @@ import { SearchBar } from '../components/SearchBar.js';
 import { SalonCard } from '../components/SalonCard.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { SkeletonList } from '../components/Skeleton.js';
+import { locationParams } from '../lib/location.js';
 
 const CATEGORIES = [
   { id: '', name: 'All' },
@@ -46,7 +47,12 @@ export async function renderExplore(container, app) {
     grid.append(SkeletonList(4));
     try {
       const { salons } = await api(
-        '/api/salons?' + new URLSearchParams({ ...(q ? { q } : {}), ...(activeCategory ? { category: activeCategory } : {}) }),
+        '/api/salons?' + new URLSearchParams({
+          ...(q ? { q } : {}),
+          ...(activeCategory ? { category: activeCategory } : {}),
+          // Sorts by distance from the chosen location when there is one.
+          ...locationParams(),
+        }),
       );
       grid.innerHTML = '';
       if (!salons.length) {

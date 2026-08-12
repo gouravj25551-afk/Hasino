@@ -7,8 +7,30 @@
  * code out is the right trade; the alternative weakens CSP for every page
  * to save one file.
  */
-import { currentIdToken, watchAuthState, signOut } from './lib/auth.js';
+import {
+  completeRedirectCallback,
+  configureAuthRoutes,
+  currentIdToken,
+  isRedirectCallback,
+  signInWithGoogle,
+  signOut,
+  watchAuthState,
+} from './lib/auth.js';
+
+/**
+ * This panel's routes, not the customer app's.
+ *
+ * lib/auth.js defaults to '#/login' and '#/home', which exist in the customer
+ * app and nowhere here — Clerk would send the browser to a route this router
+ * does not have, and it would fall back to '#/overview' looking like a
+ * sign-in that did nothing. '/' is this app's sign-in screen: it renders the
+ * Google button when there is no admin session.
+ *
+ * Before any other import can touch Clerk.
+ */
 import { ask, notify } from './lib/dialog.js';
+
+configureAuthRoutes({ signIn: '/', home: '/#/overview' });
 
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
@@ -36,6 +58,30 @@ async function api(path, opts = {}) {
 
 const STATUS_TONE = { pending: 'warn', active: 'ok', suspended: 'bad', banned: 'bad', rejected: 'bad' };
 const statusPill = s => el('span', 'pill ' + (STATUS_TONE[s] ?? ''), s);
+
+/**
+ * The panel signs in here rather than borrowing the public app's session.
+ *
+ * A Clerk session belongs to one origin, so being signed in at :3000 grants
+ * nothing at :4000 — which is the separation this architecture is for. The
+ * round trip comes back to /sso-callback on this same origin.
+ */
+function googleButton(cls, label) {
+  const b = el('button', cls, label);
+  b.type = 'button';
+  b.onclick = async () => {
+    b.disabled = true;
+    b.textContent = 'Redirecting to Google…';
+    try {
+      await signInWithGoogle();
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = label;
+      await notify({ title: 'Could not start sign-in', message: err.message, tone: 'bad' });
+    }
+  };
+  return b;
+}
 
 function errorBox(err) {
   return el('div', 'out bad', `${err.status ?? ''} ${err.body?.code ?? ''}\n${err.message}`);
@@ -577,8 +623,11 @@ function onboardView() {
   const address = input('12 MG Road, Indiranagar');
   const city = input('Bengaluru');
   const area = input('Indiranagar');
-  const lat = input('12.97', '', 'number');
-  const lng = input('77.59', '', 'number');
+  // Optional. The server geocodes the address; these are an override for the
+  // rare salon a geocoder cannot place. Typed coordinates were the default
+  // once and produced a Jind salon sitting in Chad.
+  const lat = input('optional', '', 'number');
+  const lng = input('optional', '', 'number');
   const tz = input('Asia/Kolkata', 'Asia/Kolkata');
   const commission = input('1500', '', 'number');
   const salonPhone = input('+918012345678');
@@ -597,8 +646,8 @@ function onboardView() {
     field('Address *', address),
     field('City *', city, 'What the operator filters by'),
     field('Area', area),
-    field('Latitude *', lat, 'Used for distance sorting'),
-    field('Longitude *', lng),
+    field('Latitude', lat, 'Leave blank — found from the address'),
+    field('Longitude', lng),
     field('Timezone', tz, 'IANA zone; rejected if not real'),
     field('Commission (bps)', commission, 'Blank uses PLATFORM_COMMISSION_BPS'),
     field('Salon phone', salonPhone),
@@ -622,8 +671,8 @@ function onboardView() {
         address: address.value.trim(),
         city: city.value.trim(),
         area: area.value.trim() || null,
-        lat: Number(lat.value),
-        lng: Number(lng.value),
+        ...(lat.value !== '' ? { lat: Number(lat.value) } : {}),
+        ...(lng.value !== '' ? { lng: Number(lng.value) } : {}),
         timezone: tz.value.trim() || 'Asia/Kolkata',
         status: status.value,
         phone: salonPhone.value.trim() || null,
@@ -775,9 +824,7 @@ async function initIdentity() {
     return me;
   } catch {
     who.innerHTML = '';
-    const link = el('a', 'btn sm primary', 'Sign in');
-    link.href = '/#/login';
-    who.append(link);
+    who.append(googleButton('btn sm primary', 'Sign in'));
     return null;
   }
 }
@@ -792,10 +839,10 @@ function renderNotAdmin(kind) {
   const box = el('div', 'panel');
   if (kind === 'anon') {
     box.append(el('h1', null, 'Sign in'));
-    box.append(el('p', 'sub', 'The admin panel needs a Hasino platform account.'));
-    const link = el('a', 'btn primary', 'Sign in with Google');
-    link.href = '/#/login';
-    box.append(link);
+    box.append(el('p', 'sub',
+      'The admin panel needs a Hasino platform account. It signs in on its own — '
+      + 'a session on the public app does not carry over to this origin.'));
+    box.append(googleButton('btn primary', 'Sign in with Google'));
   } else {
     box.append(el('h1', null, 'Not an admin account'));
     box.append(el('p', 'sub',
@@ -806,6 +853,19 @@ function renderNotAdmin(kind) {
 }
 
 window.addEventListener('hashchange', render);
+
+/**
+ * Coming back from Google. Finish the OAuth handshake before anything else
+ * runs: this page load is not a route, it carries Clerk's parameters in its
+ * query string, and Clerk navigates on to the panel itself once it is done.
+ */
+if (isRedirectCallback()) {
+  completeRedirectCallback().catch(async (err) => {
+    console.error('sign-in could not be completed', err);
+    await notify({ title: 'Sign-in could not be completed', message: err.message, tone: 'bad' });
+    location.replace('/');
+  });
+}
 
 /**
  * Re-render the panel when the *identity* changes, and at no other time.

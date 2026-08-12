@@ -49,6 +49,7 @@ const HOLD_MS = 8 * 60_000;
 
 function config(client = new StubRazorpayClient()): PaymentsConfig & { client: StubRazorpayClient } {
   return {
+    provider: 'razorpay',
     client,
     keyId: 'rzp_test_flow',
     keySecret: client.keySecret,

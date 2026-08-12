@@ -48,10 +48,13 @@ export async function renderCheckout(container, app, bookingId) {
       return renderGone(panel, app, err.message);
     }
     if (err instanceof ApiError && err.code === 'PAYMENTS_DISABLED') {
+      // Not an error the customer caused, and not a broken deployment: Hasino
+      // has not turned payments on yet. The booking above this is already
+      // reserved, so the honest message is "nothing to pay", not "failed".
       return renderGone(
         panel,
         app,
-        'Payments are not configured on this server, so this booking cannot be paid for.',
+        'Online payment is coming soon. Your booking is reserved — pay at the salon for now.',
       );
     }
     panel.innerHTML = '';

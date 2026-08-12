@@ -125,8 +125,10 @@ export async function adminRoutes(
         address: str(body, 'address'),
         city: str(body, 'city'),
         area: optionalStr(body, 'area') ?? null,
-        lat: num(body, 'lat'),
-        lng: num(body, 'lng'),
+        // Optional: geocoded from the address when absent. Hand-typed
+        // coordinates are wrong in a way nobody notices.
+        ...(body['lat'] !== undefined ? { lat: num(body, 'lat') } : {}),
+        ...(body['lng'] !== undefined ? { lng: num(body, 'lng') } : {}),
         ...(optionalStr(body, 'timezone') !== undefined ? { timezone: optionalStr(body, 'timezone')! } : {}),
         ...(body['commissionBps'] !== undefined ? { commissionBps: int(body, 'commissionBps') } : {}),
         ...(body['status'] !== undefined ? { status: str(body, 'status') as 'pending' | 'active' } : {}),

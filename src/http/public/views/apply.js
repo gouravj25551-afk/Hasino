@@ -2,6 +2,7 @@ import { el } from '../lib/dom.js';
 import { api, ApiError } from '../lib/api.js';
 import { Button } from '../components/Button.js';
 import { Input } from '../components/Input.js';
+import { currentPosition } from '../lib/location.js';
 
 /**
  * "List your salon" — a signed-in customer applying to join.
@@ -15,7 +16,7 @@ export function renderApply(container, app) {
   if (!session) return;
   container.innerHTML = '';
 
-  container.append(el('h1', null, 'List your salon on Hasino'));
+  container.append(el('h1', null, 'Apply as a Salon'));
 
   // One salon per owner, so anyone who has already applied gets the state of
   // that application rather than a form that would only 409.
@@ -27,9 +28,15 @@ export function renderApply(container, app) {
         `${session.salon.name} is with a Hasino admin. It is not visible to customers yet, and your `
         + 'salon dashboard unlocks the moment it is approved.'));
     } else if (session.salon.status === 'rejected') {
+      // Not a dead end: resubmitting sends it back to review, which is a way
+      // to fix what was wrong rather than a way around approval.
       done.append(el('h2', null, 'Your application was not approved'));
       done.append(el('p', 'sub',
-        'Reply to the email we sent and we will take another look.'));
+        `${session.salon.name} was turned down. Update the details below and submit again — `
+        + 'it goes back to a Hasino admin for review.'));
+      container.append(done);
+      renderForm(container, app);
+      return;
     } else if (session.role === 'business') {
       done.append(el('h2', null, 'You already have a salon'));
       const go = el('a', 'btn primary', 'Open your salon panel');
@@ -49,13 +56,20 @@ export function renderApply(container, app) {
       + 'usually a couple of days.'),
   );
 
+  renderForm(container, app);
+}
+
+/** The application itself, shared by a first submission and a resubmission. */
+function renderForm(container, app) {
   const panel = el('div', 'panel');
   const name = Input({ label: 'Salon name', placeholder: 'Sharp & Co' });
   const address = Input({ label: 'Address', placeholder: '12 MG Road, Indiranagar' });
   const city = Input({ label: 'City', placeholder: 'Bengaluru' });
   const area = Input({ label: 'Area (optional)', placeholder: 'Indiranagar' });
-  const lat = Input({ label: 'Latitude', type: 'number', placeholder: '12.9719' });
-  const lng = Input({ label: 'Longitude', type: 'number', placeholder: '77.6412' });
+  // No latitude/longitude fields. The server geocodes the address, and the
+  // button below is for an owner standing in their own shop — both beat asking
+  // anyone to type two decimal numbers they cannot check.
+  let coords = null;
   const phone = Input({ label: 'Salon phone', type: 'tel', placeholder: '+91 98765 43210' });
   const openAt = Input({ label: 'Opens at', type: 'time' });
   const closeAt = Input({ label: 'Closes at', type: 'time' });
@@ -65,32 +79,94 @@ export function renderApply(container, app) {
   const photos = Input({ label: 'More photo URLs (one per line)' });
   const description = Input({ label: 'About your salon', placeholder: 'Two chairs, open since 2019…' });
 
+  const pinNote = el('div', 'note',
+    'We find your salon on the map from the address above. If you are at the salon now, '
+    + 'this pins it exactly.');
   const locate = Button({
-    label: 'Use my current location',
+    label: '📍 Pin my exact location',
     size: 'sm',
-    onClick: () => {
-      if (!navigator.geolocation) return;
+    onClick: async () => {
       locate.disabled = true;
       locate.textContent = 'Locating…';
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          lat.input.value = pos.coords.latitude.toFixed(6);
-          lng.input.value = pos.coords.longitude.toFixed(6);
-          locate.disabled = false;
-          locate.textContent = 'Use my current location';
-        },
-        () => {
-          locate.disabled = false;
-          locate.textContent = 'Could not get location — enter it manually';
-        },
-        { timeout: 8000 },
-      );
+      try {
+        coords = await currentPosition();
+        pinNote.textContent = `Pinned to your current position (${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}).`;
+        locate.textContent = '📍 Pinned';
+      } catch (err) {
+        coords = null;
+        // Not a failure worth blocking on: without a pin the address is
+        // geocoded, which is what most applicants will rely on anyway.
+        pinNote.textContent = `${err.message} We will locate your salon from the address instead.`;
+        locate.disabled = false;
+        locate.textContent = '📍 Pin my exact location';
+      }
     },
   });
 
   const grid = el('div', 'grid two');
-  grid.append(name, phone, address, city, area, lat, lng, openAt, closeAt);
-  panel.append(grid, locate);
+  grid.append(name, phone, address, city, area, openAt, closeAt);
+  panel.append(grid, locate, pinNote);
+
+  // ---- menu ----
+  // Picked from the same catalogue every salon's menu is built from, so an
+  // approved salon is immediately bookable instead of being live with nothing
+  // to sell. The owner can change any of it later in their dashboard.
+  const menu = el('div');
+  const chosen = new Map();   // serviceId -> { price, durationMin }
+  panel.append(el('h2', null, 'Your services'));
+  panel.append(el('div', 'note',
+    'Tick what you offer and set your prices in rupees. You can change these any time '
+    + 'once your salon is live.'));
+  panel.append(menu);
+  menu.append(el('div', 'note', 'Loading the service list…'));
+
+  api('/api/services').then(({ services }) => {
+    menu.innerHTML = '';
+    const list = el('div', 'list');
+    for (const svc of services) {
+      const row = el('div', 'item');
+      const tick = el('input');
+      tick.type = 'checkbox';
+      const price = el('input');
+      price.type = 'number';
+      price.min = '0';
+      price.placeholder = '₹';
+      price.style.maxWidth = '110px';
+      price.disabled = true;
+      const mins = el('input');
+      mins.type = 'number';
+      mins.min = '5';
+      mins.value = '30';
+      mins.style.maxWidth = '90px';
+      mins.disabled = true;
+
+      const sync = () => {
+        price.disabled = !tick.checked;
+        mins.disabled = !tick.checked;
+        if (!tick.checked) return chosen.delete(svc.id);
+        chosen.set(svc.id, {
+          // Rupees in the form, paise on the wire — everything that touches
+          // money in this system is an integer number of paise.
+          price: Math.round(Number(price.value || 0) * 100),
+          durationMin: Number(mins.value || 30),
+        });
+      };
+      tick.onchange = sync;
+      price.oninput = sync;
+      mins.oninput = sync;
+
+      row.append(tick);
+      row.append(el('div', 'grow', svc.name));
+      row.append(el('span', 'meta', svc.category));
+      row.append(price, el('span', 'meta', 'min'), mins);
+      list.append(row);
+    }
+    menu.append(list);
+  }).catch(() => {
+    menu.innerHTML = '';
+    menu.append(el('div', 'note',
+      'Could not load the service list. You can submit without it and set your menu up after approval.'));
+  });
 
   panel.append(el('h2', null, 'Photos and description'));
   panel.append(el('div', 'note',
@@ -115,14 +191,15 @@ export function renderApply(container, app) {
             address: address.input.value.trim(),
             city: city.input.value.trim(),
             area: area.input.value.trim() || null,
-            lat: Number(lat.input.value),
-            lng: Number(lng.input.value),
+            // Omitted when there is no pin — the server geocodes the address.
+            ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
             phone: phone.input.value.trim() || null,
             openAt: openAt.input.value || null,
             closeAt: closeAt.input.value || null,
             description: description.input.value.trim() || null,
             coverUrl: coverUrl.input.value.trim() || null,
             photoUrls: photos.input.value.split('\n').map((u) => u.trim()).filter(Boolean),
+            services: [...chosen.entries()].map(([serviceId, v]) => ({ serviceId, ...v })),
           }),
         });
         await app.refreshSession().catch(() => {});

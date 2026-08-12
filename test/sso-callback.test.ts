@@ -97,20 +97,18 @@ describe('panels do not rebuild themselves on a token refresh', () => {
   }
 });
 
-describe('both dashboards are reachable from the customer app', () => {
+describe('the salon panel is reachable from the customer app', () => {
+  // Only the salon panel. The admin panel is a separate private process and
+  // this app has no route to it — see test/admin-separation.test.ts.
   const topbar = readFileSync(new URL('../src/http/public/components/TopBar.js', import.meta.url), 'utf8');
   const profile = readFileSync(new URL('../src/http/public/views/profile.js', import.meta.url), 'utf8');
 
-  it('the top bar links each role to its panel', () => {
-    assert.match(topbar, /'admin'.*'\/admin'/s);
+  it('the top bar links an approved owner to their salon panel', () => {
     assert.match(topbar, /'business'.*'\/business'/s);
   });
 
-  it('the profile list links an admin to /admin', () => {
-    // This is the one that was missing: role 'admin' matched neither branch,
-    // so the admin panel had no link anywhere in the app.
-    assert.match(profile, /role === 'admin'/);
-    assert.match(profile, /'\/admin'/);
+  it('the profile list links an approved owner to their salon panel', () => {
+    assert.match(profile, /'\/business'/);
   });
 });
 

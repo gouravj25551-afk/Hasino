@@ -4,6 +4,7 @@ import { SearchBar } from '../components/SearchBar.js';
 import { SalonCard } from '../components/SalonCard.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { SkeletonList } from '../components/Skeleton.js';
+import { locationParams } from '../lib/location.js';
 
 const CATEGORIES = [
   { id: '', name: 'All', icon: '✨' },
@@ -15,21 +16,15 @@ const CATEGORIES = [
   { id: 'grooming', name: 'Grooming', icon: '🧼' },
 ];
 
-function geolocate() {
-  return new Promise((resolve) => {
-    if (!navigator.geolocation) return resolve(null);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => resolve(null), // declined or unavailable — browse without distance sort
-      { timeout: 4000 },
-    );
-  });
-}
-
 export async function renderHome(container, app) {
   container.innerHTML = '';
   let activeCategory = '';
-  const coords = await geolocate();
+  // The location the customer chose in the header, not a permission prompt
+  // fired at whoever opens the home page. Asking unprompted on every load is
+  // what the selector exists to replace, and a refusal there used to leave no
+  // way to say where you are.
+  const coords = locationParams();
+  const hasLocation = coords.lat !== undefined;
 
   const hero = el('div', 'hero-box');
   hero.append(el('h1', null, 'Find your next haircut & grooming'));
@@ -57,7 +52,7 @@ export async function renderHome(container, app) {
   container.append(catStrip);
 
   const salonsHeader = el('div', 'categories-header');
-  salonsHeader.append(el('h2', null, coords ? 'Nearby salons & barbers' : 'Salons & barbers'));
+  salonsHeader.append(el('h2', null, hasLocation ? 'Nearby salons & barbers' : 'Salons & barbers'));
   container.append(salonsHeader);
 
   const grid = el('div', 'grid cards');
@@ -73,7 +68,7 @@ export async function renderHome(container, app) {
           new URLSearchParams({
             ...(q ? { q } : {}),
             ...(activeCategory ? { category: activeCategory } : {}),
-            ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
+            ...coords,
           }),
       );
       grid.innerHTML = '';

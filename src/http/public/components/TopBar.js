@@ -3,28 +3,27 @@ import { Avatar } from './Avatar.js';
 import { Button } from './Button.js';
 
 /**
- * The panel a signed-in user is entitled to, or null for a plain customer.
+ * The salon panel link, for an approved owner.
  *
- * Showing this is a convenience, not a permission check — /admin and /business
- * are public shells and every byte of data behind them is authorised
- * server-side on each request. Hiding the link protects nothing; it just keeps
- * a door out of sight of the people it would only 403 for.
- *
- * Roles do not nest (see requireRole in src/auth/session.ts), so an admin gets
- * the admin panel and nothing else — /business would find no salon they own.
+ * There is deliberately no admin link. The admin panel is not part of this
+ * application — it is a separate process on the operator's own machine, bound
+ * to loopback, and this app has no route to it. See src/http/admin-server.ts.
  */
 function panelFor(role) {
-  if (role === 'admin') return { href: '/admin', label: 'Admin' };
   if (role === 'business') return { href: '/business', label: 'Salon panel' };
   return null;
 }
 
 /**
  * `user` is a Session shape ({name, email, avatarUrl, role}) or null when
- * signed out. `onLocationClick` is a no-op hook — there is no real location
- * search yet, only the label the customer flow already shows.
+ * signed out.
+ *
+ * locationLabel has no default city. It used to read 'Bengaluru' for
+ * everybody, which told a customer in Sonipat they were somewhere else and
+ * made the chip look like a fact rather than a choice. With nothing chosen it
+ * invites one.
  */
-export function TopBar({ user, locationLabel = 'Bengaluru', onLocationClick, onSignIn } = {}) {
+export function TopBar({ user, locationLabel, onLocationClick, onSignIn } = {}) {
   const bar = el('div', 'topbar');
 
   const logo = el('a', 'lockup');
@@ -33,7 +32,12 @@ export function TopBar({ user, locationLabel = 'Bengaluru', onLocationClick, onS
   bar.append(logo);
 
   const location = el('div', 'location-chip');
-  location.innerHTML = `📍 <b>${locationLabel}</b> ▾`;
+  location.append(document.createTextNode('📍 '));
+  // textContent, not innerHTML: this string comes from a geocoder, and a
+  // place name is not markup.
+  location.append(Object.assign(el('b'), { textContent: locationLabel || 'Select location' }));
+  location.append(document.createTextNode(' ▾'));
+  location.title = locationLabel ? 'Change location' : 'Choose your location';
   if (onLocationClick) location.onclick = onLocationClick;
   bar.append(location);
 
