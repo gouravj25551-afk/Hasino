@@ -112,6 +112,40 @@ describe('the salon panel is reachable from the customer app', () => {
   });
 });
 
+describe('sign-in lands you where your role belongs', () => {
+  // An owner who signs in and arrives on the customer home has been asked,
+  // in effect, to pick a role — first the home page, then the profile, then
+  // the dashboard. The role is not theirs to pick: it is `role` on
+  // GET /api/me, derived server-side from the identity Google verified.
+  const app = readFileSync(new URL('../src/http/public/app.js', import.meta.url), 'utf8');
+  const login = readFileSync(new URL('../src/http/public/views/login.js', import.meta.url), 'utf8');
+
+  it('sends a salon owner straight to their panel', () => {
+    assert.match(app, /role === 'business'\) return '\/business'/);
+  });
+
+  it('leaves the customer destination alone', () => {
+    // The intent from the two login buttons still decides where a customer
+    // lands. Only the owner branch is role-driven.
+    assert.match(app, /intent === 'salon' \? '#\/apply' : '#\/home'/);
+  });
+
+  it('navigates a real path as a document load, not a hash route', () => {
+    // '/business' is business.html, a separate document. go() only moves the
+    // hash, so routing an owner there with it would change the URL and render
+    // nothing.
+    assert.match(app, /function navigateTo\(dest\) \{\s*if \(dest\.startsWith\('#'\)\) go\(dest\);/);
+  });
+
+  it('decides the same way for someone already signed in', () => {
+    // The login view is reachable with a live session — a bookmark, a back
+    // button. Sending that person to '#/home' while a fresh sign-in goes to
+    // the panel is the same inconsistency in a place nobody tests.
+    assert.match(login, /app\.afterSignIn\(\)/);
+    assert.doesNotMatch(login, /app\.navigate\('#\/home'\)/);
+  });
+});
+
 describe('no native browser dialogs', () => {
   // window.prompt() THROWS "prompt() is not supported." in sandboxed and
   // embedded contexts, and Chrome suppresses alert/confirm/prompt entirely

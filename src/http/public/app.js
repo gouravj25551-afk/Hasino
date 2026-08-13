@@ -39,6 +39,7 @@ const app = {
   navigate: go,
   refreshSession,
   requireSession,
+  afterSignIn,
   signOut: doSignOut,
 };
 
@@ -70,19 +71,42 @@ async function doSignOut() {
 }
 
 /**
- * Where a just-signed-in person goes, honouring the button they picked before
- * they left for Google.
+ * Where a just-signed-in person goes, decided by who the server says they are.
  *
- * Read once and cleared: the choice belongs to that sign-in, and a stale
- * 'salon' would send them to the application form every time they signed in.
- * Anyone who already owns a salon goes to their panel instead — asking them to
- * apply again would only 409.
+ * An owner lands in their panel, not on the customer home with a link to it.
+ * Two screens after a sign-in — a home page, then a profile page, then the
+ * dashboard — reads as being asked to choose a role, and the role was never
+ * theirs to choose: it is `role` on GET /api/me, derived server-side from the
+ * identity Google verified.
+ *
+ * The intent from the login buttons still decides where a *customer* lands,
+ * and is read once and cleared: the choice belongs to that sign-in, and a
+ * stale 'salon' would send them to the application form every time. An owner
+ * ignores it entirely — asking someone who already has a salon to apply again
+ * would only 409.
+ *
+ * Returns a hash route or a real path; navigateTo() handles both. '/business'
+ * is a separate document (business.html), so it cannot be a hash route.
  */
 function afterSignInDestination() {
   const intent = sessionStorage.getItem('postSignIn');
   sessionStorage.removeItem('postSignIn');
-  if (app.session?.role === 'business') return '#/home';
+  if (app.session?.role === 'business') return '/business';
   return intent === 'salon' ? '#/apply' : '#/home';
+}
+
+/** Hash routes stay in the router; a real path is a document load. */
+function navigateTo(dest) {
+  if (dest.startsWith('#')) go(dest);
+  else window.location.assign(dest);
+}
+
+/**
+ * Send a signed-in person where they belong. Called on the sign-in that just
+ * completed, and by the login view when someone already signed in opens it.
+ */
+function afterSignIn() {
+  navigateTo(afterSignInDestination());
 }
 
 function renderChrome() {
@@ -166,7 +190,7 @@ async function boot() {
           // Clerk restores asynchronously. Leaving the user on a sign-in page
           // they no longer need is the same dead end as the original loop,
           // just one step later.
-          if (currentHash() === '#/login') go(afterSignInDestination());
+          if (currentHash() === '#/login') afterSignIn();
         } catch {
           // A Clerk session whose token the server will not accept — revoked,
           // expired, or issued by a different instance. Browsing stays public,

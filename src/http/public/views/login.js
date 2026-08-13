@@ -49,7 +49,10 @@ export async function renderLogin(container, app) {
   if (await awaitClerk().then(() => currentUser()).catch(() => null)) {
     try {
       await app.refreshSession();
-      app.navigate('#/home');
+      // Not '#/home': the session that just came back says whether this is a
+      // salon owner, and an owner belongs in their panel. Same decision as a
+      // fresh sign-in, made in one place.
+      app.afterSignIn();
       return;
     } catch {
       // A rejected or expired token genuinely does mean "sign in again",

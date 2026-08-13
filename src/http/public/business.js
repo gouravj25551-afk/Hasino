@@ -244,6 +244,31 @@ async function servicesView() {
   view.append(el('p', 'sub', 'Your price and your duration. Both are per-salon — the same haircut can be 30 minutes here and 45 next door.'));
 
   const { services } = await api('/api/business/services');
+
+  /**
+   * An empty catalogue is a blank screen otherwise — headings, a table head,
+   * a note about buffers, and no rows — which reads as "my services vanished"
+   * rather than "there is nothing to offer yet".
+   *
+   * This list is every service in the global `services` table, with your price
+   * and duration joined on. Empty means that table is empty, which on a fresh
+   * deployment means `npm run db:seed` has not been run against it. Nothing an
+   * owner can fix from here, so say who can.
+   */
+  if (services.length === 0) {
+    const empty = el('div', 'panel');
+    empty.append(el('h2', null, 'No services to offer yet'));
+    empty.append(el('p', 'sub',
+      'Hasino keeps one master list of services and you set your own price and duration for '
+      + 'each. That list is empty, so there is nothing here to switch on yet — a Hasino admin '
+      + 'has to add the services before any salon can price them.'));
+    empty.append(el('div', 'note',
+      'Nothing is wrong with your salon, and no prices have been lost. Contact Hasino support '
+      + 'and this screen fills in as soon as the catalogue is set up.'));
+    view.append(empty);
+    return;
+  }
+
   const panel = el('div', 'panel scroll-x');
   const table = el('table');
   table.innerHTML = `<thead><tr>
