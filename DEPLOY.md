@@ -111,7 +111,11 @@ service boots, because `NODE_ENV=production` boots straight into workers that
 query it.
 
 1. **Neon** → new project, region Singapore (`ap-southeast-1`), copy the
-   *pooled* connection string. It ends in `?sslmode=require`; keep that.
+   *pooled* connection string. It ends in `?sslmode=require`; keep that. `pg`
+   turns that into a verified TLS connection against Node's CA store, which
+   Neon's certificate satisfies — if you hit a certificate error, fix the cause
+   rather than reaching for `sslmode=no-verify`, which turns verification off
+   and makes the connection interceptable.
 2. Load the schema from your machine, not from the host:
 
    ```bash
