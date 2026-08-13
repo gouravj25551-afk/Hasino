@@ -31,7 +31,8 @@ The long way, if you prefer it:
 
 ```bash
 npm install
-createdb hasino_dev && psql -v ON_ERROR_STOP=1 -d hasino_dev -f db/schema.sql
+createdb hasino_dev
+DATABASE_URL=postgres://localhost:5432/hasino_dev npm run db:migrate         # schema + migrations
 DATABASE_URL=postgres://localhost:5432/hasino_dev npm run db:seed   # catalogue only
 DATABASE_URL=postgres://localhost:5432/hasino_dev npm start
 ```
@@ -55,11 +56,12 @@ Adding Razorpay, Cashfree or anyone else is a new `RazorpayClient`
 implementation plus a value in `PaymentProvider` — the rest of the system asks
 `payments.provider`, never a key.
 
-`db/schema.sql` is the whole schema, so a fresh database needs nothing else.
-For a database that already has data:
+`db/schema.sql` is the whole schema — the baseline. The numbered files in
+`db/migrations/` are deltas on top of it, so `001` starts with `ALTER TABLE
+users` and needs the baseline to exist first. One command covers both cases:
 
 ```bash
-npm run db:migrate          # apply outstanding migrations, once each
+npm run db:migrate           # schema.sql if the database is empty, then outstanding migrations
 npm run db:migrate:status    # show what would run, change nothing
 ```
 

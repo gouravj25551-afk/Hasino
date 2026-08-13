@@ -41,10 +41,12 @@ string; make sure it forces SSL.
 Then:
 
 ```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/schema.sql   # fresh database
-# or, for one that already has data:
 DATABASE_URL=... node scripts/migrate.ts
 ```
+
+One command either way: on an empty database it applies `db/schema.sql` first
+and then the migrations, and on one that already has tables it applies only the
+migrations it is missing.
 
 Set these on the host:
 
@@ -239,10 +241,18 @@ rows and unsent email, never an oversold slot.
 
 ## Migrations
 
-`db/schema.sql` is the fresh-install path and will not alter an existing table.
-For a database with data, `scripts/migrate.ts` applies `db/migrations/*.sql` in
-order, once each, recording filename + checksum + duration in
-`schema_migrations`.
+`db/schema.sql` is the whole schema — the baseline, not a migration. The
+numbered files are deltas layered on top of it, which is why `001` opens with
+`ALTER TABLE users` and fails on an empty database with `relation "users" does
+not exist` if the baseline never ran.
+
+`scripts/migrate.ts` handles both halves. It applies `db/schema.sql` first when
+`users` does not exist, then applies `db/migrations/*.sql` in order, once each,
+recording filename + checksum + duration in `schema_migrations` (the baseline
+lands there as `000_schema.sql`). A database that already has tables — one
+installed by hand with `psql -f db/schema.sql` before the runner existed — gets
+only the deltas: the baseline is skipped on the presence of `users`, not on an
+empty ledger, so nothing re-creates tables under a live pilot.
 
 ```bash
 npm run db:migrate:status   # what would run

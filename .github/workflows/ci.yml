@@ -52,6 +52,18 @@ jobs:
       - name: typecheck
         run: npm run typecheck
 
+      - name: a new database migrates from nothing
+        # The path a new host takes: empty database, one command, no hand-run
+        # psql. It failed for a long time — the numbered migrations are deltas
+        # and 001 opens with ALTER TABLE users — and nothing here would have
+        # caught it, because every other step starts from a schema.sql that was
+        # already applied. Runs against its own database so the steps below
+        # still exercise the hand-installed path.
+        run: |
+          psql -v ON_ERROR_STOP=1 -d "$DATABASE_URL" -c 'CREATE DATABASE hasino_fresh'
+          DATABASE_URL="${DATABASE_URL%/*}/hasino_fresh" node scripts/migrate.ts
+          DATABASE_URL="${DATABASE_URL%/*}/hasino_fresh" node scripts/migrate.ts --status
+
       - name: schema
         run: psql -v ON_ERROR_STOP=1 -d "$DATABASE_URL" -f db/schema.sql
 
