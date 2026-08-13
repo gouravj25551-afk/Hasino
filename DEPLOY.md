@@ -41,10 +41,12 @@ string; make sure it forces SSL.
 Then:
 
 ```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/schema.sql   # fresh database
-# or, for one that already has data:
 DATABASE_URL=... node scripts/migrate.ts
 ```
+
+One command either way: on an empty database it applies `db/schema.sql` first
+and then the migrations, and on one that already has tables it applies only the
+migrations it is missing.
 
 Set these on the host:
 
@@ -86,6 +88,61 @@ served path rather than a hash route — see `PAGES` in `src/http/server.ts`.
 `CLERK_SECRET_KEY` and is what Cloud Run injects for free.
 
 Deploy. `/readyz` should report `"auth":"clerk"` and `"payments":"razorpay"`.
+
+## A free deploy, for testing only
+
+`render.yaml` in the repo root is a working blueprint for Render's free web
+service plus Neon's free Postgres. Neither asks for a card. The `fly.toml` next
+to it is kept for the day this becomes a real pilot — Fly will not create an
+app at all without payment on file.
+
+What free costs you, and it is not nothing:
+
+- The service **sleeps** after ~15 minutes idle and cold-starts in 30-60s. The
+  first request after a quiet spell is slow. That is Render, not the app.
+- The workers run inside the web process (`startWorkers`, `src/http/server.ts`).
+  Asleep, nothing sweeps expired holds, retries refunds or sends queued mail.
+  They catch up on wake because each sweeps by timestamp rather than by tick,
+  so nothing is lost — it is just late, by however long nobody visited. A chair
+  stays held meanwhile. Testing, yes. A pilot with real customers, no.
+- Neon's free branch also idles to sleep; the first query after that pays a
+  second or so of wake-up on top.
+
+The order matters — the database has to exist and have a schema before the
+service boots, because `NODE_ENV=production` boots straight into workers that
+query it.
+
+1. **Neon** → new project, region Singapore (`ap-southeast-1`), copy the
+   *pooled* connection string. It ends in `?sslmode=require`; keep that. `pg`
+   turns that into a verified TLS connection against Node's CA store, which
+   Neon's certificate satisfies — if you hit a certificate error, fix the cause
+   rather than reaching for `sslmode=no-verify`, which turns verification off
+   and makes the connection interceptable.
+2. Load the schema from your machine, not from the host:
+
+   ```bash
+   DATABASE_URL='<neon url>' node scripts/migrate.ts
+   ```
+
+   `node scripts/migrate.ts --status` first if you want to see what would run.
+3. **Render** → New → Blueprint → point at this repo. It reads `render.yaml`
+   and asks for the four values marked `sync: false`: `DATABASE_URL`,
+   `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `ADMIN_EMAILS`. Test Clerk keys
+   (`pk_test_*` / `sk_test_*`) are fine here.
+4. In Clerk → **Domains**, add the `https://hasino.onrender.com` URL Render
+   hands you. Sign-in fails silently against an origin Clerk has not been told
+   about.
+5. `curl https://<your-host>/readyz` → `{"ok":true,"auth":"clerk","payments":"disabled"}`.
+   `"payments":"disabled"` is correct here, not a failure: the blueprint sets
+   `PAYMENTS_PROVIDER=none`, so bookings hold real chairs and no money moves.
+
+Do not put a `PORT` in Render's environment. Render injects its own and
+`src/main.ts` reads it; pinning 3000 gets you a service that builds, boots, and
+is never routed to.
+
+The admin panel does **not** go to Render. It is a separate process that binds
+loopback on purpose and refuses to start on a routable address. To administer
+this database, tunnel to Neon and run `npm run admin` locally against it.
 
 ## The webhook is not optional
 
@@ -184,10 +241,18 @@ rows and unsent email, never an oversold slot.
 
 ## Migrations
 
-`db/schema.sql` is the fresh-install path and will not alter an existing table.
-For a database with data, `scripts/migrate.ts` applies `db/migrations/*.sql` in
-order, once each, recording filename + checksum + duration in
-`schema_migrations`.
+`db/schema.sql` is the whole schema — the baseline, not a migration. The
+numbered files are deltas layered on top of it, which is why `001` opens with
+`ALTER TABLE users` and fails on an empty database with `relation "users" does
+not exist` if the baseline never ran.
+
+`scripts/migrate.ts` handles both halves. It applies `db/schema.sql` first when
+`users` does not exist, then applies `db/migrations/*.sql` in order, once each,
+recording filename + checksum + duration in `schema_migrations` (the baseline
+lands there as `000_schema.sql`). A database that already has tables — one
+installed by hand with `psql -f db/schema.sql` before the runner existed — gets
+only the deltas: the baseline is skipped on the presence of `users`, not on an
+empty ledger, so nothing re-creates tables under a live pilot.
 
 ```bash
 npm run db:migrate:status   # what would run
@@ -223,13 +288,14 @@ UPDATE bookings SET status = 'expired'
 Anyone mid-payment is then refunded by the normal late-capture path.
 
 
-## The admin panel is not deployed
+## The admin panel is a separate process
 
 `npm start` runs the public application: the customer app and the salon panel.
 It has no admin route, no admin asset and no `/api/admin/*`. There is nothing
-to protect with a firewall rule because there is nothing there.
+to protect with a firewall rule because there is nothing there — and that stays
+true no matter where the panel itself runs.
 
-The admin panel is a second process you run on your own machine:
+By default the panel is a second process on your own machine:
 
 ```bash
 npm run admin      # http://127.0.0.1:4000
@@ -237,14 +303,58 @@ npm run admin      # http://127.0.0.1:4000
 
 It binds to loopback. That is not a configuration you can get wrong from the
 outside — the operating system will not accept a connection to a loopback
-socket from another host, whatever the firewall or the reverse proxy say. In
-production it refuses to start on any other interface.
+socket from another host, whatever the firewall or the reverse proxy say.
+
+### Hosting it instead (ADMIN_PUBLIC)
+
+An operator who has to approve a salon from a phone cannot do it through a
+loopback socket. `ADMIN_PUBLIC=true` hosts the panel as its own service —
+`render.yaml` defines `hasino-admin`, the same image with `dockerCommand: node
+src/admin-main.ts`.
+
+**Understand what this trades before you set it.** On loopback the operating
+system refused every outside connection and Clerk was the second lock. Public,
+**Clerk and `ADMIN_EMAILS` are the only locks.** Every `/api/admin/*` route
+verifies a Clerk token and checks the admin role — that was always true, which
+is the only reason this is a reasonable thing to do at all — but nothing else
+stands in front of it now. `ADMIN_EMAILS` stops being configuration and becomes
+a credential: anyone who can sign in to Google as one of those addresses
+administers Hasino from anywhere on the internet. Put 2FA on those accounts,
+and keep the list to people who genuinely need it.
+
+Public changes four things:
+
+| | |
+|---|---|
+| bind | `0.0.0.0` on the host's injected `PORT` (do not set `ADMIN_PORT`) |
+| rate limit | 120/min per caller, `ADMIN_RATE_LIMIT_PER_MIN` to change — there was none before, because the network was the limit |
+| HSTS | sent, since the panel is now HTTPS |
+| boot | refuses outright if `DEV_AUTH`/`CI_SMOKE` are set, either Clerk key is missing, or `ADMIN_EMAILS` is empty |
+
+That last one is the important one: a public panel with a hole in the perimeter
+does not come up half-locked, it does not come up. `ADMIN_HOST` alone still
+cannot reach a routable interface in production — a hostname is the shape a
+mistake takes, and `ADMIN_PUBLIC` is the shape a decision takes.
+
+The customer-facing service is untouched by any of this. It has no admin code
+in it to expose, which is why hosting the panel is additive rather than a
+widening of the public app.
 
 ### Administering production data
 
-The admin panel reads `DATABASE_URL`, exactly as the public app does. To work
-against production, tunnel to the production database and point the panel at
-the tunnel:
+The admin panel reads `DATABASE_URL`, exactly as the public app does. The
+hosted service takes it as an environment variable like everything else. To
+work against production from your laptop instead, point the panel at the
+production database directly — a managed Postgres like Neon is reachable over
+TLS, so there is nothing to tunnel:
+
+```bash
+set -a; . ./.env; set +a
+DATABASE_URL='<production url>' npm run admin
+```
+
+For a database that is not reachable from outside its network, tunnel first and
+point at the tunnel:
 
 ```bash
 ssh -N -L 5433:<db-host>:5432 <your-server>          # in one terminal

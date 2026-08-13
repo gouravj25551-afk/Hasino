@@ -1,0 +1,52 @@
+# Hasino on Fly.io.
+#
+# Runs the Dockerfile as-is: no build step, no dist/, Node runs the TypeScript
+# directly. Nothing about the application changes to be deployed.
+#
+# Region is Mumbai. The pilot is in Haryana and the database sits beside the
+# app, so every request would otherwise cross an ocean twice.
+
+app = "hasino"
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3000"
+  # Behind Fly's proxy, so X-Forwarded-For is the only way to tell callers
+  # apart. Without this every request looks like it came from the proxy and one
+  # abusive client would rate-limit everybody. Safe here precisely *because*
+  # there is a proxy — src/http/middleware.ts takes the last entry, the one the
+  # proxy appended, which a caller cannot forge.
+  TRUST_PROXY = "true"
+  LOG_FORMAT = "json"
+  # No payment provider chosen yet. Bookings are taken and hold a real chair,
+  # the completion OTP still gates service, and no money moves. See
+  # src/payments/razorpay.ts.
+  PAYMENTS_PROVIDER = "none"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+
+  # Never scale to zero. The hold sweeper, the refund worker and the
+  # notification sender run *inside* this process (startWorkers in
+  # src/http/server.ts). A stopped machine means abandoned checkouts keep
+  # holding chairs and queued emails are never sent — the app would look fine
+  # and quietly stop doing its job.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    # /healthz deliberately does not touch Postgres, so a database blip does
+    # not restart every machine at once. /readyz is the one that checks the DB.
+    path = "/healthz"
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "20s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -88,21 +88,45 @@ describe('each app tells Clerk its own routes', () => {
 
 describe('the admin panel is private by construction', () => {
   it('defaults to a loopback bind', () => {
-    const host = /const HOST = process\.env\['ADMIN_HOST'\] \?\? '([^']+)'/.exec(adminServer)?.[1];
+    const host = /const HOST = process\.env\['ADMIN_HOST'\] \?\? \(PUBLIC \? '0\.0\.0\.0' : '([^']+)'\)/
+      .exec(adminServer)?.[1];
     assert.equal(host, '127.0.0.1', 'the admin server must default to loopback');
   });
 
-  it('refuses a routable bind in production', () => {
-    // The design is "the operating system refuses the connection". A
-    // production bind to anything else silently throws that away, so it is a
-    // boot failure rather than a warning.
-    assert.match(adminServer, /NODE_ENV'\] === 'production' && HOST !== '127\.0\.0\.1'/);
+  it('reaches a routable interface only through ADMIN_PUBLIC', () => {
+    // ADMIN_HOST alone can no longer do it, which is the point: a host name is
+    // the shape a mistake takes, and a variable whose only meaning is "on the
+    // internet" is the shape a decision takes.
+    assert.match(adminServer, /const PUBLIC = process\.env\['ADMIN_PUBLIC'\] === 'true'/);
+    assert.match(adminServer, /IS_PROD && !loopback && !PUBLIC/);
     assert.match(adminServer, /throw new Error\(/);
   });
 
+  it('refuses to come up public with a hole in the perimeter', () => {
+    // Public means Clerk and ADMIN_EMAILS are the only locks left, so each of
+    // these is a boot failure rather than a service that comes up half-locked.
+    // Listed explicitly: dropping any one of them is a one-line change that no
+    // other test would notice.
+    for (const guard of [
+      /DEV_AUTH'\] === 'true' \|\| process\.env\['CI_SMOKE'\] === 'true'/,
+      /!process\.env\['CLERK_SECRET_KEY'\]/,
+      /!process\.env\['CLERK_PUBLISHABLE_KEY'\]/,
+      /!\(process\.env\['ADMIN_EMAILS'\] \?\? ''\)\.trim\(\)/,
+    ]) {
+      assert.match(adminServer, guard);
+    }
+    assert.match(adminServer, /Refusing to start a public admin panel/);
+  });
+
+  it('rate limits when public, because the network no longer does', () => {
+    // On loopback the operating system was the limit. On the internet an
+    // unauthenticated caller can reach the door.
+    assert.match(adminServer, /if \(PUBLIC\) limit\.check\(clientKey\(req, TRUST_PROXY\)\)/);
+  });
+
   it('still authorises every request server-side', () => {
-    // Loopback is not the authorisation. Anyone with an account on this
-    // machine can reach the port.
+    // The network was never the authorisation — on loopback it was the second
+    // lock, and public it is not there at all.
     assert.match(adminServer, /requireRole\(s, 'admin'\)/);
   });
 

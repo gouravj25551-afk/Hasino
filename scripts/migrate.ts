@@ -1,13 +1,24 @@
 /**
- * Apply db/migrations/*.sql in filename order, once each.
+ * Bring a database up to date: db/schema.sql first if it is empty, then
+ * db/migrations/*.sql in filename order, once each.
  *
  *   node scripts/migrate.ts            apply everything outstanding
  *   node scripts/migrate.ts --status   list what would run, change nothing
  *
- * Every migration in this repo is written to be idempotent on its own, which is
- * what makes a hand-run `psql -f` safe. This adds the other half: a record of
- * what has been applied, so a deploy does not re-run six months of DDL on every
- * boot and so two instances starting at once cannot interleave.
+ * db/schema.sql is the baseline, not a migration. It creates every table; the
+ * numbered files are deltas layered on top of it, which is why 001 opens with
+ * `ALTER TABLE users` and would fail on an empty database with `relation
+ * "users" does not exist`. That is not an ordering bug — 001 through 007 sort
+ * correctly and always did — it is the baseline being missing. Fresh installs
+ * used to get it from a hand-run `psql -f db/schema.sql`, which is one step
+ * too many to remember on the day you are pointing this at a new host.
+ *
+ * So: if `users` does not exist, this applies the baseline and records it,
+ * then runs the numbered files as usual. On a fresh database those are
+ * near-no-ops — every one of them is written to be idempotent, and several say
+ * outright that fresh databases already have their column from schema.sql —
+ * but they run rather than being marked applied on trust, so the recorded
+ * state is something that happened rather than something assumed.
  *
  * Each file runs inside a transaction, and the whole run holds a Postgres
  * advisory lock. Postgres has transactional DDL, so a migration that fails
@@ -19,6 +30,9 @@ import { createHash } from 'node:crypto';
 import { getPool, closePool } from '../src/db/pool.ts';
 
 const DIR = new URL('../db/migrations/', import.meta.url);
+const SCHEMA = new URL('../db/schema.sql', import.meta.url);
+/** Sorts before 001 and is not a filename in DIR, so the loop never sees it. */
+const BASELINE = '000_schema.sql';
 const LOCK_KEY = 811_000;
 const statusOnly = process.argv.includes('--status');
 
@@ -36,6 +50,70 @@ await db.query(`
     ms         integer
   )
 `);
+
+/**
+ * Apply db/schema.sql if the database has no tables yet.
+ *
+ * The test is `users` rather than a row in schema_migrations, so a database
+ * built the old way — hand-run psql, no migration ledger — is left alone and
+ * only gets the deltas it is missing. Re-creating tables under a live pilot
+ * because a bookkeeping table happened to be absent is the one outcome worth
+ * ruling out completely, and CREATE TABLE IF NOT EXISTS is not enough on its
+ * own: schema.sql also has constraint and index work that is not all guarded.
+ */
+async function applyBaseline(): Promise<void> {
+  const fresh = await db.query<{ fresh: boolean }>(
+    `SELECT to_regclass('public.users') IS NULL AS fresh`,
+  );
+  if (!fresh.rows[0]?.fresh) return;
+
+  const sql = readFileSync(SCHEMA, 'utf8');
+  const checksum = createHash('sha256').update(sql).digest('hex').slice(0, 16);
+
+  if (statusOnly) {
+    console.log(`  + ${BASELINE}  (db/schema.sql, would apply — database is empty)`);
+    return;
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock($1)', [LOCK_KEY]);
+    // Re-check under the lock: two containers booting together must not both
+    // lay down the schema.
+    const still = await client.query<{ fresh: boolean }>(
+      `SELECT to_regclass('public.users') IS NULL AS fresh`,
+    );
+    if (!still.rows[0]?.fresh) {
+      console.log(`  = ${BASELINE}  (applied by another instance)`);
+      return;
+    }
+
+    const started = Date.now();
+    // schema.sql opens with BEGIN and ends with COMMIT of its own, so it is
+    // already one transaction — wrapping it in another would only nest.
+    await client.query(sql);
+    await client.query(
+      `INSERT INTO schema_migrations (filename, checksum, ms) VALUES ($1, $2, $3)
+       ON CONFLICT (filename) DO NOTHING`,
+      [BASELINE, checksum, Date.now() - started],
+    );
+    console.log(`  + ${BASELINE}  (db/schema.sql) ${Date.now() - started}ms`);
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1)', [LOCK_KEY]).catch(() => {});
+    client.release();
+  }
+}
+
+try {
+  await applyBaseline();
+} catch (err) {
+  // Same shape as a failed migration below, rather than a raw stack trace: the
+  // schema is untouched either way (schema.sql is one transaction), and the
+  // message is the part worth reading.
+  console.error(`  ! ${BASELINE} (db/schema.sql) failed: ${(err as Error).message}`);
+  await closePool();
+  process.exit(1);
+}
 
 const applied = new Map<string, string>();
 for (const row of (await db.query<{ filename: string; checksum: string }>(

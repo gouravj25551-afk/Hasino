@@ -6,3 +6,6 @@ node_modules/
 
 # Machine-local Claude Code settings (permission allowlists, paths).
 .claude/settings.local.json
+
+# Local TLS material for phone testing. Machine-specific, never deployed.
+.certs/

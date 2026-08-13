@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug builds only — this file lives in src/debug, so a release build never
+  sees it and will not trust anything below.
+
+  The phone talks to the Mac over HTTPS with a self-signed certificate, because
+  a plain-HTTP LAN origin is not a secure context: crypto.subtle is undefined
+  there and Clerk needs it. Trusting this one certificate is what makes that
+  possible without weakening anything else — the system CAs still apply, and
+  cleartext stays off.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/hasino_lan" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
