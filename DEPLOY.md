@@ -87,6 +87,57 @@ served path rather than a hash route — see `PAGES` in `src/http/server.ts`.
 
 Deploy. `/readyz` should report `"auth":"clerk"` and `"payments":"razorpay"`.
 
+## A free deploy, for testing only
+
+`render.yaml` in the repo root is a working blueprint for Render's free web
+service plus Neon's free Postgres. Neither asks for a card. The `fly.toml` next
+to it is kept for the day this becomes a real pilot — Fly will not create an
+app at all without payment on file.
+
+What free costs you, and it is not nothing:
+
+- The service **sleeps** after ~15 minutes idle and cold-starts in 30-60s. The
+  first request after a quiet spell is slow. That is Render, not the app.
+- The workers run inside the web process (`startWorkers`, `src/http/server.ts`).
+  Asleep, nothing sweeps expired holds, retries refunds or sends queued mail.
+  They catch up on wake because each sweeps by timestamp rather than by tick,
+  so nothing is lost — it is just late, by however long nobody visited. A chair
+  stays held meanwhile. Testing, yes. A pilot with real customers, no.
+- Neon's free branch also idles to sleep; the first query after that pays a
+  second or so of wake-up on top.
+
+The order matters — the database has to exist and have a schema before the
+service boots, because `NODE_ENV=production` boots straight into workers that
+query it.
+
+1. **Neon** → new project, region Singapore (`ap-southeast-1`), copy the
+   *pooled* connection string. It ends in `?sslmode=require`; keep that.
+2. Load the schema from your machine, not from the host:
+
+   ```bash
+   DATABASE_URL='<neon url>' node scripts/migrate.ts
+   ```
+
+   `node scripts/migrate.ts --status` first if you want to see what would run.
+3. **Render** → New → Blueprint → point at this repo. It reads `render.yaml`
+   and asks for the four values marked `sync: false`: `DATABASE_URL`,
+   `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `ADMIN_EMAILS`. Test Clerk keys
+   (`pk_test_*` / `sk_test_*`) are fine here.
+4. In Clerk → **Domains**, add the `https://hasino.onrender.com` URL Render
+   hands you. Sign-in fails silently against an origin Clerk has not been told
+   about.
+5. `curl https://<your-host>/readyz` → `{"ok":true,"auth":"clerk","payments":"disabled"}`.
+   `"payments":"disabled"` is correct here, not a failure: the blueprint sets
+   `PAYMENTS_PROVIDER=none`, so bookings hold real chairs and no money moves.
+
+Do not put a `PORT` in Render's environment. Render injects its own and
+`src/main.ts` reads it; pinning 3000 gets you a service that builds, boots, and
+is never routed to.
+
+The admin panel does **not** go to Render. It is a separate process that binds
+loopback on purpose and refuses to start on a routable address. To administer
+this database, tunnel to Neon and run `npm run admin` locally against it.
+
 ## The webhook is not optional
 
 Razorpay Dashboard → Settings → Webhooks → Add New Webhook:

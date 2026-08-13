@@ -1,0 +1,67 @@
+# Hasino on Render's free tier, for testing.
+#
+# Runs the same Dockerfile as everything else: no build step, no dist/, Node
+# runs the TypeScript directly. Nothing about the application changes to be
+# deployed.
+#
+# Why Render and not the fly.toml sitting next to this file: Fly refuses to
+# create an app without a card on file. Render's free web service needs none.
+# The trade is that a free service SLEEPS after ~15 minutes with no requests
+# and cold-starts in roughly 30-60s on the next one. Two consequences worth
+# knowing before you trust anything you see here:
+#
+#   1. The first request after an idle period is slow. That is the platform,
+#      not the app.
+#   2. The background workers run INSIDE this process (startWorkers in
+#      src/http/server.ts). While the service is asleep the hold sweeper, the
+#      refund worker and the notification sender are not running: abandoned
+#      checkouts keep holding a chair and queued mail waits. They catch up on
+#      the next wake, because each sweeps by timestamp rather than by tick.
+#      Fine for testing an app nobody is booking through yet; not fine for a
+#      real pilot. That is the thing a paid instance buys.
+#
+# Database is Neon's free Postgres, not a Render one — Render's free database
+# is deleted after 30 days. DATABASE_URL is set by hand in the dashboard.
+services:
+  - type: web
+    name: hasino
+    runtime: docker
+    plan: free
+    # Closest Render region to the Haryana pilot. Free plans cannot deploy to
+    # a region that already holds a service in another region, so if you get a
+    # region error this is the line to change.
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    # No database call, so a Neon blip does not get the service restarted in a
+    # loop. /readyz is the one that checks the DB.
+    healthCheckPath: /healthz
+    envVars:
+      # PORT is deliberately absent: Render injects its own and src/main.ts
+      # reads it. Pinning it here is how you get a service that builds, boots,
+      # and is never routed to.
+      - key: NODE_ENV
+        value: production
+      # Behind Render's proxy, so X-Forwarded-For is the only way to tell
+      # callers apart. Without this every request looks like it came from the
+      # proxy and one abusive client would rate-limit everybody. Safe here
+      # precisely *because* there is a proxy — src/http/middleware.ts takes the
+      # last entry, the one the proxy appended, which a caller cannot forge.
+      - key: TRUST_PROXY
+        value: "true"
+      - key: LOG_FORMAT
+        value: json
+      # No payment provider chosen yet. Bookings are taken and hold a real
+      # chair, the completion OTP still gates service, and no money moves.
+      - key: PAYMENTS_PROVIDER
+        value: none
+      # sync: false means "Render must not invent a value and must not carry
+      # one over from a template" — you type these once in the dashboard, and
+      # they are never written into this file or into git.
+      - key: DATABASE_URL
+        sync: false
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: ADMIN_EMAILS
+        sync: false
