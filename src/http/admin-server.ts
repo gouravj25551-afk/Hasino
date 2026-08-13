@@ -1,32 +1,40 @@
 /**
- * The Hasino admin panel — a separate process, bound to loopback.
+ * The Hasino admin panel — a separate process, on loopback by default.
  *
  * This is not part of the public application and is not reachable from it.
  * The public server serves the customer app and the salon panel and has no
  * admin route, no admin asset and no admin API; everything the operator uses
- * lives here, behind an address the internet cannot route to.
+ * lives here, in its own process on its own port.
+ *
+ * ADMIN_PUBLIC=true hosts it on the internet instead — for an operator who
+ * needs to approve a salon without their laptop. That is a genuine reduction
+ * in defence, not a deployment detail: read the note on PUBLIC below before
+ * setting it, and see startAdmin() for what it refuses to come up without.
  *
  * Why a second process rather than a flag on the first
  * ----------------------------------------------------
- * A flag is a runtime decision, and the failure mode of a runtime decision is
- * that it is wrong in production — one missing environment variable and the
- * admin panel is on the public internet. Binding to 127.0.0.1 is enforced by
- * the operating system: no port forward, firewall rule or reverse proxy makes
- * a loopback socket reachable from another machine.
+ * Still the reason it is separate even when both are hosted: the public app
+ * cannot serve an admin route it does not have. A flag on one server is a
+ * runtime decision, and the failure mode of a runtime decision is that it is
+ * wrong in production. Two processes means the customer-facing service has no
+ * admin code in it to expose, whatever its configuration says — which is why
+ * hosting this one changes nothing about that one.
  *
  * Same data, not a copy
  * ---------------------
- * This connects to whatever DATABASE_URL points at, which in production is the
- * production database over an SSH tunnel. There is no local mirror to sync and
- * no second source of truth — an approval here is immediately visible to the
- * deployed app because it is the same row. See DEPLOY.md.
+ * This connects to whatever DATABASE_URL points at — the production database,
+ * whether that is over a tunnel from a laptop or from a second hosted service.
+ * There is no local mirror to sync and no second source of truth: an approval
+ * here is immediately visible to the deployed app because it is the same row.
+ * See DEPLOY.md.
  *
- * Loopback is not the authorisation
- * ---------------------------------
- * Every route still runs requireRole(s, 'admin') against a verified Clerk
- * token. Anyone with an account on this laptop can reach this port, and
- * "the network already checked" is how an internal tool ends up with no
- * checks at all.
+ * The network was never the authorisation
+ * ----------------------------------------
+ * Every route runs requireRole(s, 'admin') against a verified Clerk token, and
+ * always has. On loopback that was the second lock — anyone with an account on
+ * the laptop can reach the port, and "the network already checked" is how an
+ * internal tool ends up with no checks at all. Public, it is the only lock,
+ * which is why it was worth writing that way from the start.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
@@ -35,23 +43,61 @@ import { MemorySnapshotCache } from '../availability/cache.ts';
 import { adminRoutes } from './routes-admin.ts';
 import { HttpError, json, loadAssets, sendAsset } from './respond.ts';
 import { respondToError } from './server.ts';
-import { securityHeaders } from './middleware.ts';
+import { RateLimiter, clientKey, securityHeaders } from './middleware.ts';
 import { verifierFromEnv } from '../auth/verifier.ts';
 import { type Session, authenticate, requireRole } from '../auth/session.ts';
 import { annotate, log, newRequestId, reportError, withRequestContext } from '../obs/logger.ts';
 
 const DEV_AUTH = process.env['DEV_AUTH'] === 'true' && process.env['CI_SMOKE'] === 'true';
 const verifier = verifierFromEnv(DEV_AUTH);
+const IS_PROD = process.env['NODE_ENV'] === 'production';
 
 /**
- * Loopback only, and deliberately awkward to change.
+ * ADMIN_PUBLIC=true hosts the panel on the internet instead of on loopback.
  *
- * ADMIN_HOST exists so a operator who genuinely needs another interface — a
- * VPN address, say — can have one, but it has to be typed on purpose. The
- * default can never accidentally become 0.0.0.0.
+ * This is a real reduction in defence and is written as one variable you have
+ * to set on purpose, rather than as a host that can be nudged. Off, the
+ * operating system refuses every connection from another machine and Clerk is
+ * the second lock. On, Clerk and ADMIN_EMAILS are the *only* locks — every
+ * /api/admin/* route still runs requireRole(s,'admin') against a verified
+ * token, which was always true and is now the entire perimeter.
+ *
+ * The trade is deliberate: an operator who needs to approve a salon from a
+ * phone cannot do it through a loopback socket. startAdmin() below refuses to
+ * come up public with anything about that perimeter missing.
  */
-const HOST = process.env['ADMIN_HOST'] ?? '127.0.0.1';
-const PORT = Number(process.env['ADMIN_PORT'] ?? 4000);
+const PUBLIC = process.env['ADMIN_PUBLIC'] === 'true';
+
+/**
+ * Loopback unless the panel is deliberately public.
+ *
+ * ADMIN_HOST still exists for the operator who needs one specific interface —
+ * a VPN address, say — and still has to be typed on purpose. What it can no
+ * longer do is become 0.0.0.0 by accident: that now takes ADMIN_PUBLIC, whose
+ * only meaning is "on the internet".
+ */
+const HOST = process.env['ADMIN_HOST'] ?? (PUBLIC ? '0.0.0.0' : '127.0.0.1');
+
+/**
+ * ADMIN_PORT for a local panel; PORT is what a host injects. Both, because the
+ * public app runs beside this one locally and 4000 keeps them apart, while on
+ * Render the port is assigned and not ours to pick.
+ */
+const PORT = Number(process.env['ADMIN_PORT'] ?? process.env['PORT'] ?? 4000);
+
+/**
+ * Only meaningful when hosted: behind Render's proxy every request otherwise
+ * looks like it came from the proxy, and one caller would rate-limit everyone.
+ */
+const TRUST_PROXY = process.env['TRUST_PROXY'] === 'true';
+
+/**
+ * There was no rate limit here while the panel was on loopback, because the
+ * operating system was the limit. On the internet an unauthenticated caller
+ * can reach the door, so the door gets a budget: enough for an operator
+ * clicking through salons, not enough to grind tokens against /api/me.
+ */
+const limit = new RateLimiter(Number(process.env['ADMIN_RATE_LIMIT_PER_MIN'] ?? 120));
 
 /**
  * Only what the panel actually loads. The public app's assets are not served
@@ -89,7 +135,11 @@ async function handle(db: Pool, req: IncomingMessage, res: ServerResponse): Prom
   const seg = path.split('/').filter(Boolean);
   const read = method === 'GET' || method === 'HEAD';
 
-  securityHeaders(res, false);
+  // HSTS only when this is a hosted HTTPS panel; sending it from a local
+  // http://127.0.0.1 pins the browser and breaks development for months.
+  securityHeaders(res, IS_PROD && PUBLIC);
+
+  if (PUBLIC) limit.check(clientKey(req, TRUST_PROXY));
 
   // The panel boots clerk-js with this, exactly as the public app does. The
   // publishable key is not a secret; it ships to every browser by design.
@@ -143,14 +193,57 @@ async function handle(db: Pool, req: IncomingMessage, res: ServerResponse): Prom
 }
 
 export function startAdmin(): Server {
-  if (process.env['NODE_ENV'] === 'production' && HOST !== '127.0.0.1' && HOST !== '::1') {
-    // Not a warning. The whole design is "the operating system refuses the
-    // connection", and a production bind to anything routable throws that away.
+  const loopback = HOST === '127.0.0.1' || HOST === '::1';
+
+  if (IS_PROD && !loopback && !PUBLIC) {
+    // Unchanged for anyone who has not opted in. Reaching a routable interface
+    // by editing ADMIN_HOST alone is still refused, because that is the shape
+    // a mistake takes — ADMIN_PUBLIC is the shape a decision takes.
     throw new Error(
       `Refusing to start: ADMIN_HOST=${HOST} in production would put the admin panel on a ` +
-        'reachable interface. Run it on your own machine against the production database ' +
-        'over an SSH tunnel — see DEPLOY.md.',
+        'reachable interface. Run it on your own machine against the production database, ' +
+        'or set ADMIN_PUBLIC=true to host it deliberately — see DEPLOY.md.',
     );
+  }
+
+  if (PUBLIC) {
+    // Public means Clerk and ADMIN_EMAILS are the whole perimeter, so refuse to
+    // come up with any part of it missing. Every one of these would otherwise
+    // fail open or fail silently: a panel anyone can enter, a panel nobody can
+    // enter, or a panel that cannot verify a token at all.
+    const fatal: string[] = [];
+
+    if (process.env['DEV_AUTH'] === 'true' || process.env['CI_SMOKE'] === 'true') {
+      fatal.push(
+        'DEV_AUTH/CI_SMOKE trust an unverified x-dev-user header. On a public admin panel ' +
+          'that is a header away from every admin route.',
+      );
+    }
+    if (!process.env['CLERK_SECRET_KEY']) {
+      fatal.push('No CLERK_SECRET_KEY. Nothing could verify a token, so nothing could be trusted.');
+    }
+    if (!process.env['CLERK_PUBLISHABLE_KEY']) {
+      fatal.push('No CLERK_PUBLISHABLE_KEY. The panel would load and nobody could sign in.');
+    }
+    if (!(process.env['ADMIN_EMAILS'] ?? '').trim()) {
+      fatal.push(
+        'ADMIN_EMAILS is empty, so no sign-in can ever be promoted to admin. A public panel ' +
+          'nobody can enter is not a safe default, it is a deployment that was never wired up.',
+      );
+    }
+    if (!IS_PROD) {
+      fatal.push(
+        'ADMIN_PUBLIC=true without NODE_ENV=production. The production guards elsewhere — ' +
+          'and HSTS here — key off NODE_ENV, so this combination is half-hosted.',
+      );
+    }
+
+    if (fatal.length > 0) {
+      throw new Error(
+        `Refusing to start a public admin panel:\n  - ${fatal.join('\n  - ')}\n\n` +
+          'Fix these or unset ADMIN_PUBLIC to go back to loopback.',
+      );
+    }
   }
 
   const db = getPool();
@@ -176,11 +269,20 @@ export function startAdmin(): Server {
   });
 
   server.listen(PORT, HOST, () => {
-    log.info('admin panel listening', { host: HOST, port: PORT, auth: verifier.kind });
+    log.info('admin panel listening', {
+      host: HOST,
+      port: PORT,
+      auth: verifier.kind,
+      exposure: PUBLIC ? 'public' : 'loopback',
+    });
     const emails = process.env['ADMIN_EMAILS'] ?? '';
     console.log(`\n  Hasino admin   http://${HOST}:${PORT}`);
     console.log(`  ${emails ? `${emails} gets in.` : 'ADMIN_EMAILS is empty — nobody can get in.'}`);
-    console.log('  Private to this machine. The public app has no admin route.\n');
+    console.log(
+      PUBLIC
+        ? '  PUBLIC — reachable from the internet. Clerk and ADMIN_EMAILS are the only locks.\n'
+        : '  Private to this machine. The public app has no admin route.\n',
+    );
   });
 
   return server;

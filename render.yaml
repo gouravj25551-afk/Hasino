@@ -69,3 +69,72 @@ services:
         sync: false
       - key: ADMIN_EMAILS
         sync: false
+
+  # ------------------------------------------------------------------ admin
+  # The admin panel, hosted. Same repo, same image, different process: the
+  # Dockerfile's CMD runs src/main.ts and dockerCommand overrides it with
+  # src/admin-main.ts. Nothing about the service above changes — it has no
+  # admin route, no admin asset and no /api/admin/* to expose, which is why
+  # hosting this one is additive rather than a widening of that one.
+  #
+  # This panel is on the internet. On loopback the operating system refused
+  # every connection from another machine and Clerk was the second lock; here
+  # Clerk and ADMIN_EMAILS are the only locks. Every /api/admin/* route runs
+  # requireRole(s,'admin') against a verified token — that was always true, and
+  # it is now the entire perimeter. startAdmin() refuses to boot public with
+  # any part of it missing rather than coming up half-locked.
+  #
+  # Consequences worth knowing:
+  #   - Anyone on the internet can reach the sign-in page. They get an admin
+  #     session only by holding a Google account whose VERIFIED address is in
+  #     ADMIN_EMAILS. Treat that variable as the credential it now is, and
+  #     protect those Google accounts with 2FA.
+  #   - Two free services sleep independently. Approving a salon after a quiet
+  #     spell waits on this one waking, not the customer app.
+  #   - Free instance hours are pooled per account, so two services draw from
+  #     one budget. Both sleeping is what keeps that affordable.
+  - type: web
+    name: hasino-admin
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: admin-panel-and-real-auth
+    dockerfilePath: ./Dockerfile
+    # The one line that makes this the admin panel instead of a second copy of
+    # the customer app.
+    dockerCommand: node src/admin-main.ts
+    # The panel has no /healthz — it is not the customer app. /api/config is
+    # the equivalent: served without auth, touches no database, and returns the
+    # publishable key the page boots clerk-js with.
+    healthCheckPath: /api/config
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # The deliberate opt-in. Without it this process binds 127.0.0.1 inside
+      # the container, Render's proxy cannot reach it, and every request 502s.
+      # With it, HOST defaults to 0.0.0.0 — there is no ADMIN_HOST to set.
+      - key: ADMIN_PUBLIC
+        value: "true"
+      # Behind Render's proxy: without this the rate limiter sees one client
+      # (the proxy) and one caller would lock out every operator.
+      - key: TRUST_PROXY
+        value: "true"
+      - key: LOG_FORMAT
+        value: json
+      # PORT and ADMIN_PORT are both deliberately absent. Render injects PORT
+      # and the panel reads it; setting ADMIN_PORT would pin the process to
+      # 4000, which Render does not route to.
+      #
+      # Same four values as the service above, and DATABASE_URL must be the
+      # same Neon database — an approval here is visible to the customer app
+      # immediately because it is the same row, not a copy.
+      - key: DATABASE_URL
+        sync: false
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      # No longer just configuration: this is the list of people who can
+      # administer Hasino from anywhere on the internet.
+      - key: ADMIN_EMAILS
+        sync: false

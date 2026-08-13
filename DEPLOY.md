@@ -288,13 +288,14 @@ UPDATE bookings SET status = 'expired'
 Anyone mid-payment is then refunded by the normal late-capture path.
 
 
-## The admin panel is not deployed
+## The admin panel is a separate process
 
 `npm start` runs the public application: the customer app and the salon panel.
 It has no admin route, no admin asset and no `/api/admin/*`. There is nothing
-to protect with a firewall rule because there is nothing there.
+to protect with a firewall rule because there is nothing there — and that stays
+true no matter where the panel itself runs.
 
-The admin panel is a second process you run on your own machine:
+By default the panel is a second process on your own machine:
 
 ```bash
 npm run admin      # http://127.0.0.1:4000
@@ -302,14 +303,58 @@ npm run admin      # http://127.0.0.1:4000
 
 It binds to loopback. That is not a configuration you can get wrong from the
 outside — the operating system will not accept a connection to a loopback
-socket from another host, whatever the firewall or the reverse proxy say. In
-production it refuses to start on any other interface.
+socket from another host, whatever the firewall or the reverse proxy say.
+
+### Hosting it instead (ADMIN_PUBLIC)
+
+An operator who has to approve a salon from a phone cannot do it through a
+loopback socket. `ADMIN_PUBLIC=true` hosts the panel as its own service —
+`render.yaml` defines `hasino-admin`, the same image with `dockerCommand: node
+src/admin-main.ts`.
+
+**Understand what this trades before you set it.** On loopback the operating
+system refused every outside connection and Clerk was the second lock. Public,
+**Clerk and `ADMIN_EMAILS` are the only locks.** Every `/api/admin/*` route
+verifies a Clerk token and checks the admin role — that was always true, which
+is the only reason this is a reasonable thing to do at all — but nothing else
+stands in front of it now. `ADMIN_EMAILS` stops being configuration and becomes
+a credential: anyone who can sign in to Google as one of those addresses
+administers Hasino from anywhere on the internet. Put 2FA on those accounts,
+and keep the list to people who genuinely need it.
+
+Public changes four things:
+
+| | |
+|---|---|
+| bind | `0.0.0.0` on the host's injected `PORT` (do not set `ADMIN_PORT`) |
+| rate limit | 120/min per caller, `ADMIN_RATE_LIMIT_PER_MIN` to change — there was none before, because the network was the limit |
+| HSTS | sent, since the panel is now HTTPS |
+| boot | refuses outright if `DEV_AUTH`/`CI_SMOKE` are set, either Clerk key is missing, or `ADMIN_EMAILS` is empty |
+
+That last one is the important one: a public panel with a hole in the perimeter
+does not come up half-locked, it does not come up. `ADMIN_HOST` alone still
+cannot reach a routable interface in production — a hostname is the shape a
+mistake takes, and `ADMIN_PUBLIC` is the shape a decision takes.
+
+The customer-facing service is untouched by any of this. It has no admin code
+in it to expose, which is why hosting the panel is additive rather than a
+widening of the public app.
 
 ### Administering production data
 
-The admin panel reads `DATABASE_URL`, exactly as the public app does. To work
-against production, tunnel to the production database and point the panel at
-the tunnel:
+The admin panel reads `DATABASE_URL`, exactly as the public app does. The
+hosted service takes it as an environment variable like everything else. To
+work against production from your laptop instead, point the panel at the
+production database directly — a managed Postgres like Neon is reachable over
+TLS, so there is nothing to tunnel:
+
+```bash
+set -a; . ./.env; set +a
+DATABASE_URL='<production url>' npm run admin
+```
+
+For a database that is not reachable from outside its network, tunnel first and
+point at the tunnel:
 
 ```bash
 ssh -N -L 5433:<db-host>:5432 <your-server>          # in one terminal
