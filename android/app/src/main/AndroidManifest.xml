@@ -60,6 +60,32 @@
                     android:path="/sso-callback" />
             </intent-filter>
 
+            <!--
+              The same callback, by scheme, for when App Links verification did
+              not hold: no network at install time, a sideloaded build, a
+              device that never rechecked. Android verifies App Links; it does
+              not verify schemes, so this route cannot fail the same way — and
+              a silent fallback to Chrome is precisely the failure worth
+              covering, because the user is then signed in somewhere that is
+              not the app they started from.
+
+              Reached only from the callback page itself, which hands the URL
+              on when it notices it is in a browser (see handOffToNativeApp in
+              app.js). Nothing else uses it.
+
+              A scheme is unowned — any app on the device may claim `hasino://`
+              — so nothing is trusted because it arrived here. MainActivity
+              takes only the query parameters and puts them back on the origin
+              the app is configured for; a hostile sender can therefore make
+              this app reload its own callback URL, and nothing else.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="hasino" android:host="sso-callback" />
+            </intent-filter>
+
         </activity>
 
         <provider

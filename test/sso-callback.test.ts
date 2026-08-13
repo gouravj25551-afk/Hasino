@@ -123,6 +123,10 @@ describe('the OAuth return comes back into the Android app', () => {
     new URL('../android/app/src/main/java/com/hasino/app/MainActivity.java', import.meta.url), 'utf8');
   const buildGradle = readFileSync(
     new URL('../android/app/build.gradle', import.meta.url), 'utf8');
+  const capacitorConfig = readFileSync(
+    new URL('../capacitor.config.ts', import.meta.url), 'utf8');
+  const clientAuth = readFileSync(
+    new URL('../src/http/public/lib/auth.js', import.meta.url), 'utf8');
 
   it('claims the callback path as a verified App Link', () => {
     assert.match(manifest, /android:autoVerify="true"/);
@@ -157,6 +161,41 @@ describe('the OAuth return comes back into the Android app', () => {
     // Hasino WebView, wearing Hasino's identity.
     assert.match(mainActivity, /sameOrigin/);
     assert.match(mainActivity, /getConfig\(\)\.getServerUrl\(\)/);
+  });
+
+  it('has a route home that App Links verification cannot break', () => {
+    // Android verifies App Links over a network that may not be there at
+    // install time. A device that failed that check sends the callback to the
+    // browser instead, silently. Schemes are not verified and cannot fail
+    // that way, so the callback page hands itself on by scheme when it
+    // notices it is in a browser.
+    assert.match(manifest, /android:scheme="hasino"/);
+    assert.match(manifest, /android:host="sso-callback"/);
+    assert.match(mainActivity, /NATIVE_SCHEME/);
+  });
+
+  it('rebuilds a scheme callback onto its own origin rather than following it', () => {
+    // Any app may claim hasino://. Only the query survives; the scheme, host
+    // and path are the app's own, so the worst a hostile sender achieves is
+    // making Hasino reload its own callback URL.
+    assert.match(mainActivity, /encodedQuery\(query\)/);
+    assert.match(mainActivity, /\.path\(CALLBACK_PATH\)/);
+  });
+
+  it('knows it is in the app without Capacitor being injected', () => {
+    // The site is loaded from the network, so Capacitor never injects its
+    // bridge and window.Capacitor does not exist inside the app. Detecting
+    // "native" with isNativePlatform() would report browser everywhere and
+    // the callback would never hand itself back.
+    assert.match(capacitorConfig, /appendUserAgent: 'HasinoApp\/1'/);
+    assert.match(clientAuth, /HasinoApp\\\//);
+  });
+
+  it('flags only the sign-ins that started in the app', () => {
+    // A web sign-in must complete in the browser it started in. The flag
+    // rides in the redirect URL because the browser that lands on the
+    // callback shares no storage with the app.
+    assert.match(clientAuth, /isNativeApp\(\) \? `\?\$\{NATIVE_FLAG\}=1` : ''/);
   });
 
   it('serves the site half of the agreement, and only when configured', () => {

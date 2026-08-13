@@ -43,15 +43,24 @@ public class MainActivity extends BridgeActivity {
         loadAppLink(intent);
     }
 
+    /** The scheme the callback page falls back to; see AndroidManifest.xml. */
+    private static final String NATIVE_SCHEME = "hasino";
+    private static final String CALLBACK_PATH = "/sso-callback";
+
     /**
-     * Load an incoming VIEW intent, but only when it points at the origin this
-     * app is configured to be.
+     * Load an incoming VIEW intent, but only ever as a URL on this app's own
+     * origin.
      *
-     * The check is not ceremony. Without it any app on the device could send
-     * this activity a VIEW intent for a URL of its choosing and have it render
-     * inside the Hasino WebView, on Hasino's task, wearing Hasino's identity —
-     * a convincing place to ask for a password. The intent-filter narrows what
-     * Android routes here; this narrows what is honoured once it arrives.
+     * Two ways in, one outcome. An App Link arrives already on that origin and
+     * is loaded as it stands. A `hasino://sso-callback?…` fallback arrives on
+     * a scheme any app on the device may claim, so nothing about it is
+     * trusted: its query string is copied onto the configured origin and its
+     * host, path and scheme are discarded. The worst a hostile sender can do
+     * is make Hasino reload its own callback URL.
+     *
+     * Without this check the activity would render a URL of the sender's
+     * choosing inside the Hasino WebView, on Hasino's task, wearing Hasino's
+     * identity — a convincing place to ask someone for a password.
      */
     private void loadAppLink(Intent intent) {
         if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) {
@@ -63,17 +72,29 @@ public class MainActivity extends BridgeActivity {
         }
 
         Uri configured = Uri.parse(getBridge().getConfig().getServerUrl());
-        boolean sameOrigin =
-            link.getScheme() != null &&
-            link.getScheme().equalsIgnoreCase(configured.getScheme()) &&
-            link.getHost() != null &&
-            link.getHost().equalsIgnoreCase(configured.getHost()) &&
-            link.getPort() == configured.getPort();
-        if (!sameOrigin) {
-            return;
-        }
+        final String url;
 
-        final String url = link.toString();
+        if (NATIVE_SCHEME.equalsIgnoreCase(link.getScheme())) {
+            // Rebuilt, not forwarded. Only the query survives.
+            String query = link.getEncodedQuery();
+            url = configured
+                .buildUpon()
+                .path(CALLBACK_PATH)
+                .encodedQuery(query)
+                .build()
+                .toString();
+        } else {
+            boolean sameOrigin =
+                link.getScheme() != null &&
+                link.getScheme().equalsIgnoreCase(configured.getScheme()) &&
+                link.getHost() != null &&
+                link.getHost().equalsIgnoreCase(configured.getHost()) &&
+                link.getPort() == configured.getPort();
+            if (!sameOrigin) {
+                return;
+            }
+            url = link.toString();
+        }
         // post() rather than a direct call: on a cold start this runs inside
         // onCreate, while the WebView is still being handed its first URL.
         // Queueing behind that is what makes the callback the last navigation

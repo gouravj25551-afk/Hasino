@@ -114,9 +114,75 @@ export async function watchAuthState(handler) {
  */
 const CALLBACK_PATH = '/sso-callback';
 
+/**
+ * The custom scheme the Android app also answers on, and the reason it exists.
+ *
+ * App Links are the right way home — the callback stays one real https URL,
+ * which is what Clerk accepts and what a desktop browser uses unchanged. But
+ * they are a *verified* mechanism: Android checks assetlinks.json at install
+ * time, over a network that may not be there, and a device that failed that
+ * check quietly sends the callback to the browser instead. Chrome then
+ * finishes the sign-in in its own cookie jar and the user is stranded on a web
+ * page, signed in to something that is not the app they started from.
+ *
+ * A custom scheme needs no verification and cannot fail that way. It is the
+ * fallback, not the primary: schemes are unowned — any app may claim
+ * `hasino://` — so nothing sensitive travels this way. What travels is the
+ * same callback parameters Clerk already put in a URL the browser had, and
+ * the app rewrites them onto its own configured origin before loading
+ * anything (see MainActivity.java).
+ */
+const NATIVE_SCHEME = 'hasino';
+
+/**
+ * Marks a sign-in as having started inside the Android app, so the callback
+ * knows whether it is home or stranded in a browser.
+ *
+ * It rides in the redirect URL because it has to survive a round trip through
+ * Clerk and Google, landing in a browser that shares no storage with the app.
+ */
+const NATIVE_FLAG = 'native';
+
+/**
+ * True inside the Hasino Android app, false in any ordinary browser.
+ *
+ * Not `window.Capacitor`: the site is loaded from the network rather than from
+ * the APK, so Capacitor never injects its bridge and that object does not
+ * exist here. The app announces itself in the user agent instead — see
+ * appendUserAgent in capacitor.config.ts. The Capacitor check stays as a
+ * second signal in case the shell ever serves bundled assets.
+ */
+export function isNativeApp() {
+  return (
+    / HasinoApp\//.test(navigator.userAgent) ||
+    Boolean(window.Capacitor?.isNativePlatform?.())
+  );
+}
+
 /** True on the page load that Clerk redirected to after Google. */
 export function isRedirectCallback() {
   return window.location.pathname === CALLBACK_PATH;
+}
+
+/**
+ * True when this callback belongs to a sign-in that started in the app.
+ *
+ * Set on the way out, read on the way back — the browser that lands here has
+ * none of the app's storage, so the URL is the only thing that carries it.
+ */
+export function callbackWantsNativeApp() {
+  return new URLSearchParams(window.location.search).get(NATIVE_FLAG) === '1';
+}
+
+/**
+ * The URL that hands this callback to the Android app.
+ *
+ * Every parameter Clerk added is carried across unchanged; the app puts them
+ * back on its own https origin. Nothing is added and nothing is interpreted
+ * here.
+ */
+export function nativeCallbackUrl() {
+  return `${NATIVE_SCHEME}://${CALLBACK_PATH.slice(1)}${window.location.search}`;
 }
 
 /**
@@ -133,7 +199,13 @@ export async function signInWithGoogle() {
   try {
     await c.client.signIn.authenticateWithRedirect({
       strategy: 'oauth_google',
-      redirectUrl: window.location.origin + CALLBACK_PATH,
+      // ?native=1 when the app started this, so the callback can tell whether
+      // it landed at home or in a browser. Still one ordinary https URL, which
+      // is what Clerk accepts and what App Links claim — the flag changes
+      // nothing about where Clerk sends the browser, only what the page does
+      // when it gets there.
+      redirectUrl:
+        window.location.origin + CALLBACK_PATH + (isNativeApp() ? `?${NATIVE_FLAG}=1` : ''),
       redirectUrlComplete: window.location.origin + routes.home,
     });
     return null; // navigating away

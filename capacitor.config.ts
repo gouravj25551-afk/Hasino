@@ -78,6 +78,16 @@ const config: CapacitorConfig = {
     // it. Turning it on to "just test against my laptop" is how a production
     // APK ends up talking to http://192.168.x.x.
     allowMixedContent: false,
+    // How the page knows it is inside the app.
+    //
+    // The site is loaded from the network, not from the APK, so Capacitor
+    // never injects its bridge and `window.Capacitor` does not exist here —
+    // the usual isNativePlatform() check would report "browser" inside the
+    // app. The OAuth return has to tell the two apart to know whether to
+    // finish the sign-in or bounce back into the app, so the app announces
+    // itself in a way that survives a remote origin. See isNativeApp() in
+    // lib/auth.js.
+    appendUserAgent: 'HasinoApp/1',
   },
   server: {
     url: APP_URL,

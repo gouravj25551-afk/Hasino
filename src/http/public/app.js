@@ -9,7 +9,15 @@
  */
 import { register, start, go, reload, currentHash, activeSection } from './lib/router.js';
 import { api } from './lib/api.js';
-import { watchAuthState, isRedirectCallback, completeRedirectCallback, signOut } from './lib/auth.js';
+import {
+  watchAuthState,
+  isRedirectCallback,
+  completeRedirectCallback,
+  signOut,
+  isNativeApp,
+  callbackWantsNativeApp,
+  nativeCallbackUrl,
+} from './lib/auth.js';
 import { TopBar, highlightTopBarNav } from './components/TopBar.js';
 import { LocationSheet } from './components/LocationSheet.js';
 import { getLocation } from './lib/location.js';
@@ -162,6 +170,49 @@ register(/^#\/profile$/, () => renderProfile(viewRoot, app));
 register(/^#\/login$/, () => renderLogin(viewRoot, app));
 register(/^#\/apply$/, () => renderApply(viewRoot, app));
 
+/**
+ * Give the callback back to the Android app, and never leave the person
+ * looking at a blank page if that does not take.
+ *
+ * The navigation is attempted immediately, because the good case should feel
+ * like the browser blinked. But it can fail in ways this page cannot detect —
+ * a dialog the user dismisses, a browser that refuses an unprompted scheme
+ * navigation — and the failure is silent: the page simply stays. So the page
+ * is also *rendered* first, with a button that runs the same navigation from a
+ * real tap, which browsers treat far more permissively than a scripted one.
+ *
+ * Signing in again here would be the wrong answer. This browser can complete
+ * the handshake perfectly well; the session would just be in the wrong place.
+ */
+function handOffToNativeApp() {
+  const url = nativeCallbackUrl();
+
+  viewRoot.innerHTML = '';
+  const card = el('div', 'panel');
+  card.style.cssText = 'max-width:440px; margin:48px auto; padding:36px 28px; text-align:center';
+  card.append(el('h1', null, 'Signed in'));
+  card.append(el('p', 'sub', 'Returning you to the Hasino app…'));
+
+  const back = el('a', 'btn primary', 'Open the Hasino app');
+  back.href = url;
+  back.style.marginTop = '20px';
+  card.append(back);
+
+  card.append(
+    Object.assign(
+      el('div', 'note',
+        'If nothing happens, tap the button above. You are signed in — this last step just '
+        + 'moves you back to the app, because the app and the browser keep separate sessions.'),
+      { style: 'margin-top:20px; text-align:left' },
+    ),
+  );
+  viewRoot.append(card);
+
+  // location.replace, not assign: the callback URL must not sit in history
+  // where Back would replay a consumed one-time code.
+  window.location.replace(url);
+}
+
 async function boot() {
   // Fetched before the first route so no view has to guess whether there is a
   // payment step. Public endpoint; failure is not fatal to browsing.
@@ -173,6 +224,21 @@ async function boot() {
   // Booting the router here instead would leave the sign-in half-finished,
   // which is the loop this replaced.
   if (isRedirectCallback()) {
+    // This callback belongs to a sign-in that started in the Android app, and
+    // it is being read by a browser instead. That is the stranded case: Chrome
+    // would finish the handshake in its own cookie jar, and the app the user
+    // started from would still be showing a sign-in button, because a WebView
+    // shares no storage with the browser.
+    //
+    // App Links normally stop us ever getting here — Android hands the URL
+    // straight to the app. This is what happens when that verification did not
+    // hold: no network at install time, a sideloaded build, a device that
+    // never rechecked. Handing the callback on by scheme needs no
+    // verification and cannot fail that way.
+    if (callbackWantsNativeApp() && !isNativeApp()) {
+      return handOffToNativeApp();
+    }
+
     try {
       await completeRedirectCallback();
       return; // navigating away
