@@ -31,6 +31,10 @@ services:
     # a region that already holds a service in another region, so if you get a
     # region error this is the line to change.
     region: singapore
+    # Pinned, because the deploy is on a branch and the repo's default is main.
+    # Left unset, Render follows the default branch and would deploy a tree
+    # without this file in it. Change this line when the branch merges.
+    branch: admin-panel-and-real-auth
     dockerfilePath: ./Dockerfile
     # No database call, so a Neon blip does not get the service restarted in a
     # loop. /readyz is the one that checks the DB.
