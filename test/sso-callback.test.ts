@@ -112,6 +112,62 @@ describe('the salon panel is reachable from the customer app', () => {
   });
 });
 
+describe('the OAuth return comes back into the Android app', () => {
+  // Google will not run OAuth in an embedded WebView, so the browser takes
+  // that step. Everything here is about the browser handing the *result* back:
+  // left in Chrome it completes against Chrome's cookies and the app stays
+  // signed out, because a WebView has its own storage.
+  const manifest = readFileSync(
+    new URL('../android/app/src/main/AndroidManifest.xml', import.meta.url), 'utf8');
+  const mainActivity = readFileSync(
+    new URL('../android/app/src/main/java/com/hasino/app/MainActivity.java', import.meta.url), 'utf8');
+  const buildGradle = readFileSync(
+    new URL('../android/app/build.gradle', import.meta.url), 'utf8');
+
+  it('claims the callback path as a verified App Link', () => {
+    assert.match(manifest, /android:autoVerify="true"/);
+    assert.match(manifest, /android:path="\/sso-callback"/);
+    assert.match(manifest, /android:scheme="https"/);
+  });
+
+  it('claims that path only, not the whole host', () => {
+    // A host-wide filter turns every shared salon link into an app launch.
+    assert.doesNotMatch(manifest, /android:pathPrefix="\/"/);
+    assert.doesNotMatch(manifest, /android:host="\$\{hasinoAppHost\}"\s*\/>/);
+  });
+
+  it('takes the host from the built config rather than hardcoding it', () => {
+    // Two places to write the deployment URL means one of them is eventually
+    // stale, and a stale host fails as "Chrome kept the user".
+    assert.match(manifest, /android:host="\$\{hasinoAppHost\}"/);
+    assert.match(buildGradle, /capacitor\.config\.json/);
+    assert.match(buildGradle, /manifestPlaceholders = \[hasinoAppHost/);
+  });
+
+  it('loads the link into the WebView, which Capacitor does not do', () => {
+    // Bridge.onNewIntent only notifies plugins. Without this the app
+    // foregrounds and drops the sign-in — worse than staying in Chrome,
+    // because it looks like it worked.
+    assert.match(mainActivity, /onNewIntent/);
+    assert.match(mainActivity, /getWebView\(\)\.loadUrl/);
+  });
+
+  it('honours the link only when it is our own origin', () => {
+    // Otherwise any app could have a URL of its choosing rendered inside the
+    // Hasino WebView, wearing Hasino's identity.
+    assert.match(mainActivity, /sameOrigin/);
+    assert.match(mainActivity, /getConfig\(\)\.getServerUrl\(\)/);
+  });
+
+  it('serves the site half of the agreement, and only when configured', () => {
+    assert.match(server, /\/\.well-known\/assetlinks\.json/);
+    assert.match(server, /delegate_permission\/common\.handle_all_urls/);
+    // An empty fingerprint list is a positive "no app may handle these links",
+    // and Android caches it. 404 leaves the question open.
+    assert.match(server, /if \(fingerprints\.length === 0\) throw new HttpError\(404/);
+  });
+});
+
 describe('sign-in lands you where your role belongs', () => {
   // An owner who signs in and arrives on the customer home has been asked,
   // in effect, to pick a role — first the home page, then the profile, then

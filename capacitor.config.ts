@@ -49,6 +49,24 @@ if (!APP_URL.startsWith('https://')) {
   );
 }
 
+/**
+ * The hosted admin panel, if there is one. Optional.
+ *
+ * An admin signing in is sent to their panel by the server's ADMIN_PANEL_URL,
+ * and that panel is a different origin. Without its host listed below, Android
+ * would treat the hop as an external link and open Chrome — the thing this
+ * build exists to stop. Listed, the panel opens inside the app.
+ *
+ * Set it only if you have deployed the panel and set ADMIN_PANEL_URL on the
+ * server; the two are the same URL. Unset, nothing routes there and the app
+ * behaves exactly as before.
+ */
+const ADMIN_URL = process.env['HASINO_ADMIN_URL'];
+
+if (ADMIN_URL && !ADMIN_URL.startsWith('https://')) {
+  throw new Error(`HASINO_ADMIN_URL must be https, got "${ADMIN_URL}".`);
+}
+
 const config: CapacitorConfig = {
   appId: 'com.hasino.app',
   appName: 'Hasino',
@@ -64,8 +82,12 @@ const config: CapacitorConfig = {
   server: {
     url: APP_URL,
     // Anything the site itself navigates to stays inside the app. The OAuth
-    // hop to accounts.google.com deliberately does NOT — see README-ANDROID.md.
-    allowNavigation: [new URL(APP_URL).host],
+    // hop to accounts.google.com deliberately does NOT — Google refuses OAuth
+    // from an embedded WebView, so the browser takes that step. What comes
+    // back is caught by the App Links filter in AndroidManifest.xml and
+    // handed to MainActivity, which is what stops the browser keeping the
+    // session. See README-ANDROID.md.
+    allowNavigation: ADMIN_URL ? [new URL(APP_URL).host, new URL(ADMIN_URL).host] : [new URL(APP_URL).host],
   },
   plugins: {
     SplashScreen: {

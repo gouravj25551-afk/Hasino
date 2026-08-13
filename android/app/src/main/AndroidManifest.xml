@@ -22,6 +22,44 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!--
+              Android App Links: the return leg of Google sign-in.
+
+              Clerk's OAuth is a full redirect, and Google refuses to run it
+              inside an embedded WebView, so the browser takes over for the
+              Google step. Without this filter the browser also keeps the
+              *result*: Chrome lands on https://<host>/sso-callback, completes
+              the handshake against Chrome's cookie jar, and the user is signed
+              in in Chrome while the app they started from still shows a sign-in
+              button. The session cannot cross — a WebView has its own storage.
+
+              autoVerify makes Android check
+              https://<host>/.well-known/assetlinks.json for this package and
+              signing certificate at install time. Verified, the callback URL
+              opens here instead of in the browser, and the WebView — which is
+              where the sign-in attempt was created and where Clerk's client
+              state lives — is the thing that finishes it. That is why this is
+              App Links rather than a custom scheme: the redirect URL has to
+              stay a real https URL that Clerk will accept and that works
+              unchanged in a desktop browser.
+
+              Scoped to /sso-callback on purpose. Claiming the whole host would
+              make every hasino link — a salon someone shared, a page opened
+              from an email — hijack the browser into the app.
+
+              The host comes from the Capacitor config via a manifest
+              placeholder; see android/app/build.gradle.
+            -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${hasinoAppHost}"
+                    android:path="/sso-callback" />
+            </intent-filter>
+
         </activity>
 
         <provider

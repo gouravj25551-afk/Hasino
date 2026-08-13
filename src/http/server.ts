@@ -311,6 +311,40 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     return void res.end();
   }
 
+  // ---------- Android App Links ----------
+  // Android fetches this at install time to decide whether this site agrees
+  // that the Hasino app may open its /sso-callback links. Without agreement
+  // the OAuth return stays in Chrome, the handshake completes against
+  // Chrome's cookies, and the app the user started from is still signed out —
+  // a WebView has its own storage and the session cannot cross.
+  //
+  // Both halves have to match for a link to verify: the package name and the
+  // SHA-256 of the certificate the APK was actually signed with. A debug APK
+  // and a release APK have different certificates, so list both here when
+  // there is a release build; a fingerprint that is merely stale fails
+  // closed — links open in the browser exactly as they did before.
+  //
+  // Unset, this 404s rather than serving an empty declaration, because an
+  // empty `relation` list is a positive statement that no app may handle
+  // these links, and Android caches it.
+  if (read && path === '/.well-known/assetlinks.json') {
+    const fingerprints = (process.env['ANDROID_CERT_FINGERPRINTS'] ?? '')
+      .split(',')
+      .map((f) => f.trim().toUpperCase())
+      .filter(Boolean);
+    if (fingerprints.length === 0) throw new HttpError(404, 'Not found');
+    return json(res, 200, [
+      {
+        relation: ['delegate_permission/common.handle_all_urls'],
+        target: {
+          namespace: 'android_app',
+          package_name: process.env['ANDROID_PACKAGE'] ?? 'com.hasino.app',
+          sha256_cert_fingerprints: fingerprints,
+        },
+      },
+    ]);
+  }
+
   // Clerk's publishable key is not secret — it ships to every browser by
   // design — but it is environment-specific, so it comes from env rather than
   // being hardcoded into a checked-in file. CLERK_SECRET_KEY is never served.
@@ -326,6 +360,14 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       // secret never leaves the server.
       razorpay: { keyId: payments.enabled ? payments.keyId : null, enabled: payments.enabled },
       payments: { provider: payments.provider, enabled: payments.enabled },
+      // Where the admin panel lives, when it is hosted. Only a URL, and only
+      // one an operator typed: this app still serves no admin route, no admin
+      // asset and no /api/admin/* — the panel is a separate process and this
+      // is a signpost to it, not a door into it. Unset (the default, and the
+      // case for a loopback panel) it is null and the app sends nobody
+      // anywhere. Everyone gets this value, which costs nothing: the panel's
+      // own sign-in decides who may do anything there.
+      adminPanelUrl: process.env['ADMIN_PANEL_URL'] || null,
       devAuth: DEV_AUTH,
     });
   }

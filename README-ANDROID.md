@@ -74,24 +74,86 @@ non-HTTPS one. A localhost default would produce an APK that works on the
 laptop that built it and nowhere else — and an emulator would make that look
 fine right up until you installed it on a phone.
 
-## Google sign-in: the one thing to test first
+## Google sign-in, and the trip through the browser
 
-Google refuses OAuth from embedded WebViews and answers `disallowed_useragent`.
-Whether that bites here depends on how Google classifies Capacitor's WebView,
-and it cannot be settled without a device — so **test sign-in before anything
-else**.
+Google refuses OAuth from embedded WebViews, so the Google step happens in the
+real browser. That part is not a bug and cannot be avoided — spoofing the
+WebView's user agent to hide from it breaks whenever Google changes detection,
+and is against their policy.
 
-If it works, nothing more is needed; Clerk behaves exactly as on the web.
+What *was* a bug is where the browser put the result. Chrome landed on
+`https://<host>/sso-callback`, finished the handshake against Chrome's cookie
+jar, and left the user signed in **in Chrome** while the app still showed a
+sign-in button. A WebView has its own storage; the session cannot cross.
 
-If you get `disallowed_useragent`, the supported fix is native Google Sign-In
-rather than a redirect: a Capacitor Google Auth plugin returns an ID token, and
-Clerk accepts one through `authenticateWithGoogleOneTap({ token })`. That needs
-an Android OAuth client in Google Cloud registered against the app's SHA-1
-fingerprint, and a branch in `views/login.js` for when the app is running
-natively. It is a real change, so it is not done pre-emptively.
+Three pieces catch the return:
 
-Do not work around this by spoofing the WebView's user agent. It breaks when
-Google changes detection, and it is against their policy.
+| | |
+|---|---|
+| `AndroidManifest.xml` | an `autoVerify` App Links filter for `https://<host>/sso-callback` — and only that path, so ordinary links still open in the browser |
+| `MainActivity.java` | loads the incoming link into the WebView. Capacitor's own `onNewIntent` only notifies plugins; nothing navigates, so without this the app would foreground and silently drop the sign-in |
+| `GET /.well-known/assetlinks.json` | the site's half of the agreement — served by the app server from `ANDROID_CERT_FINGERPRINTS` |
+
+The host in the manifest is a placeholder filled from
+`android/app/src/main/assets/capacitor.config.json` at build time, so it cannot
+drift from the URL the WebView actually loads.
+
+### What you must configure
+
+Set these on the server, then rebuild and reinstall the APK:
+
+```
+ANDROID_CERT_FINGERPRINTS=AA:BB:…   # SHA-256 of the signing cert, colon-separated
+ANDROID_PACKAGE=com.hasino.app      # optional; this is the default
+```
+
+Get the fingerprint from the APK you are actually installing — debug and
+release are signed with different certificates, and a release build needs its
+own entry added to the list:
+
+```bash
+$ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs \
+  android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+Verify the site's half is live before installing:
+
+```bash
+curl https://<host>/.well-known/assetlinks.json
+```
+
+Then, on the device, confirm Android verified the link:
+
+```bash
+adb shell pm get-app-links com.hasino.app     # want: verified
+```
+
+`Domain verification state: verified` means the OAuth return comes back into
+the app. Anything else and it opens in Chrome — the old behaviour, which is a
+degraded sign-in rather than a broken app. Verification needs a network at
+install time; if it says `unverified`, reinstall once the site is reachable, or
+enable it by hand for testing with
+`adb shell pm set-app-links --package com.hasino.app 1 all`.
+
+### If sign-in fails with `disallowed_useragent`
+
+That is a different problem: Google refusing the WebView for the *first* leg
+rather than the return leg. The supported fix is native Google Sign-In — a
+Capacitor Google Auth plugin returns an ID token and Clerk accepts one through
+`authenticateWithGoogleOneTap({ token })`. That needs an Android OAuth client
+in Google Cloud registered against the app's SHA-1, and a branch in
+`views/login.js` for when the app runs natively. Not done pre-emptively.
+
+## The admin panel on Android
+
+Optional, and off unless both halves are set. `ADMIN_PANEL_URL` on the server
+sends a signed-in admin to the hosted panel; `HASINO_ADMIN_URL` at sync time
+adds that host to `allowNavigation` so the app opens it instead of handing it
+to Chrome. They are the same URL. Set neither and an admin stays in the
+customer app, which is the previous behaviour exactly.
+
+The panel signs in on its own origin — a Clerk session belongs to one origin,
+so this is a fresh sign-in, not a continuation.
 
 ## Location
 

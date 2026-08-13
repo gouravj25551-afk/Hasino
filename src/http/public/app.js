@@ -92,10 +92,24 @@ function afterSignInDestination() {
   const intent = sessionStorage.getItem('postSignIn');
   sessionStorage.removeItem('postSignIn');
   if (app.session?.role === 'business') return '/business';
+  // The admin panel is a separate deployment on its own origin, so this is a
+  // whole URL rather than a path, and it is only ever the one the server was
+  // configured with (ADMIN_PANEL_URL) — never anything derived from the
+  // session. Unset, an admin stays here and uses the app like anyone else;
+  // there is nothing to redirect to and inventing a URL would be a guess.
+  //
+  // The panel has its own Clerk sign-in on its own origin: a session here does
+  // not carry over, which is the separation working rather than a fault. For
+  // the Android app to follow this without handing the user to Chrome, the
+  // admin host must also be in the Capacitor allowNavigation list — see
+  // capacitor.config.ts.
+  if (app.session?.role === 'admin' && app.config?.adminPanelUrl) {
+    return app.config.adminPanelUrl;
+  }
   return intent === 'salon' ? '#/apply' : '#/home';
 }
 
-/** Hash routes stay in the router; a real path is a document load. */
+/** Hash routes stay in the router; anything else is a document load. */
 function navigateTo(dest) {
   if (dest.startsWith('#')) go(dest);
   else window.location.assign(dest);

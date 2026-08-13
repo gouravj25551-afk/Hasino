@@ -1,5 +1,28 @@
 apply plugin: 'com.android.application'
 
+/**
+ * The host the App Links intent-filter claims, read out of the Capacitor
+ * config that `npx cap sync android` just wrote.
+ *
+ * Not a second place to configure the deployment: HASINO_APP_URL is still the
+ * only input, and this reads the file that already holds its answer. A
+ * hardcoded host in AndroidManifest.xml would silently disagree with the URL
+ * the WebView loads the moment either one moved, and the symptom of that
+ * disagreement is Chrome keeping the user — the exact bug this exists to fix.
+ *
+ * No config yet (a build before the first sync) leaves a host that verifies
+ * against nothing, which is inert rather than wrong.
+ */
+def hasinoAppHost = 'invalid.localhost'
+def capConfigFile = file('src/main/assets/capacitor.config.json')
+if (capConfigFile.exists()) {
+    def serverUrl = new groovy.json.JsonSlurper().parseText(capConfigFile.text)?.server?.url
+    if (serverUrl) {
+        hasinoAppHost = new URI(serverUrl).host
+    }
+}
+logger.lifecycle("Hasino App Links host: ${hasinoAppHost}")
+
 android {
     namespace = "com.hasino.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -10,6 +33,7 @@ android {
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        manifestPlaceholders = [hasinoAppHost: hasinoAppHost]
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
