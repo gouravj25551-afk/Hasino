@@ -245,6 +245,33 @@ describe('sign-in lands you where your role belongs', () => {
     assert.match(app, /function navigateTo\(dest\) \{\s*if \(dest\.startsWith\('#'\)\) go\(dest\);/);
   });
 
+  it('routes on app open, not only on the sign-in that created the session', () => {
+    // Sign-in happens once; opening the app happens every day. Routing only
+    // at sign-in left an owner who reopened the app on the customer home,
+    // which is the "customer panel first" this is meant to remove.
+    assert.match(app, /function routeOnOpen\(\)/);
+    assert.match(app, /else routeOnOpen\(\);/);
+  });
+
+  it('moves nobody away from a page they chose', () => {
+    // Only landing routes. An owner who opened a shared salon link asked for
+    // that page; bouncing them to the dashboard breaks every link into the app.
+    assert.match(app, /LANDING_ROUTES = new Set\(\['', '#\/', '#\/home'\]\)/);
+    assert.match(app, /LANDING_ROUTES\.has\(currentHash\(\)\)/);
+  });
+
+  it('takes the panel from the server-side role, not the email', () => {
+    assert.match(app, /app\.session\?\.role === 'business'\) return '\/business'/);
+    assert.doesNotMatch(app, /email.*@.*(includes|endsWith|test\()/);
+  });
+
+  it('forgets the launch on sign-out, so the next sign-in still routes', () => {
+    // Without the reset, an owner who signed out and back in on the same page
+    // would be stranded on the customer home: routeOnOpen had spent its one
+    // shot and would not fire again.
+    assert.match(app, /openRouted = false;/);
+  });
+
   it('decides the same way for someone already signed in', () => {
     // The login view is reachable with a live session — a bookmark, a back
     // button. Sending that person to '#/home' while a fresh sign-in goes to

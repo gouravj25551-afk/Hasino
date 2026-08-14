@@ -96,9 +96,16 @@ async function doSignOut() {
  * Returns a hash route or a real path; navigateTo() handles both. '/business'
  * is a separate document (business.html), so it cannot be a hash route.
  */
-function afterSignInDestination() {
-  const intent = sessionStorage.getItem('postSignIn');
-  sessionStorage.removeItem('postSignIn');
+/**
+ * The panel this account belongs in, or null for a customer.
+ *
+ * Decided by `role` on GET /api/me, which the server derives from the
+ * owner_id relationship on the salon and from ADMIN_EMAILS — never from
+ * anything the client can read off an email string. A tampered client can
+ * change what it *shows*; it cannot change what /api/business/* will answer,
+ * because those routes resolve the salon from the authenticated owner.
+ */
+function panelForRole() {
   if (app.session?.role === 'business') return '/business';
   // The admin panel is a separate deployment on its own origin, so this is a
   // whole URL rather than a path, and it is only ever the one the server was
@@ -114,7 +121,43 @@ function afterSignInDestination() {
   if (app.session?.role === 'admin' && app.config?.adminPanelUrl) {
     return app.config.adminPanelUrl;
   }
-  return intent === 'salon' ? '#/apply' : '#/home';
+  return null;
+}
+
+function afterSignInDestination() {
+  const intent = sessionStorage.getItem('postSignIn');
+  sessionStorage.removeItem('postSignIn');
+  return panelForRole() ?? (intent === 'salon' ? '#/apply' : '#/home');
+}
+
+/**
+ * The routes that mean "the app just opened", as opposed to a place the person
+ * chose to be. Only these are redirected away from on launch.
+ */
+const LANDING_ROUTES = new Set(['', '#/', '#/home']);
+let openRouted = false;
+
+/**
+ * Send an owner to their panel when the app opens with a session already
+ * restored — not only on the sign-in that created it.
+ *
+ * Sign-in happens once; opening the app happens every day. Routing only at
+ * sign-in meant a salon owner who closed the app and came back landed on the
+ * customer home and had to find their way to the dashboard again, which is the
+ * "customer panel first" this exists to remove. Clerk restores its session
+ * asynchronously, so this runs when the session resolves rather than at boot,
+ * when the answer would still be "signed out" for everybody.
+ *
+ * Once per load, and only from a landing route. An owner who opened a specific
+ * page — a salon someone shared, their own bookings — asked for that page, and
+ * bouncing them to the dashboard would break every link into the app. A
+ * customer has no panel and is never moved.
+ */
+function routeOnOpen() {
+  if (openRouted) return;
+  openRouted = true;
+  const panel = panelForRole();
+  if (panel && LANDING_ROUTES.has(currentHash())) navigateTo(panel);
 }
 
 /** Hash routes stay in the router; anything else is a document load. */
@@ -261,6 +304,11 @@ async function boot() {
       await watchAuthState(async (fbUser) => {
         if (!fbUser) {
           app.session = null;
+          // Signing out ends this launch as far as routing is concerned.
+          // Without the reset, an owner who signed out and straight back in on
+          // the same page would be left on the customer home, because
+          // routeOnOpen had already spent its one shot.
+          openRouted = false;
           renderChrome();
           return;
         }
@@ -271,6 +319,10 @@ async function boot() {
           // they no longer need is the same dead end as the original loop,
           // just one step later.
           if (currentHash() === '#/login') afterSignIn();
+          // Every other way in: the app was opened with a session already
+          // restored. An owner belongs in their panel then too, not only on
+          // the sign-in that created the session.
+          else routeOnOpen();
         } catch {
           // A Clerk session whose token the server will not accept — revoked,
           // expired, or issued by a different instance. Browsing stays public,
