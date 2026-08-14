@@ -110,6 +110,19 @@ describe('the salon panel is reachable from the customer app', () => {
   it('the profile list links an approved owner to their salon panel', () => {
     assert.match(profile, /'\/business'/);
   });
+
+  it('but the panel offers a salon account no way back to a customer one', () => {
+    // Two buttons side by side read as "which panel are you?", and the account
+    // already answered that: role comes from the owner_id relationship, not
+    // from anything about the email. Someone signed out, or signed in without
+    // a salon, is looking at a panel that is not theirs and still gets a door.
+    const businessHtml = readFileSync(
+      new URL('../src/http/public/business.html', import.meta.url), 'utf8');
+    const businessJs = readFileSync(
+      new URL('../src/http/public/business.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(businessHtml, /Customer app/);
+    assert.match(businessJs, /me\.role !== 'business'\) showExit\(\)/);
+  });
 });
 
 describe('the OAuth return comes back into the Android app', () => {

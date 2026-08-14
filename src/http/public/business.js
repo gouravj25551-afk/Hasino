@@ -46,6 +46,25 @@ async function api(path, opts = {}) {
  */
 async function initIdentity() {
   const who = $('#whoami');
+  const exit = $('#exit');
+  exit.innerHTML = '';
+
+  /**
+   * The way out of this panel, for people it does not belong to.
+   *
+   * A salon account does not get one. The server already knows this account is
+   * a salon — `role` on /api/me, derived from the owner_id relationship, not
+   * from anything about the email — so offering "← Customer app" beside the
+   * dashboard presents a choice of panels where there is no choice to make.
+   * Someone signed out, or signed in without a salon, is looking at a panel
+   * that is genuinely not theirs and does need the door.
+   */
+  const showExit = () => {
+    const link = el('a', 'btn sm', '← Customer app');
+    link.href = '/';
+    exit.append(link);
+  };
+
   try {
     const me = await api('/api/me');
     who.innerHTML = '';
@@ -53,12 +72,14 @@ async function initIdentity() {
     const out = el('button', 'btn sm', 'Sign out');
     out.onclick = async () => { await signOut(); location.reload(); };
     who.append(out);
+    if (me.role !== 'business') showExit();
     return me;
   } catch (err) {
     who.innerHTML = '';
     const link = el('a', 'btn sm primary', 'Sign in');
     link.href = '/#/login';
     who.append(link);
+    showExit();
     return null;
   }
 }
@@ -246,37 +267,25 @@ async function servicesView() {
   const { services } = await api('/api/business/services');
 
   /**
-   * An empty catalogue is a blank screen otherwise — headings, a table head,
-   * a note about buffers, and no rows — which reads as "my services vanished"
-   * rather than "there is nothing to offer yet".
+   * Two lists, because they answer different questions.
    *
-   * This list is every service in the global `services` table, with your price
-   * and duration joined on. Empty means that table is empty, which on a fresh
-   * deployment means `npm run db:seed` has not been run against it. Nothing an
-   * owner can fix from here, so say who can.
+   * `mine` is this salon's menu — what a customer sees, what earns money, and
+   * the only thing most visits to this screen are about. It used to be mixed
+   * into one table with every service Hasino has ever heard of, priced rows
+   * and blank rows together, so "what do I actually offer?" meant reading the
+   * whole catalogue. Worse, an unseeded catalogue made the screen blank: no
+   * rows at all, and no way to add one, which is what "services are missing"
+   * turned out to mean.
+   *
+   * `rest` is the catalogue as a shortcut for adding something Hasino already
+   * knows a name for. It is optional now — the add form below can create a
+   * service that is not in it — so an empty catalogue is no longer a dead end.
    */
-  if (services.length === 0) {
-    const empty = el('div', 'panel');
-    empty.append(el('h2', null, 'No services to offer yet'));
-    empty.append(el('p', 'sub',
-      'Hasino keeps one master list of services and you set your own price and duration for '
-      + 'each. That list is empty, so there is nothing here to switch on yet — a Hasino admin '
-      + 'has to add the services before any salon can price them.'));
-    empty.append(el('div', 'note',
-      'Nothing is wrong with your salon, and no prices have been lost. Contact Hasino support '
-      + 'and this screen fills in as soon as the catalogue is set up.'));
-    view.append(empty);
-    return;
-  }
+  const mine = services.filter((s) => s.offered);
+  const rest = services.filter((s) => !s.offered);
 
-  const panel = el('div', 'panel scroll-x');
-  const table = el('table');
-  table.innerHTML = `<thead><tr>
-    <th>Service</th><th>Price (₹)</th><th>Duration</th><th>Buffer</th><th>Live</th><th></th>
-  </tr></thead>`;
-  const tbody = el('tbody');
-
-  for (const s of services) {
+  /** One row of the owner's own menu: edit in place, or take it off. */
+  function myServiceRow(s) {
     const tr = el('tr');
     const name = el('td');
     name.append(el('div', null, s.name));
@@ -284,21 +293,21 @@ async function servicesView() {
     tr.append(name);
 
     const price = el('input'); price.type = 'number'; price.min = '0';
-    price.value = s.offered ? s.price / 100 : '';
-    price.placeholder = '—';
+    price.value = s.price / 100;
 
     const dur = el('input'); dur.type = 'number'; dur.min = '1';
-    dur.value = s.durationMin ?? ''; dur.placeholder = '—';
+    dur.value = s.durationMin ?? '';
 
     const buf = el('input'); buf.type = 'number'; buf.min = '0';
     buf.value = s.bufferMin ?? 10;
 
     const active = el('input'); active.type = 'checkbox'; active.checked = s.active;
 
-    for (const [node, cls] of [[price], [dur], [buf]]) { const td = el('td'); td.append(node); tr.append(td); }
+    for (const node of [price, dur, buf]) { const td = el('td'); td.append(node); tr.append(td); }
     const tdA = el('td'); tdA.append(active); tr.append(tdA);
 
-    const save = el('button', 'btn sm primary', s.offered ? 'Save' : 'Add');
+    const actions = el('td');
+    const save = el('button', 'btn sm primary', 'Save');
     save.onclick = async () => {
       if (!price.value || !dur.value) { toast(view, 'Price and duration are required.', true); return; }
       try {
@@ -315,16 +324,127 @@ async function servicesView() {
         servicesView();
       } catch (err) { toast(view, err.message, true); }
     };
-    const tdS = el('td'); tdS.append(save); tr.append(tdS);
-    tbody.append(tr);
-  }
-  table.append(tbody);
-  panel.append(table);
-  view.append(panel);
 
-  view.append(el('div', 'note',
-    'Buffer is turnaround time after the service. A booking reserves duration + one buffer, ' +
-    'sized by the longest buffer in the cart.'));
+    const remove = el('button', 'btn sm', 'Remove');
+    remove.style.marginLeft = '8px';
+    remove.onclick = async () => {
+      // Removing a service is not the same as unticking Live, and the
+      // difference is worth one question: Live keeps the price for later,
+      // Remove does not.
+      const yes = await ask({
+        title: `Remove ${s.name}?`,
+        message: 'It comes off your menu and customers stop seeing it. Your price and duration '
+          + 'for it are not kept. Bookings already made are unaffected.',
+        confirmLabel: 'Remove',
+        danger: true,
+      });
+      if (!yes) return;
+      try {
+        await api('/api/business/services/' + s.serviceId, { method: 'DELETE' });
+        toast(view, `${s.name} removed.`);
+        servicesView();
+      } catch (err) { toast(view, err.message, true); }
+    };
+
+    actions.append(save, remove);
+    tr.append(actions);
+    return tr;
+  }
+
+  // ---- your menu ----
+  view.append(el('h2', null, 'Your services'));
+  if (mine.length === 0) {
+    const empty = el('div', 'panel');
+    empty.append(el('p', 'sub',
+      'Nothing on your menu yet. Add your first service below — customers see it as soon as you do.'));
+    view.append(empty);
+  } else {
+    const panel = el('div', 'panel scroll-x');
+    const table = el('table');
+    table.innerHTML = `<thead><tr>
+      <th>Service</th><th>Price (₹)</th><th>Duration</th><th>Buffer</th><th>Live</th><th></th>
+    </tr></thead>`;
+    const tbody = el('tbody');
+    for (const s of mine) tbody.append(myServiceRow(s));
+    table.append(tbody);
+    panel.append(table);
+    view.append(panel);
+    view.append(el('div', 'note',
+      'Buffer is turnaround time after the service. A booking reserves duration + one buffer, '
+      + 'sized by the longest buffer in the cart. Untick Live to hide a service without losing '
+      + 'its price.'));
+  }
+
+  // ---- add ----
+  view.append(el('h2', null, 'Add a service'));
+  const addPanel = el('div', 'panel');
+  const form = el('div', 'form-row');
+  form.style.cssText = 'display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end';
+
+  const field = (label, node) => {
+    const wrap = el('div');
+    wrap.style.cssText = 'display:flex; flex-direction:column; gap:6px';
+    wrap.append(el('label', 'meta', label), node);
+    return wrap;
+  };
+
+  const nameIn = el('input');
+  nameIn.type = 'text';
+  nameIn.placeholder = 'Haircut';
+  nameIn.maxLength = 60;
+  // The catalogue as suggestions, not as a constraint: typing a name Hasino
+  // has never seen is allowed and creates it. A <datalist> keeps the shared
+  // spelling likely without making the field a dropdown that cannot be
+  // escaped — which is what left an unseeded deployment with no way forward.
+  const list = el('datalist');
+  list.id = 'catalogue-names';
+  for (const s of rest) list.append(Object.assign(document.createElement('option'), { value: s.name }));
+  nameIn.setAttribute('list', list.id);
+
+  const catIn = el('input');
+  catIn.type = 'text';
+  catIn.placeholder = 'hair';
+  catIn.maxLength = 30;
+
+  const priceIn = el('input'); priceIn.type = 'number'; priceIn.min = '0'; priceIn.placeholder = '250';
+  const durIn = el('input'); durIn.type = 'number'; durIn.min = '1'; durIn.placeholder = '30';
+
+  const add = el('button', 'btn primary', 'Add service');
+  add.onclick = async () => {
+    if (!nameIn.value.trim()) { toast(view, 'A service needs a name.', true); return; }
+    if (!priceIn.value || !durIn.value) { toast(view, 'Price and duration are required.', true); return; }
+    add.disabled = true;
+    try {
+      const created = await api('/api/business/services', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: nameIn.value.trim(),
+          category: catIn.value.trim() || 'other',
+          price: Math.round(Number(priceIn.value) * 100),
+          durationMin: Number(durIn.value),
+        }),
+      });
+      toast(view, `${created.name} added.`);
+      servicesView();
+    } catch (err) {
+      toast(view, err.message, true);
+      add.disabled = false;
+    }
+  };
+
+  form.append(
+    field('Service name', nameIn),
+    field('Category', catIn),
+    field('Price (₹)', priceIn),
+    field('Duration (min)', durIn),
+    add,
+  );
+  addPanel.append(form, list);
+  addPanel.append(el('div', 'note',
+    'Hasino keeps one shared list of service names so customers searching for a haircut find '
+    + 'every salon that does one. If the name you type is already on it, yours joins it; if not, '
+    + 'it is added. The price and duration are always yours alone.'));
+  view.append(addPanel);
 }
 
 /* ---------- screen 2: timings ---------- */

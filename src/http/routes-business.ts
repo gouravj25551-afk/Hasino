@@ -6,14 +6,15 @@ import { localDateKey } from '../time/tz.ts';
 import { closeForDay, transition, type BookingStatus } from '../booking/status.ts';
 import {
   addHoliday,
+  addSalonService,
   dayBounds,
-  deactivateService,
   listBookingsForDay,
   listHolidays,
   listHours,
   listReviews,
   listServiceSetup,
   removeHoliday,
+  removeService,
   salonForOwner,
   salonStats,
   saveHours,
@@ -75,8 +76,33 @@ export async function businessRoutes(
       json(res, 200, { ok: true });
       return true;
     }
+    // POST /api/business/services — put a service on this salon's menu,
+    // creating the catalogue entry when Hasino has no service by that name.
+    // salon.id comes from the authenticated owner exactly like every other
+    // route here; the body names a service, never a salon.
+    if (method === 'POST' && tail.length === 1) {
+      const body = await readJson(req);
+      let created;
+      try {
+        created = await addSalonService(db, salon.id, {
+          name: str(body, 'name'),
+          category: String(body['category'] ?? 'other'),
+          price: int(body, 'price'),
+          durationMin: int(body, 'durationMin'),
+          bufferMin: Number.isFinite(Number(body['bufferMin'])) ? int(body, 'bufferMin') : 10,
+          active: body['active'] === undefined ? true : bool(body, 'active'),
+        });
+      } catch (err) {
+        throw new HttpError(400, (err as Error).message);
+      }
+      await cache.invalidate(salon.id);
+      json(res, 201, created);
+      return true;
+    }
     if (method === 'DELETE' && tail.length === 2) {
-      await deactivateService(db, salon.id, uuid(tail[1]!, 'serviceId'));
+      // Off this salon's menu, not out of the catalogue. Past bookings keep
+      // their own snapshot of price and duration — see removeService.
+      await removeService(db, salon.id, uuid(tail[1]!, 'serviceId'));
       await cache.invalidate(salon.id);
       json(res, 200, { ok: true });
       return true;

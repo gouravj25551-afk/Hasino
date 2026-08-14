@@ -121,6 +121,90 @@ export async function deactivateService(db: Queryable, salonId: string, serviceI
   ]);
 }
 
+/**
+ * Take a service off this salon's menu entirely.
+ *
+ * Safe to delete, unlike the catalogue row it points at. History does not read
+ * this table: booking_items snapshots the price and duration a customer
+ * actually agreed to, and the only other reader — the reschedule cart in
+ * src/booking/reschedule.ts — LEFT JOINs it for buffer_min with a coalesce.
+ * Removing a row loses nothing that a past booking depends on.
+ *
+ * Both this and deactivateService exist because they are different intents. An
+ * owner removing a service they no longer offer wants it gone from their menu;
+ * an admin suspending one wants the price and duration preserved for when it
+ * comes back. The admin routes keep the second.
+ */
+export async function removeService(db: Queryable, salonId: string, serviceId: string): Promise<void> {
+  await db.query(`DELETE FROM salon_services WHERE salon_id = $1 AND service_id = $2`, [
+    salonId,
+    serviceId,
+  ]);
+}
+
+export interface NewServiceInput extends ServiceInput {
+  name: string;
+  category: string;
+}
+
+/**
+ * Put a service on this salon's menu, creating the catalogue entry if Hasino
+ * does not have one by that name yet.
+ *
+ * The catalogue is shared on purpose — one row called 'Haircut' rather than
+ * one per salon — so that a customer searching for a haircut finds every
+ * salon that offers one, and so two salons' menus can be compared at all. What
+ * was missing was any way for an owner to reach it: prices could be set
+ * against services that already existed, and a salon offering something the
+ * catalogue had never heard of had no way to say so. On a deployment whose
+ * catalogue was never seeded that meant a services screen with nothing on it
+ * and no way to add anything.
+ *
+ * Matching is case-insensitive so 'haircut' and 'Haircut' do not become two
+ * services that split one menu between them. An existing name keeps its
+ * existing category: the catalogue is shared, and one salon should not be able
+ * to recategorise a service for everybody by re-adding it.
+ */
+export async function addSalonService(
+  db: Queryable,
+  salonId: string,
+  input: NewServiceInput,
+): Promise<{ serviceId: string; name: string; category: string }> {
+  validateService(input);
+  const name = input.name.trim();
+  const category = input.category.trim().toLowerCase() || 'other';
+  if (!name) throw new Error('name is required');
+  if (name.length > 60) throw new Error('name must be 60 characters or fewer');
+
+  const existing = await db.query<{ id: string; name: string; category: string }>(
+    `SELECT id, name, category FROM services WHERE lower(name) = lower($1)`,
+    [name],
+  );
+  let service = existing.rows[0];
+
+  if (!service) {
+    const created = await db.query<{ id: string; name: string; category: string }>(
+      `INSERT INTO services (name, category) VALUES ($1, $2)
+       ON CONFLICT (name) DO NOTHING
+       RETURNING id, name, category`,
+      [name, category],
+    );
+    service = created.rows[0];
+    if (!service) {
+      // Lost the race to another request inserting the same name. The row
+      // exists now, which is the outcome we wanted either way.
+      const reread = await db.query<{ id: string; name: string; category: string }>(
+        `SELECT id, name, category FROM services WHERE lower(name) = lower($1)`,
+        [name],
+      );
+      service = reread.rows[0]!;
+    }
+  }
+
+  await upsertService(db, salonId, service.id, input);
+  return { serviceId: service.id, name: service.name, category: service.category };
+}
+
 // ---------- screen 2: timings ----------
 
 export async function listHours(db: Queryable, salonId: string) {

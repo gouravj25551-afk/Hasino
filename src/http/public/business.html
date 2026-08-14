@@ -20,7 +20,14 @@
   </nav>
   <span class="spacer"></span>
   <div class="row" id="whoami" style="gap:10px"></div>
-  <a class="btn sm" href="/">← Customer app</a>
+  <!--
+    A link to the customer app used to sit here. For a salon account it was
+    half of an apparent choice — "salon panel or customer panel?" — when the
+    account is a salon and there is nothing to choose. business.js adds it back
+    only for someone who is signed out or has no salon, who genuinely does need
+    a way out of a panel that is not theirs. See initIdentity().
+  -->
+  <div class="row" id="exit" style="gap:10px"></div>
 </div>
 
 <div class="wrap" id="view"></div>
