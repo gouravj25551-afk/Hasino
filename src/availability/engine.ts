@@ -1,4 +1,4 @@
-import type { CartItem, DayAvailability, PartialSuggestion } from '../types.ts';
+import type { CartItem, DayAvailability, PartialSuggestion, SlotAvailability } from '../types.ts';
 import type { DayGrid } from './grid.ts';
 import { zonedTimeToUtc } from '../time/tz.ts';
 
@@ -73,6 +73,7 @@ export function computeDayAvailability(opts: ComputeDayOptions): DayAvailability
   const earliest = now.getTime() + minLead * 60_000;
 
   const full: Date[] = [];
+  const slots: SlotAvailability[] = [];
   const partial: PartialSuggestion[] = [];
 
   // capacity 0 means the salon released no chairs online for this weekday
@@ -80,18 +81,37 @@ export function computeDayAvailability(opts: ComputeDayOptions): DayAvailability
     for (const segment of grid.segments) {
       const n = segment.length;
       const at = segment.map((m) => zonedTimeToUtc(grid.timezone, grid.date, m));
+      const bookedAt = (i: number) => occupancy.get(at[i]!.getTime()) ?? 0;
 
       // freeRun[i] = consecutive slots with spare capacity starting at i,
       // truncated at the segment end (= the break, or closing time)
       const freeRun = new Array<number>(n).fill(0);
       for (let i = n - 1; i >= 0; i--) {
-        const booked = occupancy.get(at[i]!.getTime()) ?? 0;
-        freeRun[i] = booked < grid.capacity ? (i + 1 < n ? freeRun[i + 1]! : 0) + 1 : 0;
+        freeRun[i] = bookedAt(i) < grid.capacity ? (i + 1 < n ? freeRun[i + 1]! : 0) + 1 : 0;
       }
 
       for (let i = 0; i < n; i++) {
         const start = at[i]!;
         if (start.getTime() < earliest) continue;
+
+        // What the customer is shown about this start time. Only start times
+        // the cart actually fits into get a row: a 12:30 that cannot hold a
+        // 60-minute cart before closing is not "full", it is not a start time
+        // at all, and showing it as taken would be a lie about the salon.
+        if (i + needed <= n) {
+          // The binding slot decides. One free chair at 10:00 is worth nothing
+          // to a two-slot cart if 10:30 is already full.
+          let taken = 0;
+          for (let j = i; j < i + needed; j++) taken = Math.max(taken, bookedAt(j));
+          const remaining = Math.max(0, grid.capacity - taken);
+          slots.push({
+            at: start,
+            capacity: grid.capacity,
+            taken: Math.min(taken, grid.capacity),
+            remaining,
+            state: remaining === 0 ? 'full' : remaining < grid.capacity ? 'limited' : 'open',
+          });
+        }
 
         const run = freeRun[i]!;
         if (run >= needed) {
@@ -113,12 +133,15 @@ export function computeDayAvailability(opts: ComputeDayOptions): DayAvailability
   }
 
   full.sort((a, b) => a.getTime() - b.getTime());
+  slots.sort((a, b) => a.at.getTime() - b.at.getTime());
   partial.sort((a, b) => a.at.getTime() - b.at.getTime());
 
   return {
     date: grid.date,
     state: full.length > 0 ? 'full' : partial.length > 0 ? 'partial' : 'none',
     closedReason: null,
+    capacity: grid.capacity,
+    slots,
     full,
     // Partials are a fallback view. When any full-fit start exists the client
     // shows the clean list, so shipping them would be dead weight in the payload.
@@ -127,5 +150,5 @@ export function computeDayAvailability(opts: ComputeDayOptions): DayAvailability
 }
 
 export function closedDay(date: string, reason: 'holiday' | 'not_working'): DayAvailability {
-  return { date, state: 'closed', closedReason: reason, full: [], partial: [] };
+  return { date, state: 'closed', closedReason: reason, capacity: 0, slots: [], full: [], partial: [] };
 }

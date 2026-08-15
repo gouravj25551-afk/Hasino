@@ -150,6 +150,22 @@ CREATE TABLE IF NOT EXISTS salon_photos (
 );
 CREATE INDEX IF NOT EXISTS salon_photos_salon_idx ON salon_photos (salon_id, sort);
 
+-- [DEVIATION 11] salon_images — the storefront shot, uploaded rather than linked.
+--   cover_url is still the only pointer to a salon's picture; this holds the
+--   bytes for the case where Hasino hosts it instead of somebody else. In
+--   Postgres because there is no object storage here and a container's disk
+--   does not survive a deploy. See db/migrations/008_salon_images.sql.
+CREATE TABLE IF NOT EXISTS salon_images (
+  salon_id     uuid PRIMARY KEY REFERENCES salons(id) ON DELETE CASCADE,
+  content_type text NOT NULL
+               CHECK (content_type IN ('image/jpeg','image/png','image/webp')),
+  bytes        bytea NOT NULL,
+  byte_size    integer NOT NULL CHECK (byte_size > 0),
+  checksum     text NOT NULL,
+  uploaded_by  uuid REFERENCES users(id),
+  updated_at   timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS favorites (
   user_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   salon_id   uuid NOT NULL REFERENCES salons(id) ON DELETE CASCADE,

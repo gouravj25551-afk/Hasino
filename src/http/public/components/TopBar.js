@@ -1,6 +1,7 @@
 import { el } from '../lib/dom.js';
 import { Avatar } from './Avatar.js';
 import { Button } from './Button.js';
+import { currentTheme, toggleTheme } from '../lib/theme.js';
 
 /**
  * The salon panel link, for an approved owner.
@@ -15,6 +16,122 @@ function panelFor(role) {
 }
 
 /**
+ * Who you are, and the handful of things that belong to being you.
+ *
+ * One control in the top-right corner rather than a name printed across the
+ * page: sign-out, the theme, and the way to your profile are all account
+ * business, and account business lives where people look for it. On a phone
+ * the trigger narrows to the avatar alone — the name is inside, where there is
+ * room for it.
+ */
+function AccountMenu({ user, onSignOut }) {
+  const root = el('div', 'account');
+
+  const trigger = el('button', 'account-trigger');
+  trigger.type = 'button';
+  trigger.setAttribute('aria-haspopup', 'menu');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.setAttribute('aria-label', `Account: ${user.name || 'signed in'}`);
+  trigger.append(
+    Avatar({ src: user.avatarUrl, name: user.name }),
+    el('span', 'account-name', user.name || 'You'),
+    el('span', null, '▾'),
+  );
+  root.append(trigger);
+
+  let menu = null;
+
+  const close = () => {
+    menu?.remove();
+    menu = null;
+    trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('click', onDocumentClick, true);
+    document.removeEventListener('keydown', onKey);
+  };
+
+  // Capture phase: the menu must close on a click anywhere, including on a
+  // link that is about to navigate.
+  const onDocumentClick = (e) => {
+    if (!root.contains(e.target)) close();
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') close();
+  };
+
+  const open = () => {
+    menu = el('div', 'account-menu');
+    menu.setAttribute('role', 'menu');
+
+    const who = el('div', 'who');
+    who.append(el('div', 'name', user.name || 'Signed in'));
+    if (user.email) who.append(el('div', 'sub', user.email));
+    menu.append(who);
+
+    const profile = el('a', null, 'Profile');
+    profile.href = '#/profile';
+    profile.setAttribute('role', 'menuitem');
+    profile.onclick = close;
+    menu.append(profile);
+
+    const bookings = el('a', null, 'My bookings');
+    bookings.href = '#/bookings';
+    bookings.setAttribute('role', 'menuitem');
+    bookings.onclick = close;
+    menu.append(bookings);
+
+    const panel = panelFor(user.role);
+    if (panel) {
+      const link = el('a', null, panel.label);
+      link.href = panel.href;
+      link.setAttribute('role', 'menuitem');
+      menu.append(link);
+    }
+
+    // The theme lives here because this is where "settings" are on a screen
+    // that has no settings page. It says what it will do, not what it is.
+    const themeItem = el('button', null);
+    themeItem.type = 'button';
+    themeItem.setAttribute('role', 'menuitem');
+    const paintTheme = () => {
+      themeItem.innerHTML = '';
+      const dark = currentTheme() === 'dark';
+      themeItem.append(
+        el('span', null, dark ? '☀️ Light mode' : '🌙 Dark mode'),
+        el('span', 'value', dark ? 'Dark' : 'Light'),
+      );
+    };
+    paintTheme();
+    themeItem.onclick = (e) => {
+      e.stopPropagation();
+      toggleTheme();
+      paintTheme();
+    };
+    menu.append(themeItem);
+
+    const out = el('button', 'danger', 'Sign out');
+    out.type = 'button';
+    out.setAttribute('role', 'menuitem');
+    out.onclick = () => {
+      close();
+      onSignOut?.();
+    };
+    menu.append(out);
+
+    root.append(menu);
+    trigger.setAttribute('aria-expanded', 'true');
+    document.addEventListener('click', onDocumentClick, true);
+    document.addEventListener('keydown', onKey);
+  };
+
+  trigger.onclick = (e) => {
+    e.stopPropagation();
+    menu ? close() : open();
+  };
+
+  return root;
+}
+
+/**
  * `user` is a Session shape ({name, email, avatarUrl, role}) or null when
  * signed out.
  *
@@ -23,7 +140,7 @@ function panelFor(role) {
  * made the chip look like a fact rather than a choice. With nothing chosen it
  * invites one.
  */
-export function TopBar({ user, locationLabel, onLocationClick, onSignIn } = {}) {
+export function TopBar({ user, locationLabel, onLocationClick, onSignIn, onSignOut } = {}) {
   const bar = el('div', 'topbar');
 
   const logo = el('a', 'lockup');
@@ -51,27 +168,13 @@ export function TopBar({ user, locationLabel, onLocationClick, onSignIn } = {}) 
 
   bar.append(el('span', 'spacer'));
 
-  const widget = el('div', 'row');
   if (user) {
-    // Sits next to the avatar so it is reachable from every customer page.
-    // Both panels link back with "← Customer app", closing the round trip.
-    const panel = panelFor(user.role);
-    if (panel) {
-      const panelLink = el('a', 'btn sm', panel.label);
-      panelLink.href = panel.href;
-      widget.append(panelLink);
-    }
-
-    const link = el('a', 'row');
-    link.href = '#/profile';
-    link.style.textDecoration = 'none';
-    link.style.color = 'inherit';
-    link.append(Avatar({ src: user.avatarUrl, name: user.name }), el('span', null, user.name || 'You'));
-    widget.append(link);
+    bar.append(AccountMenu({ user, onSignOut }));
   } else {
+    const widget = el('div', 'account');
     widget.append(Button({ label: 'Sign in', variant: 'primary', size: 'sm', onClick: onSignIn }));
+    bar.append(widget);
   }
-  bar.append(widget);
 
   return bar;
 }

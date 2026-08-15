@@ -41,7 +41,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { getPool, type Pool } from '../db/pool.ts';
 import { MemorySnapshotCache } from '../availability/cache.ts';
 import { adminRoutes } from './routes-admin.ts';
-import { HttpError, json, loadAssets, sendAsset } from './respond.ts';
+import { HttpError, json, loadAssets, sendAsset, uuid } from './respond.ts';
+import { serveSalonImage } from '../salons/images.ts';
 import { respondToError } from './server.ts';
 import { RateLimiter, clientKey, securityHeaders } from './middleware.ts';
 import { verifierFromEnv } from '../auth/verifier.ts';
@@ -147,6 +148,20 @@ async function handle(db: Pool, req: IncomingMessage, res: ServerResponse): Prom
     return json(res, 200, {
       clerk: { publishableKey: process.env['CLERK_PUBLISHABLE_KEY'] ?? null },
     });
+  }
+
+  // GET /api/salons/:id/image — the same bytes the public server serves.
+  //
+  // Needed here because salons.cover_url is an origin-relative path, and this
+  // panel is a different origin: without this route the admin's own <img> for
+  // a salon they just photographed would 404 while the customer app shows it
+  // perfectly. Reading a shop's storefront photo is not privileged — it is on
+  // a public salon card — so this sits with /api/config rather than behind the
+  // admin session check.
+  if (read && seg[0] === 'api' && seg[1] === 'salons' && seg[3] === 'image' && seg.length === 4) {
+    const served = await serveSalonImage(db, uuid(seg[2]!, 'salonId'), req, res);
+    if (served) return;
+    throw new HttpError(404, 'This salon has no image');
   }
 
   // Who am I. The panel shows the signed-in address and refuses to render for

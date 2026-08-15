@@ -10,6 +10,15 @@
   --brand-050:    #f7f5fe;
   --ink:          #0b0b10;   /* the black dot */
   --on-brand:     #ffffff;
+  /* Brand purple as *text*. Deep enough to read on a light surface, and
+     lightened in the dark palette — one variable instead of the four
+     `@media (prefers-color-scheme: dark) { … color: #c9bcff }` overrides this
+     replaces, which is also what makes those four work with the toggle. */
+  --brand-ink:    #6a55c4;
+  /* The home hero's wash, as tokens so one rule serves both themes. */
+  --hero-from:    #f7f5fe;
+  --hero-to:      #efecfc;
+  --hero-line:    #e4e2ef;
 
   /* surfaces (light) */
   --bg:           #f7f6fb;
@@ -67,8 +76,23 @@
   --aspect-cover:  21 / 9;
 }
 
+/* ---------- dark ----------
+   Two ways in, one palette.
+
+   The media query is the default: a device set to dark gets a dark app
+   without anyone choosing anything, exactly as before. It is switched off by
+   `data-theme="light"`, because a customer who picked light meant it — on a
+   phone that is dark at the time, which is the whole reason they picked.
+
+   The attribute selector is the explicit choice, and it works on a device
+   whose system theme is light, which no media query can do. lib/theme.js sets
+   the attribute; nothing else does.
+
+   The two blocks are the same declarations twice. CSS has no way to share
+   them, and an indirection through a second layer of variables costs more in
+   confusion than the repetition does — but they must be edited together. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg:        #0d0c12;
     --surface:   #16151d;
     --surface-2: #1e1c28;
@@ -77,6 +101,7 @@
     --dim:       #9793a8;
     --brand-100: #241f3d;
     --brand-050: #1a1728;
+    --brand-ink: #c9bcff;
     --ok:        #4ade80;  --ok-bg:   #14261d;
     --warn:      #fbbf24;  --warn-bg: #2a2114;
     --bad:       #f87171;  --bad-bg:  #2b1718;
@@ -84,7 +109,32 @@
     --elevation-1: var(--shadow);
     --elevation-2: 0 2px 8px rgba(0,0,0,.35), 0 16px 40px -14px rgba(0,0,0,.55);
     --elevation-3: 0 8px 16px rgba(0,0,0,.4), 0 30px 60px -16px rgba(0,0,0,.7);
+    --hero-from: #181524;
+    --hero-to:   #201a34;
+    --hero-line: #2e2842;
   }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #0d0c12;
+  --surface:   #16151d;
+  --surface-2: #1e1c28;
+  --line:      #2b2937;
+  --text:      #edecf3;
+  --dim:       #9793a8;
+  --brand-100: #241f3d;
+  --brand-050: #1a1728;
+  --brand-ink: #c9bcff;
+  --ok:        #4ade80;  --ok-bg:   #14261d;
+  --warn:      #fbbf24;  --warn-bg: #2a2114;
+  --bad:       #f87171;  --bad-bg:  #2b1718;
+  --shadow:    0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  --elevation-1: var(--shadow);
+  --elevation-2: 0 2px 8px rgba(0,0,0,.35), 0 16px 40px -14px rgba(0,0,0,.55);
+  --elevation-3: 0 8px 16px rgba(0,0,0,.4), 0 30px 60px -16px rgba(0,0,0,.7);
+  --hero-from: #181524;
+  --hero-to:   #201a34;
+  --hero-line: #2e2842;
 }
 
 /* ---------- aspect-ratio image containers ---------- */
@@ -105,13 +155,10 @@
   align-items: center;
   justify-content: center;
   background: linear-gradient(135deg, var(--brand-100), var(--brand-050));
-  color: var(--brand-700);
+  color: var(--brand-ink);
   font-weight: 800;
   font-size: var(--text-2xl);
   letter-spacing: -0.02em;
-}
-@media (prefers-color-scheme: dark) {
-  .aspect.placeholder { color: #c9bcff; }
 }
 
 * { box-sizing: border-box; }
@@ -192,11 +239,78 @@ body {
   font-size: 14px;
 }
 .topbar nav a:hover { background: var(--surface-2); color: var(--text); }
-.topbar nav a[aria-current="page"] { background: var(--brand-100); color: var(--brand-700); }
-@media (prefers-color-scheme: dark) {
-  .topbar nav a[aria-current="page"] { color: #c9bcff; }
-}
+.topbar nav a[aria-current="page"] { background: var(--brand-100); color: var(--brand-ink); }
 .spacer { flex: 1; }
+
+/* ---------- the account menu, top right ----------
+   The signed-in person belongs in the corner of the header on every screen
+   size, not in the middle of the page. `margin-left: auto` rather than a
+   spacer div is what holds it there once the bar wraps on a narrow phone —
+   a wrapped flex line has its own free space, and the spacer only pushed
+   within the line it happened to land on. */
+.account { position: relative; margin-left: auto; flex: 0 0 auto; }
+.account-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  /* 44px tall: a thumb target, not a mouse target. */
+  min-height: 44px;
+  padding: 4px 10px 4px 4px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.account-trigger:hover { background: var(--surface-2); }
+.account-name { max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* On a phone the avatar alone says who you are; the name is in the menu. */
+@media (max-width: 560px) {
+  .account-name { display: none; }
+}
+
+.account-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 232px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--elevation-3);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.account-menu .who { padding: 10px 12px 12px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+.account-menu .who .name { font-weight: 700; }
+.account-menu .who .sub { color: var(--dim); font-size: var(--text-xs); word-break: break-all; }
+.account-menu button,
+.account-menu a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.account-menu button:hover,
+.account-menu a:hover { background: var(--surface-2); }
+.account-menu .danger { color: var(--bad); }
+.account-menu .value { color: var(--dim); font-size: var(--text-xs); font-weight: 600; }
 
 .banner {
   background: var(--warn-bg);
@@ -283,8 +397,7 @@ label.field span { display: block; font-size: 12px; color: var(--dim); margin-bo
 .pill.ok   { background: var(--ok-bg);   color: var(--ok); }
 .pill.warn { background: var(--warn-bg); color: var(--warn); }
 .pill.bad  { background: var(--bad-bg);  color: var(--bad); }
-.pill.brand{ background: var(--brand-100); color: var(--brand-700); }
-@media (prefers-color-scheme: dark) { .pill.brand { color: #c9bcff; } }
+.pill.brand{ background: var(--brand-100); color: var(--brand-ink); }
 
 /* ---------- date strip + slots ---------- */
 
@@ -309,7 +422,19 @@ label.field span { display: block; font-size: 12px; color: var(--dim); margin-bo
   border: 1px solid var(--line); background: var(--surface); color: var(--text);
   cursor: pointer; transition: .12s;
 }
-.slot:hover { border-color: var(--brand); background: var(--brand-050); color: var(--brand-700); }
+.slot:hover:not(:disabled) { border-color: var(--brand); background: var(--brand-050); color: var(--brand-700); }
+
+/* A slot carries the salon's chairs, not just a time: how many of them are
+   still free at that moment, and whether the last one has gone. */
+.slot { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; line-height: 1.2; }
+.slot .slot-cap { font-size: 10.5px; font-weight: 600; color: var(--dim); }
+.slot.limited { border-color: var(--warn); }
+.slot.limited .slot-cap { color: var(--warn); }
+.slot.full {
+  cursor: not-allowed; opacity: .55;
+  background: var(--surface-2); color: var(--dim); border-style: dashed;
+}
+.slot.full .slot-time { text-decoration: line-through; }
 
 /* ---------- lists ---------- */
 
@@ -408,27 +533,20 @@ td input, td select { min-width: 72px; }
 }
 .bottom-nav .nav-item.active,
 .bottom-nav .nav-item:hover {
-  color: var(--brand-700);
-}
-@media (prefers-color-scheme: dark) {
-  .bottom-nav .nav-item.active { color: var(--brand); }
+  color: var(--brand-ink);
 }
 
 /* Hero Section */
 .hero-box {
-  background: linear-gradient(135deg, var(--brand-050) 0%, var(--brand-100) 100%);
-  border: 1px solid var(--line);
+  /* The gradient is two tokens, so it follows the theme without a second
+     rule — --hero-from/--hero-to are set in both dark palettes. */
+  background: linear-gradient(135deg, var(--hero-from) 0%, var(--hero-to) 100%);
+  border: 1px solid var(--hero-line);
   border-radius: 20px;
   padding: 32px 24px;
   margin-bottom: 24px;
   position: relative;
   overflow: hidden;
-}
-@media (prefers-color-scheme: dark) {
-  .hero-box {
-    background: linear-gradient(135deg, #181524 0%, #201a34 100%);
-    border-color: #2e2842;
-  }
 }
 .hero-box h1 {
   font-size: 32px;
@@ -619,12 +737,11 @@ td input, td select { min-width: 72px; }
   align-items: center;
   justify-content: center;
   background: var(--brand-100);
-  color: var(--brand-700);
+  color: var(--brand-ink);
   font-weight: 800;
   font-size: 14px;
   flex: 0 0 auto;
 }
-@media (prefers-color-scheme: dark) { .avatar { color: #c9bcff; } }
 .avatar.lg { width: 68px; height: 68px; font-size: 28px; }
 
 /* Sticky Booking Bar */
@@ -644,8 +761,66 @@ td input, td select { min-width: 72px; }
   animation: slideUp 0.2s ease;
 }
 @media (max-width: 768px) {
-  .sticky-booking-bar { bottom: 64px; }
+  /* Clear of the bottom nav, and clear of the home indicator under it, so the
+     cart bar never sits on top of the tab a customer is reaching for. */
+  .sticky-booking-bar { bottom: calc(64px + env(safe-area-inset-bottom)); }
 }
+
+/* ---------- the cart ---------- */
+
+/* "Add" on a service row, and what it becomes once the service is in. */
+.add-btn {
+  min-width: 76px;
+  min-height: 40px;
+  padding: 8px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--brand);
+  background: var(--surface);
+  color: var(--brand-ink);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.add-btn:hover { background: var(--brand-050); }
+.add-btn.added { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
+
+.cart-bar-count { font-weight: 700; }
+.cart-bar-sub { color: var(--dim); font-size: var(--text-xs); }
+
+.cart-lines { display: flex; flex-direction: column; gap: 2px; }
+.cart-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.cart-line:last-child { border-bottom: 0; }
+.cart-line .grow { min-width: 0; }
+.cart-line .cart-name { font-weight: 600; }
+.cart-totals {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 14px 0 4px;
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+  font-size: var(--text-lg);
+  font-weight: 700;
+}
+/* A destructive control in a list still needs a thumb-sized hit area. */
+.cart-remove {
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  background: none;
+  color: var(--bad);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.cart-remove:hover { background: var(--bad-bg); }
 @keyframes slideUp {
   from { transform: translateY(100%); }
   to { transform: translateY(0); }

@@ -9,6 +9,7 @@
  */
 import { currentIdToken, watchAuthState, signOut } from './lib/auth.js';
 import { ask } from './lib/dialog.js';
+import { installBackHandler } from './lib/backbutton.js';
 
 const $  = (s, r = document) => r.querySelector(s);
 const el = (t, cls, txt) => { const n = document.createElement(t); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
@@ -111,6 +112,18 @@ const routes = {
   '#/insights': insightsView, '#/payouts': payoutsView,
 };
 
+/**
+ * Android's back button. Today is this panel's root: an owner is sent straight
+ * here on launch, so there is no customer app behind it to go back to — the
+ * press exits, as it would from any app's first screen. From Services,
+ * Timings, Insights or Payouts it walks back through the panel instead of
+ * quitting, which is what it used to do.
+ */
+installBackHandler({
+  isRoot: () => (location.hash || '#/today') === '#/today',
+  homeHash: '#/today',
+});
+
 function render() {
   const hash = location.hash || '#/today';
   for (const a of document.querySelectorAll('[data-nav]')) a.removeAttribute('aria-current');
@@ -123,10 +136,111 @@ function showError(err) {
   $('#view').append(el('div', 'out bad', `${err.status || ''} ${err.body?.code || ''}\n${err.message}`));
 }
 
+/**
+ * A Save button that says whether what is on screen has actually been saved.
+ *
+ * "Saved" is written by the response, never by the click: the label changes
+ * only after the API has answered, and the values it answered for are recorded
+ * as the baseline. Touch any field afterwards and it is "Save" again, because
+ * what is on screen is no longer what the salon's customers would see.
+ *
+ * @param {object} opts
+ * @param {string} opts.label            what it says with unsaved changes
+ * @param {HTMLElement[]} opts.watch     fields whose edits un-save it
+ * @param {() => string} opts.snapshot   the values, as a comparable string
+ * @param {() => Promise<void>} opts.submit
+ * @param {(err: Error) => void} opts.onError
+ */
+function saveButton({ label = 'Save', className = 'btn primary', watch, snapshot, submit, onError }) {
+  const btn = el('button', className, label);
+  let savedAt = null; // the snapshot the server last confirmed
+
+  const paint = () => {
+    const saved = savedAt !== null && snapshot() === savedAt;
+    btn.textContent = saved ? 'Saved' : label;
+    btn.disabled = saved;
+    btn.classList.toggle('is-saved', saved);
+  };
+
+  for (const node of watch) {
+    // 'input' covers typing; 'change' covers checkboxes, selects and the date
+    // pickers, which do not fire 'input' everywhere.
+    node.addEventListener('input', paint);
+    node.addEventListener('change', paint);
+  }
+
+  btn.onclick = async () => {
+    const attempted = snapshot();
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    try {
+      await submit();
+      // Only now. A failed save must leave the button saying Save.
+      savedAt = attempted;
+    } catch (err) {
+      onError?.(err);
+    } finally {
+      paint();
+    }
+  };
+
+  paint();
+  return btn;
+}
+
 function toast(node, msg, bad) {
   const box = el('div', 'out ' + (bad ? 'bad' : 'ok'), msg);
   node.append(box);
   setTimeout(() => box.remove(), 3200);
+}
+
+/**
+ * [No-show], and the customer's grace period in front of it.
+ *
+ * A no-show costs the customer the whole amount and counts toward a 30-day
+ * block, so the salon may not declare one until the customer is 15 minutes
+ * late. The server decides that — this button only draws the decision, using
+ * `noShowAvailableAt` from the booking and the server's clock, never the shop
+ * phone's. Pressing it early is refused by the API regardless (409
+ * NO_SHOW_TOO_EARLY); a disabled button is the courtesy, not the control.
+ *
+ * The button arms itself when the minute arrives rather than waiting for a
+ * reload: a barber standing at the counter at 10:14 should not have to work
+ * out that they need to refresh.
+ */
+function noShowButton(booking, serverTime, graceMin, send) {
+  const availableAt = Date.parse(booking.noShowAvailableAt);
+  const ns = el('button', 'btn sm danger');
+
+  const arm = () => {
+    ns.textContent = 'No-show';
+    ns.disabled = false;
+    ns.removeAttribute('title');
+    ns.onclick = async () => {
+      const ok = await ask({
+        title: 'Mark as a no-show?',
+        message: 'The customer is not refunded.',
+        confirmLabel: 'Mark no-show',
+        danger: true,
+      });
+      if (ok) send('no-show');
+    };
+  };
+
+  if (!Number.isFinite(availableAt) || serverTime() >= availableAt) {
+    arm();
+    return ns;
+  }
+
+  ns.disabled = true;
+  ns.textContent = `No-show after ${time(booking.noShowAvailableAt)}`;
+  ns.title = `A customer gets ${graceMin} minutes past their booking time before they can be marked absent.`;
+
+  // Only worth a timer for a booking that is nearly there. A booking later
+  // today is re-evaluated whenever the screen is next drawn.
+  const wait = availableAt - serverTime();
+  if (wait <= 60 * 60_000) setTimeout(arm, wait + 1000);
+  return ns;
 }
 
 /* ---------- screen 3+4: today's bookings ---------- */
@@ -173,7 +287,17 @@ async function todayView() {
   ctrl.append(close);
   view.append(ctrl);
 
-  const { bookings } = await api('/api/business/bookings?date=' + currentDate);
+  // The salon's own photo lives on the screen the owner opens every morning.
+  // Buried behind a nav item, a salon with no picture stays a salon with no
+  // picture.
+  view.append(salonImagePanel(overview.salon));
+
+  const { bookings, serverNow, noShowGraceMin } = await api('/api/business/bookings?date=' + currentDate);
+  // How far this device's clock is from the server's. Every "is it time yet?"
+  // below is asked through this, because the no-show gate is enforced against
+  // the server's clock and a shop phone is often minutes out.
+  const clockSkewMs = serverNow ? Date.parse(serverNow) - Date.now() : 0;
+  const serverTime = () => Date.now() + clockSkewMs;
   if (!bookings.length) { view.append(el('div', 'empty', 'No bookings on this day.')); return; }
 
   const list = el('div', 'list');
@@ -215,17 +339,7 @@ async function todayView() {
         if (answer?.value) send('verify', { code: answer.value });
       };
       act.append(verify);
-      const ns = el('button', 'btn sm danger', 'No-show');
-      ns.onclick = async () => {
-        const ok = await ask({
-          title: 'Mark as a no-show?',
-          message: 'The customer is not refunded.',
-          confirmLabel: 'Mark no-show',
-          danger: true,
-        });
-        if (ok) send('no-show');
-      };
-      act.append(ns);
+      act.append(noShowButton(b, serverTime, noShowGraceMin ?? 15, send));
     }
     if (b.status === 'verified') {
       const start = el('button', 'btn sm primary', 'Start');
@@ -255,6 +369,108 @@ async function todayView() {
     list.append(item);
   }
   view.append(list);
+}
+
+/* ---------- the salon's storefront photo ---------- */
+
+/** What the upload route will accept. Stated here so the phone says no first. */
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const MAX_IMAGE_MB = 2;
+
+/**
+ * Send the file itself as the request body.
+ *
+ * No multipart and no base64: the server wants bytes, and a raw PUT is the
+ * shortest path from a phone's photo picker to them. The salon is not in the
+ * URL — /api/business/image resolves it from the signed-in owner — so there is
+ * nothing here an owner could point at somebody else's salon.
+ */
+async function uploadSalonImage(file, path = '/api/business/image') {
+  if (!IMAGE_TYPES.includes(file.type)) {
+    throw new Error('Please choose a JPEG, PNG or WebP image.');
+  }
+  if (file.size > MAX_IMAGE_MB * 1024 * 1024) {
+    throw new Error(`That image is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is ${MAX_IMAGE_MB} MB.`);
+  }
+  return api(path, { method: 'PUT', body: file, headers: { 'content-type': file.type } });
+}
+
+/**
+ * The picture customers see on the salon's card, and the way to change it.
+ *
+ * The preview is the real URL the server returned, not a local object URL: a
+ * blob: preview looks identical and hides the case where the upload never
+ * landed, which is the one failure worth seeing.
+ */
+function salonImagePanel(salon) {
+  const panel = el('div', 'panel');
+  panel.append(el('h2', null, 'Salon photo'));
+  panel.append(el('p', 'sub', 'The picture customers see on your card and at the top of your page.'));
+
+  const row = el('div', 'row');
+  row.style.cssText = 'gap:16px; align-items:flex-start; flex-wrap:wrap';
+
+  const frame = el('div');
+  frame.style.cssText =
+    'width:180px; height:120px; border-radius:12px; overflow:hidden; flex:0 0 auto; ' +
+    'border:1px solid var(--line); background:var(--surface-2); display:grid; place-items:center';
+
+  const img = el('img');
+  img.alt = salon.name;
+  img.style.cssText = 'width:100%; height:100%; object-fit:cover; display:none';
+  const placeholder = el('div', 'meta', 'No photo yet');
+  frame.append(img, placeholder);
+
+  const show = (url) => {
+    if (!url) return;
+    img.src = url;
+    img.style.display = 'block';
+    placeholder.style.display = 'none';
+  };
+  show(salon.coverImage);
+
+  const side = el('div', 'grow');
+  const file = el('input');
+  file.type = 'file';
+  file.accept = IMAGE_TYPES.join(',');
+  file.style.display = 'none';
+
+  const status = el('div');
+  const pick = el('button', 'btn primary', salon.coverImage ? 'Replace photo' : 'Add salon image');
+  pick.onclick = () => file.click();
+
+  file.onchange = async () => {
+    const chosen = file.files?.[0];
+    if (!chosen) return;
+    status.innerHTML = '';
+    pick.disabled = true;
+    pick.textContent = 'Uploading…';
+    try {
+      const { coverImage } = await uploadSalonImage(chosen);
+      // The URL carries a hash of the bytes, so this never shows a cached
+      // copy of the photo it just replaced.
+      show(coverImage);
+      salon.coverImage = coverImage;
+      pick.textContent = 'Replace photo';
+      status.append(el('div', 'out ok', 'Saved. Customers see this photo now.'));
+    } catch (err) {
+      pick.textContent = salon.coverImage ? 'Replace photo' : 'Add salon image';
+      status.append(el('div', 'out bad', err.message || 'Upload failed'));
+    } finally {
+      pick.disabled = false;
+      // So choosing the same file again after a failure still fires onchange.
+      file.value = '';
+    }
+  };
+
+  side.append(pick, file, status);
+  side.append(el('div', 'note',
+    `JPEG, PNG or WebP, up to ${MAX_IMAGE_MB} MB. A wide shot of the storefront or the chairs works best — `
+    + 'it is cropped to a card, so keep the important part in the middle.'));
+
+  row.append(frame, side);
+  panel.append(row);
+  return panel;
 }
 
 /* ---------- screen 1: service setup ---------- */
@@ -307,10 +523,14 @@ async function servicesView() {
     const tdA = el('td'); tdA.append(active); tr.append(tdA);
 
     const actions = el('td');
-    const save = el('button', 'btn sm primary', 'Save');
-    save.onclick = async () => {
-      if (!price.value || !dur.value) { toast(view, 'Price and duration are required.', true); return; }
-      try {
+    // No re-render on success: redrawing the screen would throw away the
+    // "Saved" state the owner just earned, which is the whole point of it.
+    const save = saveButton({
+      className: 'btn sm primary',
+      watch: [price, dur, buf, active],
+      snapshot: () => [price.value, dur.value, buf.value, active.checked].join('|'),
+      submit: async () => {
+        if (!price.value || !dur.value) throw new Error('Price and duration are required.');
         await api('/api/business/services/' + s.serviceId, {
           method: 'PUT',
           body: JSON.stringify({
@@ -320,10 +540,9 @@ async function servicesView() {
             active: active.checked,
           }),
         });
-        toast(view, `${s.name} saved.`);
-        servicesView();
-      } catch (err) { toast(view, err.message, true); }
-    };
+      },
+      onError: (err) => toast(view, err.message, true),
+    });
 
     const remove = el('button', 'btn sm', 'Remove');
     remove.style.marginLeft = '8px';
@@ -502,12 +721,13 @@ async function timingsView() {
     body.append(ivF);
     card.append(body);
 
-    const save = el('button', 'btn primary');
-    save.textContent = 'Save ' + DOW[h.weekday];
-    save.style.marginTop = '12px';
-    save.onclick = async () => {
-      try {
-        await api('/api/business/hours/' + h.weekday, {
+    const save = saveButton({
+      label: 'Save ' + DOW[h.weekday],
+      watch: [working, open, close, bs, be, cap, iv],
+      snapshot: () =>
+        [working.checked, open.value, close.value, bs.value, be.value, cap.value, iv.value].join('|'),
+      submit: () =>
+        api('/api/business/hours/' + h.weekday, {
           method: 'PUT',
           body: JSON.stringify({
             working: working.checked,
@@ -516,10 +736,10 @@ async function timingsView() {
             onlineCapacity: Number(cap.value || 0),
             slotIntervalMin: Number(iv.value),
           }),
-        });
-        toast(view, DOW[h.weekday] + ' saved.');
-      } catch (err) { toast(view, err.message, true); }
-    };
+        }),
+      onError: (err) => toast(view, err.message, true),
+    });
+    save.style.marginTop = '12px';
     card.append(save);
     grid.append(card);
   }
@@ -571,7 +791,13 @@ async function insightsView() {
   grid.append(stat('Completed', s.completed));
   grid.append(stat('Revenue', rupees(s.revenue)));
   grid.append(stat('Rating', s.rating ? '★ ' + s.rating : '—'));
-  grid.append(stat('No-show rate', (s.noShowRate * 100).toFixed(0) + '%'));
+  // No no-show rate here, deliberately. No-show policy is Hasino's, not the
+  // salon's: what a customer gets back is fixed by §4 and enforced server-side
+  // (booking/status.ts), and a salon may not mark one until 15 minutes past
+  // the booked time. A "No-show rate" tile in the salon's own panel reads as a
+  // dial they can turn, which it never was. The figure still exists — it is a
+  // fraud counter — and it is still computed by salonStats and shown to
+  // admins, who are the people it is for.
   grid.append(stat('Cancel rate', (s.cancelRate * 100).toFixed(0) + '%'));
   grid.append(stat('Strikes', s.strikes + ' / 3'));
   view.append(grid);

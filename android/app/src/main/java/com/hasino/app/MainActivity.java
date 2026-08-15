@@ -3,6 +3,9 @@ package com.hasino.app;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.webkit.WebView;
+
+import androidx.activity.OnBackPressedCallback;
 
 import com.getcapacitor.BridgeActivity;
 
@@ -28,9 +31,77 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getOnBackPressedDispatcher().addCallback(this, backCallback);
         // Cold start: the link launched the app, so the initial load is
         // server.url and the callback would be lost without this.
         loadAppLink(getIntent());
+    }
+
+    /**
+     * The system back button.
+     *
+     * Capacitor's BridgeActivity registers nothing for back, so the press fell
+     * through to the Activity's default handler and finished it: every press
+     * quit the app, from a salon page, from checkout, from an open dialog.
+     *
+     * Where "back" goes is a question only the page can answer — the app is a
+     * hash-routed web app, and a native canGoBack() cannot see an open modal,
+     * cannot tell the home route from a nested one, and would happily replay a
+     * consumed OAuth callback URL sitting in WebView history. So the page is
+     * asked first (window.hasinoBack, see lib/backbutton.js) and this acts on
+     * its answer:
+     *
+     *   "handled" — the page closed a dialog or navigated; nothing to do here
+     *   "exit"    — the page is at its root with nothing behind it; quit
+     *   anything else — the page did not answer (not loaded yet, the offline
+     *                   fallback page, an older deploy): fall back to the
+     *                   WebView's own history, and quit only when it is empty
+     *
+     * The last branch is what makes this safe to ship ahead of the web change:
+     * the worst case is the platform default, never a trapped user.
+     */
+    private static final String ASK_PAGE =
+        "(function(){try{return (window.hasinoBack && window.hasinoBack()) || 'default';}" +
+        "catch(e){return 'default';}})()";
+
+    private final OnBackPressedCallback backCallback = new OnBackPressedCallback(true) {
+        @Override
+        public void handleOnBackPressed() {
+            final WebView webView = getBridge() == null ? null : getBridge().getWebView();
+            if (webView == null) {
+                exitApp();
+                return;
+            }
+            // evaluateJavascript is asynchronous and its result comes back on
+            // the UI thread, so the decision is made there, one press later at
+            // the earliest — never on a background thread.
+            webView.evaluateJavascript(ASK_PAGE, value -> {
+                String answer = value == null ? "" : value.replace("\"", "");
+                if ("handled".equals(answer)) {
+                    return;
+                }
+                if ("exit".equals(answer)) {
+                    exitApp();
+                } else if (webView.canGoBack()) {
+                    webView.goBack();
+                } else {
+                    exitApp();
+                }
+            });
+        }
+    };
+
+    /**
+     * Hand the press back to the system, which finishes the Activity.
+     *
+     * Disabling this callback first is what makes that happen: the dispatcher
+     * walks past a disabled callback to the default one. Calling finish()
+     * directly would work too, but would skip the platform's own back
+     * behaviour — including the predictive-back animation on Android 13+.
+     */
+    private void exitApp() {
+        backCallback.setEnabled(false);
+        getOnBackPressedDispatcher().onBackPressed();
     }
 
     @Override

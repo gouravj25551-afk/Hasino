@@ -2,6 +2,7 @@ import { el } from '../lib/dom.js';
 import { Avatar } from '../components/Avatar.js';
 import { Button } from '../components/Button.js';
 import { EmptyState } from '../components/EmptyState.js';
+import { currentTheme, toggleTheme } from '../lib/theme.js';
 
 /**
  * What this account's salon is, if anything.
@@ -76,11 +77,15 @@ export function renderProfile(container, app) {
 
   container.append(el('h1', null, 'Profile'));
 
+  // Who you are, stated once and quietly. The name is the header's job now —
+  // it sits in the account menu in the top-right corner, where an account
+  // belongs — so this is a line of detail rather than a banner with the
+  // customer's own name across the middle of the screen.
   const card = el('div', 'profile-header-card');
-  card.append(Avatar({ src: session.avatarUrl, name: session.name, size: 'lg' }));
+  card.append(Avatar({ src: session.avatarUrl, name: session.name }));
   const info = el('div', 'profile-info');
-  info.append(el('h2', null, session.name || 'Customer'));
-  info.append(el('p', null, [session.email, session.phone].filter(Boolean).join(' · ') || 'Signed in'));
+  info.append(el('div', null, session.name || 'Customer'));
+  info.append(el('p', 'meta', [session.email, session.phone].filter(Boolean).join(' · ') || 'Signed in'));
   card.append(info);
   container.append(card);
 
@@ -94,7 +99,22 @@ export function renderProfile(container, app) {
   notifications.onclick = () => notifications.replaceWith(EmptyState({ title: 'No notifications yet.' }));
   list.append(notifications);
 
-  list.append(el('div', 'item', '⚙️ Account settings — coming soon'));
+  // The same switch as the one in the account menu, for someone who came
+  // looking for it under settings. Both read and write lib/theme.js, so
+  // whichever is used, the other is right the next time it is drawn.
+  const theme = el('div', 'item');
+  const themeLabel = el('div', 'grow');
+  const themeValue = el('span', 'pill brand');
+  const paintTheme = () => {
+    const dark = currentTheme() === 'dark';
+    themeLabel.textContent = '🌗 Appearance';
+    themeValue.textContent = dark ? 'Dark' : 'Light';
+  };
+  paintTheme();
+  theme.style.cursor = 'pointer';
+  theme.onclick = () => { toggleTheme(); paintTheme(); };
+  theme.append(themeLabel, themeValue);
+  list.append(theme);
 
   container.append(list);
 
