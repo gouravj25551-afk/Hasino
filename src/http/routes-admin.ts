@@ -22,6 +22,7 @@ import {
 // panel and the admin panel drift apart.
 import { deactivateService, listHours, listServiceSetup, saveHours, upsertService } from '../business/repo.ts';
 import { salonBalance } from '../payments/ledger.ts';
+import { readImageBody, saveSalonImage } from '../salons/images.ts';
 import { HttpError, bool, int, json, readJson, str, uuid } from './respond.ts';
 
 const STATUSES = new Set<SalonStatus>(['pending', 'active', 'suspended', 'banned', 'rejected']);
@@ -232,6 +233,22 @@ export async function adminRoutes(
           json(res, 200, { ok: true });
           return true;
         }
+      }
+
+      // PUT /api/admin/salons/:id/image — the storefront photo.
+      //
+      // The same bytes and the same salons.cover_url the owner's own upload
+      // writes, so a salon photographed by the admin during onboarding shows
+      // up unchanged in the owner's panel and on the customer's salon card.
+      // Reaching here already required an admin session (admin-server.ts
+      // checks the role before adminRoutes sees the request), which is what
+      // "admin can manage the salons they are authorised to manage" means in
+      // an app whose admins are authorised for all of them.
+      if (method === 'PUT' && rest[0] === 'image' && rest.length === 1) {
+        const bytes = await readImageBody(req);
+        const stored = await saveSalonImage(db, salonId, bytes, adminUserId);
+        json(res, 200, { coverImage: stored.coverUrl, byteSize: stored.byteSize });
+        return true;
       }
 
       // GET/PUT /api/admin/salons/:id/hours[/:weekday]

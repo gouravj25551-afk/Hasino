@@ -56,6 +56,31 @@ async function api(path, opts = {}) {
   return body;
 }
 
+/** Matches what the upload route accepts — see src/salons/images.ts. */
+const ADMIN_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const ADMIN_MAX_IMAGE_MB = 2;
+
+/**
+ * Put a storefront photo on a salon, as the file's own bytes.
+ *
+ * The salon id is in the path and the request carries an admin session; the
+ * server checks the role before this route is reached, so nothing here is
+ * trusted for authorisation.
+ */
+async function uploadAdminSalonImage(salonId, file) {
+  if (!ADMIN_IMAGE_TYPES.includes(file.type)) {
+    throw new Error('the file must be a JPEG, PNG or WebP image');
+  }
+  if (file.size > ADMIN_MAX_IMAGE_MB * 1024 * 1024) {
+    throw new Error(`it is ${(file.size / 1024 / 1024).toFixed(1)} MB and the limit is ${ADMIN_MAX_IMAGE_MB} MB`);
+  }
+  return api(`/api/admin/salons/${salonId}/image`, {
+    method: 'PUT',
+    body: file,
+    headers: { 'content-type': file.type },
+  });
+}
+
 const STATUS_TONE = { pending: 'warn', active: 'ok', suspended: 'bad', banned: 'bad', rejected: 'bad' };
 const statusPill = s => el('span', 'pill ' + (STATUS_TONE[s] ?? ''), s);
 
@@ -309,6 +334,42 @@ async function salonView(salonId) {
     appPanel.append(strip);
   } else {
     appPanel.append(el('div', 'note', 'No photos submitted.'));
+  }
+
+  // Replacing the storefront shot from here, for the salon that was onboarded
+  // without one or sent in something unusable. It writes the same field the
+  // owner's own upload writes, so there is one picture per salon and no
+  // question about which of them wins.
+  {
+    const pickRow = el('div', 'row');
+    pickRow.style.cssText = 'gap:10px; align-items:center; margin-top:12px; flex-wrap:wrap';
+    const file = el('input');
+    file.type = 'file';
+    file.accept = ADMIN_IMAGE_TYPES.join(',');
+    file.style.display = 'none';
+    const pick = el('button', 'btn sm', s.coverUrl ? 'Replace storefront photo' : 'Add storefront photo');
+    const outcome = el('div');
+    pick.onclick = () => file.click();
+    file.onchange = async () => {
+      const chosen = file.files?.[0];
+      if (!chosen) return;
+      outcome.innerHTML = '';
+      pick.disabled = true;
+      const was = pick.textContent;
+      pick.textContent = 'Uploading…';
+      try {
+        await uploadAdminSalonImage(s.id, chosen);
+        outcome.append(el('div', 'out ok', 'Saved.'));
+        salonView(s.id);
+      } catch (err) {
+        outcome.append(el('div', 'out bad', err.message || 'Upload failed'));
+        pick.disabled = false;
+        pick.textContent = was;
+        file.value = '';
+      }
+    };
+    pickRow.append(pick, file);
+    appPanel.append(pickRow, outcome);
   }
   view.append(appPanel);
 
@@ -641,6 +702,13 @@ function onboardView() {
     const o = el('option', null, label); o.value = v; status.append(o);
   }
 
+  // The storefront photo, taken on the admin's phone while they are standing
+  // in the salon. Uploaded after the salon exists, because the image is stored
+  // against a salon id — see the two-step in submit below.
+  const photo = el('input');
+  photo.type = 'file';
+  photo.accept = ADMIN_IMAGE_TYPES.join(',');
+
   grid.append(
     field('Salon name *', name),
     field('Address *', address),
@@ -656,6 +724,9 @@ function onboardView() {
     field('Owner name', ownerName),
     field('Owner email *', ownerEmail, 'Their Google address. This is what they sign in with.'),
     field('Status', status),
+    field('Salon photo', photo,
+      `Optional. JPEG, PNG or WebP up to ${ADMIN_MAX_IMAGE_MB} MB. The owner and customers see this same picture; `
+      + 'leave it empty and the salon keeps the lettered placeholder until the owner adds one.'),
   );
   panel.append(grid);
 
@@ -686,10 +757,27 @@ function onboardView() {
       if (commission.value !== '') body.commissionBps = Number(commission.value);
 
       const created = await api('/api/admin/salons', { method: 'POST', body: JSON.stringify(body) });
+
+      // The photo, if one was chosen. Second step on purpose: it is stored
+      // against the salon id, and that id does not exist until the line above
+      // returns. A failure here is reported without pretending the salon
+      // failed — it exists, it simply has no picture yet, and the owner can
+      // add one from their own panel.
+      let photoNote = '';
+      const chosen = photo.files?.[0];
+      if (chosen) {
+        try {
+          await uploadAdminSalonImage(created.salonId, chosen);
+          photoNote = '\nThe photo is saved — the owner and customers see it now.';
+        } catch (err) {
+          photoNote = `\nThe salon was created but the photo did not upload: ${err.message}`;
+        }
+      }
+
       out.append(el('div', 'out ok',
         `Created. Seven days of default hours (10:00–20:00, 1 chair, 30 min) are in place.\n` +
         `The owner ${created.ownerExisted ? 'already existed and was promoted' : 'was created'} — ` +
-        `they sign in with Google as ${body.owner.email}.`));
+        `they sign in with Google as ${body.owner.email}.` + photoNote));
       const go = el('a', 'btn sm primary', 'Open salon →');
       go.href = `#/salon/${created.salonId}`;
       out.append(go);

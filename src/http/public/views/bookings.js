@@ -92,7 +92,7 @@ export async function renderBookings(container, app) {
                     title: givingUpHold ? 'Give up this slot?' : 'Cancel this booking?',
                     message: givingUpHold
                       ? 'Nothing has been charged.'
-                      : 'Under our terms a customer cancellation is not refunded, but you can move it to another time free of charge for the next 36 hours.',
+                      : 'Under our terms a customer cancellation is not refunded, but you can reschedule it to another time free of charge for the next 36 hours.',
                     confirmLabel: givingUpHold ? 'Give up the slot' : 'Cancel booking',
                     cancelLabel: 'Keep it',
                     danger: true,
@@ -121,7 +121,7 @@ export async function renderBookings(container, app) {
 async function openReschedule(booking, app, onDone) {
   const body = el('div');
   body.style.padding = 'var(--space-6)';
-  body.append(el('h2', null, 'Move this booking'));
+  body.append(el('h2', null, 'Reschedule this booking'));
   body.append(
     el(
       'p',
@@ -189,9 +189,9 @@ async function openReschedule(booking, app, onDone) {
             err instanceof ApiError && err.status === 409
               ? 'That slot went while you were choosing. Pick another.'
               : err instanceof ApiError && err.status === 410
-                ? 'The 36-hour window to move this booking has closed.'
+                ? 'The 36-hour window to reschedule this booking has closed.'
                 : err.message;
-          status.append(el('div', 'out bad', message || 'Could not move the booking'));
+          status.append(el('div', 'out bad', message || 'Could not reschedule the booking'));
         }
       };
       wrap.append(b);

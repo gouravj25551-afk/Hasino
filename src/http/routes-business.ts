@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Pool } from '../db/pool.ts';
 import type { SnapshotCache } from '../availability/cache.ts';
 import { localDateKey } from '../time/tz.ts';
-import { closeForDay, transition, type BookingStatus } from '../booking/status.ts';
+import { NO_SHOW_GRACE_MIN, closeForDay, transition, type BookingStatus } from '../booking/status.ts';
 import {
   addHoliday,
   addSalonService,
@@ -21,6 +21,7 @@ import {
   upsertService,
 } from '../business/repo.ts';
 import { listPayouts, salonBalance, salonEarnings, salonLedger } from '../payments/ledger.ts';
+import { readImageBody, saveSalonImage } from '../salons/images.ts';
 import { HttpError, bool, int, json, readJson, str, uuid } from './respond.ts';
 
 /**
@@ -51,6 +52,20 @@ export async function businessRoutes(
       listBookingsForDay(db, salon.id, salon.timezone, today),
     ]);
     json(res, 200, { salon, today, stats, todayCount: bookings.length });
+    return true;
+  }
+
+  // ---- the salon's storefront photo ----
+  //
+  // PUT, not POST: there is one photo per salon and uploading again replaces
+  // it. The salon is `salon.id` — resolved from the authenticated owner by
+  // salonForOwner above, exactly like every other route in this file — so an
+  // owner can only ever replace their own photo and there is no salon id in
+  // the request for anyone to tamper with.
+  if (method === 'PUT' && tail[0] === 'image' && tail.length === 1) {
+    const bytes = await readImageBody(req);
+    const stored = await saveSalonImage(db, salon.id, bytes, ownerId);
+    json(res, 200, { coverImage: stored.coverUrl, byteSize: stored.byteSize, contentType: stored.contentType });
     return true;
   }
 
@@ -165,7 +180,17 @@ export async function businessRoutes(
   // ---- screen 3 + 4: bookings, calendar ----
   if (method === 'GET' && tail[0] === 'bookings' && tail.length === 1) {
     const date = url.searchParams.get('date') ?? localDateKey(new Date(), salon.timezone);
-    json(res, 200, { date, timezone: salon.timezone, bookings: await listBookingsForDay(db, salon.id, salon.timezone, date) });
+    json(res, 200, {
+      date,
+      timezone: salon.timezone,
+      // The clock the panel must reason against. A no-show is gated on server
+      // time; a shop phone that is ten minutes fast would otherwise offer the
+      // button ten minutes early and the API would refuse it, which reads as
+      // the panel being broken rather than as the customer being protected.
+      serverNow: new Date().toISOString(),
+      noShowGraceMin: NO_SHOW_GRACE_MIN,
+      bookings: await listBookingsForDay(db, salon.id, salon.timezone, date),
+    });
     return true;
   }
 

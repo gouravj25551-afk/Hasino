@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from '../db/pool.ts';
 import { addDays, localDateKey, zonedTimeToUtc } from '../time/tz.ts';
+import { noShowAvailableAt } from '../booking/status.ts';
 
 type Queryable = Pool | PoolClient;
 
@@ -22,6 +23,8 @@ export async function salonForOwner(
   status: string;
   rzpKycStatus: string;
   commissionBps: number;
+  /** Same field the customer app reads, so both show the same picture. */
+  coverImage: string | null;
 }> {
   const res = await db.query<{
     id: string;
@@ -30,8 +33,9 @@ export async function salonForOwner(
     status: string;
     rzp_kyc_status: string;
     commission_bps: number;
+    cover_url: string | null;
   }>(
-    `SELECT id, name, timezone, status, rzp_kyc_status, commission_bps
+    `SELECT id, name, timezone, status, rzp_kyc_status, commission_bps, cover_url
        FROM salons WHERE owner_id = $1`,
     [ownerId],
   );
@@ -44,6 +48,7 @@ export async function salonForOwner(
     status: row.status,
     rzpKycStatus: row.rzp_kyc_status,
     commissionBps: row.commission_bps,
+    coverImage: row.cover_url,
   };
 }
 
@@ -386,6 +391,12 @@ export async function listBookingsForDay(
     status: r.status,
     amount: r.amount,
     refundStatus: r.refund_status,
+    // When the customer's grace period runs out. Computed from the stored
+    // start_at by the same function the write path enforces, so the panel
+    // cannot draw an enabled button a minute before the API would accept it.
+    // The panel compares this against the server clock it is handed with the
+    // list, never against the phone's.
+    noShowAvailableAt: noShowAvailableAt(r.start_at).toISOString(),
     customerName: r.customer_name,
     customerPhone: r.customer_phone,
     customerEmail: r.customer_email,

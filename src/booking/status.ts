@@ -33,7 +33,14 @@ export const TRANSITIONS: Record<BookingStatus, BookingStatus[]> = {
   // 'verified' — a barber must not be able to check in an unpaid booking.
   pending_payment: ['booked', 'expired', 'cancelled_by_customer'],
   booked: ['verified', 'no_show', 'cancelled_by_customer', 'cancelled_by_salon', 'rescheduled'],
-  verified: ['in_progress', 'no_show', 'cancelled_by_salon'],
+  // No 'no_show' here, deliberately. 'verified' means the customer read their
+  // code out at the counter: they are standing in the salon. Marking them
+  // absent after that is not a state this app should be able to reach — it
+  // costs the customer their money and a strike toward a 30-day block. A
+  // customer who checked in and then left is a 'cancelled_by_salon', which
+  // refunds them. The panel never offered the button here either; this closes
+  // the API behind it.
+  verified: ['in_progress', 'cancelled_by_salon'],
   in_progress: ['completed', 'cancelled_by_salon'],
   completed: [],
   no_show: ['rescheduled'],
@@ -91,6 +98,42 @@ export function generateVerifyCode(): string {
 /** Spec §4: no_show / cancel -> reschedule allowed within 36 hours. */
 export const RESCHEDULE_WINDOW_HOURS = 36;
 
+/**
+ * How long a customer is allowed to be late before the salon may write them
+ * off.
+ *
+ * A no-show is the most expensive thing a salon can do to a customer: they
+ * keep nothing of what they paid (§4 — no refund) and it counts toward the
+ * three that block them from booking for 30 days. At the scheduled minute the
+ * customer may be parking. Fifteen minutes is the grace period, and it is
+ * measured from the scheduled *start*, not the end: a salon should not have to
+ * hold a chair for an hour to find out nobody is coming.
+ */
+export const NO_SHOW_GRACE_MIN = 15;
+
+/** The instant a booking becomes markable as a no-show. */
+export function noShowAvailableAt(startAt: Date): Date {
+  return new Date(startAt.getTime() + NO_SHOW_GRACE_MIN * 60_000);
+}
+
+/**
+ * The grace period has not run out yet.
+ *
+ * `availableAt` rides on the error so a panel that tried anyway can say
+ * "available after 10:15" using the server's answer rather than its own clock.
+ */
+export class NoShowTooEarlyError extends BookingError {
+  readonly availableAt: Date;
+  constructor(availableAt: Date) {
+    super(
+      'NO_SHOW_TOO_EARLY',
+      `A customer has ${NO_SHOW_GRACE_MIN} minutes' grace. This booking can be marked a no-show from ${availableAt.toISOString()}.`,
+    );
+    this.name = 'NoShowTooEarlyError';
+    this.availableAt = availableAt;
+  }
+}
+
 interface TransitionOptions {
   code?: string;
   now?: Date;
@@ -110,8 +153,13 @@ export async function transition(
   const now = opts.now ?? new Date();
 
   return withTransaction(db, async (tx) => {
-    const res = await tx.query<{ status: BookingStatus; verify_code: string | null; customer_id: string }>(
-      `SELECT status, verify_code, customer_id
+    const res = await tx.query<{
+      status: BookingStatus;
+      verify_code: string | null;
+      customer_id: string;
+      start_at: Date;
+    }>(
+      `SELECT status, verify_code, customer_id, start_at
          FROM bookings WHERE id = $1 AND salon_id = $2 FOR UPDATE`,
       [bookingId, salonId],
     );
@@ -119,6 +167,24 @@ export async function transition(
     if (!row) throw new BookingNotFoundError();
 
     if (!canTransition(row.status, to)) throw new InvalidTransitionError(row.status, to);
+
+    // The grace period, enforced where the write happens rather than where the
+    // button is drawn. The panel hides the button until the minute arrives, but
+    // that is a courtesy to the barber, not a control: `curl` skips it, a
+    // tampered clock on the shop's phone skips it, and an old cached panel
+    // skips it. Both times here are the server's — start_at is a timestamptz
+    // read inside this transaction, so a salon in any timezone is compared
+    // against the same instant the customer was promised, and `now` is this
+    // process's clock, never the caller's.
+    //
+    // FOR UPDATE above makes this hold under a double-tap: the second request
+    // waits, then re-reads a status that is no longer 'booked' and is rejected
+    // by canTransition — so the counter, the block check and the refund policy
+    // below can never run twice for one booking.
+    if (to === 'no_show') {
+      const availableAt = noShowAvailableAt(row.start_at);
+      if (now.getTime() < availableAt.getTime()) throw new NoShowTooEarlyError(availableAt);
+    }
 
     if (to === 'verified') {
       // trim: barbers type this off a customer's phone screen

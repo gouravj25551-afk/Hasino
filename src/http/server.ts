@@ -6,11 +6,12 @@ import { MemorySnapshotCache } from '../availability/cache.ts';
 import { getAvailability } from '../availability/service.ts';
 import { loadCart } from '../availability/repo.ts';
 import { createBooking } from '../booking/create.ts';
-import { customerCancelBooking } from '../booking/status.ts';
+import { NoShowTooEarlyError, customerCancelBooking } from '../booking/status.ts';
 import { rescheduleBooking } from '../booking/reschedule.ts';
 import { BookingError, SlotUnavailableError } from '../booking/errors.ts';
 import { ForbiddenError, listCustomerBookings } from '../business/repo.ts';
 import { addFavorite, getBooking, getSalon, listFavorites, listSalons, removeFavorite } from '../salons/repo.ts';
+import { ImageUploadError, serveSalonImage } from '../salons/images.ts';
 import { businessRoutes } from './routes-business.ts';
 import { AdminError, applyForSalon, listCatalogue } from '../admin/repo.ts';
 import { reverseGeocode, searchPlaces } from '../geo/geocode.ts';
@@ -89,6 +90,9 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'business.js',
   'lib/api.js',
   'lib/auth.js',
+  'lib/backbutton.js',
+  'lib/cart.js',
+  'lib/theme.js',
   'lib/dialog.js',
   'lib/dom.js',
   'lib/format.js',
@@ -537,6 +541,17 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     return json(res, 200, salon);
   }
 
+  // GET /api/salons/:id/image — the storefront photo, as bytes.
+  //
+  // Public, like the salon card it appears on: a customer who has never signed
+  // in still sees the shop. This is where salons.cover_url points once a photo
+  // has been uploaded rather than linked.
+  if (method === 'GET' && seg[0] === 'api' && seg[1] === 'salons' && seg[3] === 'image' && seg.length === 4) {
+    const served = await serveSalonImage(db, uuid(seg[2]!, 'salonId'), req, res);
+    if (served) return;
+    throw new HttpError(404, 'This salon has no image');
+  }
+
   if (
     method === 'POST' &&
     seg[0] === 'api' &&
@@ -564,6 +579,17 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
         date: d.date,
         state: d.state,
         closedReason: d.closedReason,
+        // Chairs, per slot. The client shows "2 left" and greys out a taken
+        // time from this; `full` stays the bookable subset so nothing that
+        // reads it has to learn about capacity to keep working.
+        capacity: d.capacity,
+        slots: d.slots.map((s) => ({
+          at: s.at.toISOString(),
+          capacity: s.capacity,
+          taken: s.taken,
+          remaining: s.remaining,
+          state: s.state,
+        })),
         full: d.full.map((t) => t.toISOString()),
         partial: d.partial.map((p) => ({
           at: p.at.toISOString(),
@@ -816,6 +842,9 @@ export function respondToError(res: ServerResponse, err: unknown): void {
   if (err instanceof HttpError) {
     return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
   }
+  if (err instanceof ImageUploadError) {
+    return json(res, err.status, { error: err.message, code: err.code });
+  }
   if (err instanceof AuthError) return json(res, err.status, { error: err.message, code: err.code });
   if (err instanceof ForbiddenError) return json(res, 403, { error: err.message, code: err.code });
   if (err instanceof AdminError) return json(res, err.status, { error: err.message, code: err.code });
@@ -843,8 +872,17 @@ export function respondToError(res: ServerResponse, err: unknown): void {
       : err.code === 'INVALID_TRANSITION' ? 409
       : err.code === 'RESCHEDULE_LIMIT' ? 409
       : err.code === 'RESCHEDULE_EXPIRED' ? 410
+      // Early, not wrong: the same request succeeds once the customer's
+      // 15 minutes of grace have run out.
+      : err.code === 'NO_SHOW_TOO_EARLY' ? 409
       : 400;
-    return json(res, status, { error: err.message, code: err.code });
+    return json(res, status, {
+      error: err.message,
+      code: err.code,
+      // When the answer is "not yet", the caller needs the minute, not a
+      // rounded description of it.
+      ...(err instanceof NoShowTooEarlyError ? { availableAt: err.availableAt.toISOString() } : {}),
+    });
   }
 
   reportError(err, { unhandled: true });

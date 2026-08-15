@@ -22,6 +22,8 @@ import { TopBar, highlightTopBarNav } from './components/TopBar.js';
 import { LocationSheet } from './components/LocationSheet.js';
 import { getLocation } from './lib/location.js';
 import { BottomNav } from './components/BottomNav.js';
+import { installBackHandler } from './lib/backbutton.js';
+import { initTheme } from './lib/theme.js';
 import { el } from './lib/dom.js';
 
 import { renderHome } from './views/home.js';
@@ -32,6 +34,11 @@ import { renderBookings } from './views/bookings.js';
 import { renderProfile } from './views/profile.js';
 import { renderLogin } from './views/login.js';
 import { renderApply } from './views/apply.js';
+
+// Before anything renders: the stored theme, or the device's. Any later and
+// the first paint is the wrong colour and then corrects itself, which on a
+// phone reads as the app flashing white every time it opens.
+initTheme();
 
 const viewRoot = document.getElementById('view');
 const topbarRoot = document.getElementById('topbar');
@@ -190,6 +197,7 @@ function renderChrome() {
         },
       }),
     onSignIn: () => go('#/login'),
+    onSignOut: doSignOut,
   });
   topbarRoot.append(bar);
   highlightTopBarNav(bar, activeSection());
@@ -212,6 +220,20 @@ register(/^#\/bookings$/, () => renderBookings(viewRoot, app));
 register(/^#\/profile$/, () => renderProfile(viewRoot, app));
 register(/^#\/login$/, () => renderLogin(viewRoot, app));
 register(/^#\/apply$/, () => renderApply(viewRoot, app));
+
+/**
+ * Android's back button. Installed at module scope, before boot() awaits
+ * anything: a press while the app is still fetching its config should be the
+ * app going back, not the app quitting.
+ *
+ * The customer app's root is home — the landing routes are exactly the ones
+ * routeOnOpen() treats as "the app just opened", and they are where there is
+ * nothing left to go back to.
+ */
+installBackHandler({
+  isRoot: () => LANDING_ROUTES.has(currentHash()),
+  homeHash: '#/home',
+});
 
 /**
  * Give the callback back to the Android app, and never leave the person

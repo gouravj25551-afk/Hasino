@@ -185,6 +185,121 @@ describe('availability — rules the spec states but does not list a test for', 
   });
 });
 
+/**
+ * Chairs are concurrency, not a daily allowance.
+ *
+ * A salon with 3 chairs can hold three bookings in the same half hour and is
+ * full on the fourth — and it can do that again in the next half hour. The
+ * failure this guards against is reading the number as "3 bookings a day",
+ * which would sell a third of the salon.
+ */
+describe('chairs are per-slot capacity', () => {
+  const slotAt = (day: ReturnType<typeof today>, hhmm: string) =>
+    day.slots.find((s) => times([s.at])[0] === hhmm);
+
+  it('3 chairs means 3 bookings in the same slot, in every slot', () => {
+    const day = today(snapshot({ hours: hoursFor({ onlineCapacity: 3 }) }));
+    assert.equal(day.capacity, 3);
+    assert.equal(day.slots.length, 6, '10:00 to 12:30 on a 30-minute grid');
+    for (const slot of day.slots) {
+      assert.equal(slot.remaining, 3);
+      assert.equal(slot.state, 'open');
+    }
+  });
+
+  it('two of three chairs taken leaves one, and the slot stays bookable', () => {
+    const day = today(
+      snapshot({
+        hours: hoursFor({ onlineCapacity: 3 }),
+        occupancy: occupancy([['11:00', 2]]),
+      }),
+    );
+    const eleven = slotAt(day, '11:00')!;
+    assert.equal(eleven.taken, 2);
+    assert.equal(eleven.remaining, 1);
+    assert.equal(eleven.state, 'limited', 'partially occupied, not full');
+    assert.ok(times(day.full).includes('11:00'), 'the third customer can still book it');
+
+    // ...and the neighbouring slots are untouched. This is the "not a daily
+    // allowance" assertion: two bookings at 11:00 cost 11:30 nothing.
+    assert.equal(slotAt(day, '11:30')!.remaining, 3);
+    assert.equal(slotAt(day, '10:30')!.remaining, 3);
+  });
+
+  it('the third booking fills the slot and the fourth customer cannot have it', () => {
+    const day = today(
+      snapshot({
+        hours: hoursFor({ onlineCapacity: 3 }),
+        occupancy: occupancy([['11:00', 3]]),
+      }),
+    );
+    const eleven = slotAt(day, '11:00')!;
+    assert.equal(eleven.remaining, 0);
+    assert.equal(eleven.state, 'full');
+    assert.ok(!times(day.full).includes('11:00'), 'full means unbookable');
+    // Still on the list, so the customer sees a sold-out time rather than a
+    // hole in the salon's day.
+    assert.ok(times(day.slots.map((s) => s.at)).includes('11:00'));
+    assert.deepEqual(times(day.full), ['10:00', '10:30', '11:30', '12:00', '12:30']);
+  });
+
+  it('a multi-slot cart is limited by its worst slot, not its first', () => {
+    // 50 + 10 buffer = 60 = two slots. 11:00 has all 3 chairs free, 11:30 has one.
+    const day = availabilityFromSnapshot(
+      snapshot({
+        hours: hoursFor({ onlineCapacity: 3 }),
+        occupancy: occupancy([['11:30', 2]]),
+      }),
+      [haircut],
+      NOW,
+    ).days[0]!;
+
+    const eleven = slotAt(day, '11:00')!;
+    assert.equal(eleven.remaining, 1, 'one chair can be held for the whole hour, not three');
+    assert.equal(eleven.state, 'limited');
+  });
+
+  it('a start time the cart cannot fit into is not offered as full — it is not offered', () => {
+    // Salon closes at 13:00; a 60-minute cart cannot start at 12:30.
+    const day = availabilityFromSnapshot(
+      snapshot({ hours: hoursFor({ onlineCapacity: 2 }) }),
+      [haircut],
+      NOW,
+    ).days[0]!;
+    assert.ok(!times(day.slots.map((s) => s.at)).includes('12:30'));
+    assert.deepEqual(times(day.slots.map((s) => s.at)), ['10:00', '10:30', '11:00', '11:30', '12:00']);
+  });
+
+  it('a one-chair salon is full at one booking', () => {
+    const day = today(
+      snapshot({ hours: hoursFor({ onlineCapacity: 1 }), occupancy: occupancy([['11:00', 1]]) }),
+    );
+    const eleven = slotAt(day, '11:00')!;
+    assert.equal(eleven.remaining, 0);
+    assert.equal(eleven.state, 'full');
+    // 'limited' cannot happen with one chair: it is either free or gone.
+    assert.ok(day.slots.every((s) => s.state !== 'limited'));
+  });
+
+  it('an over-booked slot never reports negative capacity', () => {
+    // Defensive: capacity can be lowered after bookings were taken at the old
+    // number. The salon honours them; the UI must not show "-1 free".
+    const day = today(
+      snapshot({ hours: hoursFor({ onlineCapacity: 2 }), occupancy: occupancy([['11:00', 5]]) }),
+    );
+    const eleven = slotAt(day, '11:00')!;
+    assert.equal(eleven.remaining, 0);
+    assert.equal(eleven.taken, 2, 'clamped to what the salon actually has');
+    assert.equal(eleven.state, 'full');
+  });
+
+  it('a closed day has no slots and no chairs', () => {
+    const day = today(snapshot({ holidays: [DATE] }));
+    assert.equal(day.capacity, 0);
+    assert.deepEqual(day.slots, []);
+  });
+});
+
 describe('buffer policy', () => {
   it("'max' charges one turnaround per booking, 'sum' charges one per service", () => {
     const cart = [service('a', 30, 100, 10), service('b', 20, 100, 15)];

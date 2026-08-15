@@ -144,7 +144,8 @@ Customer:
 |---|---|---|
 | `GET` | `/api/salons?q=&lat=&lng=&category=` | browse — `lat`/`lng` sort by distance, `category` filters by service category |
 | `GET` | `/api/salons/:id` | services, hours, rating, `openNow`/`closesAt` |
-| `POST` | `/api/salons/:id/availability` | `{serviceIds}` → 7-day window |
+| `POST` | `/api/salons/:id/availability` | `{serviceIds}` → 7-day window, with per-slot chair counts |
+| `GET` | `/api/salons/:id/image` | the salon's storefront photo — public, cached by content hash |
 | `POST` | `/api/bookings` | **holds a chair** and opens a Razorpay order → 201, or **409** `SLOT_UNAVAILABLE`. Honours `Idempotency-Key`. |
 | `POST` | `/api/bookings/:id/checkout` | re-open checkout for a hold that is still live |
 | `POST` | `/api/bookings/:id/confirm` | the signed checkout callback → 200 booked, or **202** paid-too-late (refund queued) |
@@ -196,9 +197,10 @@ Salon panel — every route resolves the salon from the signed-in owner, so a
 |---|---|---|
 | `GET/PUT/DELETE` | `/api/business/services[/:id]` | §6.1 |
 | `GET/PUT` | `/api/business/hours[/:weekday]` | §6.2 |
+| `PUT` | `/api/business/image` | the salon's storefront photo, as raw bytes — the salon comes from the session, never the request |
 | `GET/POST/DELETE` | `/api/business/holidays[/:date]` | §6.2 |
 | `GET` | `/api/business/bookings?date=` | §6.3, §6.4 |
-| `POST` | `/api/business/bookings/:id/{verify,start,complete,no-show,cancel}` | §4 states |
+| `POST` | `/api/business/bookings/:id/{verify,start,complete,no-show,cancel}` | §4 states — `no-show` is refused until 15 minutes past the booked start, and refused outright once the customer has checked in |
 | `POST` | `/api/business/close-today` | §6.5 |
 | `GET` | `/api/business/{stats,reviews}` | §6.7 |
 | `GET` | `/api/business/payouts` | §6.6 — balance, settlements and statement, all summed from the ledger |

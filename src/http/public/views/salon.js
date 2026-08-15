@@ -5,12 +5,29 @@ import { ServiceCard } from '../components/ServiceCard.js';
 import { Badge } from '../components/Badge.js';
 import { Button } from '../components/Button.js';
 import { Modal } from '../components/Modal.js';
+import { BottomSheet } from '../components/BottomSheet.js';
+import { cartFor, cartSalonId, cartTotals, clearCart, saveCart } from '../lib/cart.js';
 
 export async function renderSalon(container, app, salonId) {
   container.innerHTML = '';
-  const cart = new Set();
 
   const salon = await api(`/api/salons/${salonId}`);
+
+  // The cart survives a reload and a walk to another page and back, but it
+  // belongs to one salon: a booking is with one salon, so opening a different
+  // one starts a new cart rather than mixing two menus. The customer is told
+  // when that happened — a basket that empties itself with no explanation is
+  // the version of this that reads as a bug.
+  const previousSalon = cartSalonId();
+  const replacedCart = previousSalon !== null && previousSalon !== salonId;
+  const cart = new Set(cartFor(salonId));
+  // Services the salon has since taken off its menu cannot be booked, so they
+  // are dropped rather than carried into a checkout that would 400.
+  for (const id of [...cart]) {
+    if (!salon.services.some((s) => s.serviceId === id)) cart.delete(id);
+  }
+  const persist = () => saveCart(salonId, [...cart]);
+  persist();
   let isFavorite = false;
   if (app.session) {
     try {
@@ -28,7 +45,16 @@ export async function renderSalon(container, app, salonId) {
   container.append(backBtn);
 
   container.append(heroPanel(salon, app, () => isFavorite, (v) => (isFavorite = v)));
-  container.append(servicesPanel(salon, cart, updateStickyBar));
+
+  if (replacedCart) {
+    container.append(
+      el('div', 'note', 'Your earlier selection was for a different salon, so this cart starts empty. '
+        + 'One booking, one salon.'),
+    );
+  }
+
+  const services = servicesPanel(salon, cart, onCartChange);
+  container.append(services);
 
   const slotPanel = el('div', 'panel');
   slotPanel.id = 'slotPanel';
@@ -38,30 +64,127 @@ export async function renderSalon(container, app, salonId) {
   stickyBar.style.display = 'none';
   container.append(stickyBar);
 
-  function updateStickyBar() {
+  /** The services in the cart, in the salon's own menu order. */
+  const picked = () => salon.services.filter((s) => cart.has(s.serviceId));
+
+  function onCartChange() {
+    persist();
+    drawCartBar();
+  }
+
+  function drawCartBar() {
     if (!cart.size) {
       stickyBar.style.display = 'none';
       slotPanel.innerHTML = '';
       return;
     }
-    const picked = salon.services.filter((s) => cart.has(s.serviceId));
-    const total = picked.reduce((sum, s) => sum + s.price, 0);
+    const chosen = picked();
+    const totals = cartTotals(chosen);
 
     stickyBar.style.display = 'flex';
     stickyBar.innerHTML = '';
+
     const info = el('div');
-    info.append(el('div', null, `${picked.length} service${picked.length > 1 ? 's' : ''} selected`));
-    info.append(el('strong', null, rupees(total)));
-    const proceedBtn = Button({
-      label: 'Pick date & time →',
-      variant: 'primary',
-      onClick: () => {
-        renderSlots(slotPanel, salon, cart, app);
-        slotPanel.scrollIntoView({ behavior: 'smooth' });
-      },
-    });
-    stickyBar.append(info, proceedBtn);
+    info.append(
+      el('div', 'cart-bar-count',
+        `${totals.count} service${totals.count > 1 ? 's' : ''} · ${rupees(totals.price)}`),
+    );
+    info.append(el('div', 'cart-bar-sub', `about ${totals.durationMin} min in the chair`));
+    // The summary itself opens the cart: on a phone it is the biggest target
+    // on the bar, and tapping what you just added to see it is the gesture
+    // people already have.
+    info.style.cursor = 'pointer';
+    info.onclick = openCart;
+
+    stickyBar.append(
+      info,
+      Button({ label: 'View cart →', variant: 'primary', onClick: openCart }),
+    );
+
     renderSlots(slotPanel, salon, cart, app);
+  }
+
+  /** The review step: everything picked, what it costs, and how to change it. */
+  function openCart() {
+    const body = el('div');
+    body.style.padding = 'var(--space-6)';
+    body.append(el('h2', null, 'Your services'));
+    body.append(el('p', 'sub', salon.name));
+
+    const lines = el('div', 'cart-lines');
+    body.append(lines);
+    const totalsRow = el('div', 'cart-totals');
+    body.append(totalsRow);
+
+    const actions = el('div', 'row');
+    actions.style.cssText = 'margin-top:var(--space-4); gap:10px; justify-content:flex-end; flex-wrap:wrap';
+
+    const draw = () => {
+      const chosen = picked();
+      lines.innerHTML = '';
+
+      if (chosen.length === 0) {
+        lines.append(el('div', 'empty', 'Your cart is empty. Add a service to book.'));
+        totalsRow.innerHTML = '';
+        actions.style.display = 'none';
+        return;
+      }
+      actions.style.display = 'flex';
+
+      for (const service of chosen) {
+        const line = el('div', 'cart-line');
+        const grow = el('div', 'grow');
+        grow.append(el('div', 'cart-name', service.name));
+        grow.append(el('div', 'meta', `${service.durationMin} min · ${service.category}`));
+        const remove = el('button', 'cart-remove', 'Remove');
+        remove.type = 'button';
+        remove.setAttribute('aria-label', `Remove ${service.name}`);
+        remove.onclick = () => {
+          cart.delete(service.serviceId);
+          onCartChange();
+          // The row's own Add button has to stop saying "Added".
+          syncServiceButtons(services, cart);
+          draw();
+        };
+        line.append(grow, el('strong', null, rupees(service.price)), remove);
+        lines.append(line);
+      }
+
+      const totals = cartTotals(chosen);
+      totalsRow.innerHTML = '';
+      const label = el('div');
+      label.append(el('div', null, 'Total'));
+      label.append(el('div', 'meta', `${totals.count} service${totals.count > 1 ? 's' : ''} · about ${totals.durationMin} min`));
+      totalsRow.append(label, el('div', null, rupees(totals.price)));
+    };
+
+    actions.append(
+      Button({ label: 'Add more', onClick: () => close() }),
+      Button({
+        label: 'Pick date & time →',
+        variant: 'primary',
+        onClick: () => {
+          close();
+          slotPanel.scrollIntoView({ behavior: 'smooth' });
+        },
+      }),
+    );
+    body.append(actions);
+
+    draw();
+    const close = BottomSheet(body);
+  }
+
+  drawCartBar();
+}
+
+/** Put every Add button back in step with the cart after a change made elsewhere. */
+function syncServiceButtons(servicesPanelNode, cart) {
+  for (const btn of servicesPanelNode.querySelectorAll('.add-btn[data-service]')) {
+    const inCart = cart.has(btn.dataset.service);
+    btn.textContent = inCart ? '✓ Added' : 'Add';
+    btn.classList.toggle('added', inCart);
+    btn.setAttribute('aria-pressed', String(inCart));
   }
 }
 
@@ -237,17 +360,36 @@ async function renderSlots(slotPanel, salon, cart, app) {
       slotBox.append(el('div', 'empty', day.closedReason === 'holiday' ? 'Closed for a holiday.' : 'Closed this day.'));
       return;
     }
-    if (day.full.length) {
+
+    // Every start time the cart fits into, taken ones included. A slot the
+    // salon has already sold out is shown as sold out rather than hidden —
+    // hiding it looks like the salon does not work at that hour, and the
+    // customer cannot tell "3 chairs, all busy" from "closed".
+    if (day.slots?.length) {
+      if (day.capacity > 1) {
+        slotBox.append(
+          el('div', 'meta', `${day.capacity} chairs — each time can take ${day.capacity} bookings at once.`),
+        );
+      }
       const wrap = el('div', 'slots');
-      for (const iso of day.full) {
-        const b = el('button', 'slot', time(iso, avail.timezone));
-        b.type = 'button';
-        b.onclick = () => openConfirm({ iso, salon, picked, total, timezone: avail.timezone, app });
-        wrap.append(b);
+      for (const slot of day.slots) {
+        wrap.append(
+          slotButton(slot, day.capacity, avail.timezone, () =>
+            openConfirm({ iso: slot.at, salon, picked, total, timezone: avail.timezone, app }),
+          ),
+        );
       }
       slotBox.append(wrap);
-      return;
+      if (day.full.length) return;
+      // Sold out at every time the cart fits — but there may still be a gap
+      // that one of the picked services would fit into, and that is worth
+      // offering rather than an apology.
+      if (!day.partial.length) {
+        slotBox.append(el('div', 'note', 'Every chair is taken at every time on this day. Try another date.'));
+        return;
+      }
     }
+
     // Nothing fits the whole cart today — the honest fallback from spec §2, not an empty screen.
     if (day.partial.length) {
       const box = el('div', 'note');
@@ -267,6 +409,33 @@ async function renderSlots(slotPanel, salon, cart, app) {
   drawDayDetail();
 }
 
+/**
+ * One start time, and how much of the salon is still free at it.
+ *
+ * A one-chair salon says nothing on an open slot — "1 left" on every button is
+ * noise when one is all there ever is. It says "Full" when the chair is gone,
+ * because that is the whole story. A salon with chairs to spare counts them
+ * down, so a customer can see a popular time filling up before it closes.
+ */
+function slotButton(slot, capacity, timezone, onPick) {
+  const soldOut = slot.state === 'full';
+  const label = time(slot.at, timezone);
+  const b = el('button', `slot ${slot.state}`);
+  b.type = 'button';
+  b.append(el('span', 'slot-time', label));
+
+  const caption = soldOut ? 'Full' : capacity > 1 ? `${slot.remaining} of ${capacity} free` : '';
+  if (caption) b.append(el('span', 'slot-cap', caption));
+
+  b.disabled = soldOut;
+  b.setAttribute(
+    'aria-label',
+    `${label} — ${soldOut ? 'fully booked' : `${slot.remaining} of ${capacity} chairs free`}`,
+  );
+  if (!soldOut) b.onclick = onPick;
+  return b;
+}
+
 function panelLoading(slotPanel) {
   slotPanel.append(el('div', 'empty', 'Loading availability…'));
 }
@@ -281,10 +450,30 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
   details.style.background = 'var(--surface-2)';
   details.append(el('div', 'meta', `SALON: ${salon.name}`));
   details.append(el('div', 'meta', `WHEN: ${dateLong(iso, timezone)} at ${time(iso, timezone)}`));
-  details.append(el('div', 'meta', `SERVICES: ${picked.map((s) => s.name).join(', ')}`));
-  const totalRow = el('div', 'row');
-  totalRow.style.cssText = 'margin-top:10px; justify-content:space-between';
-  totalRow.append(el('span', null, 'Total'), el('strong', null, rupees(total)));
+
+  // Every service, priced, rather than a comma-separated list of names. This
+  // is the last screen before money moves and before a chair is held, so what
+  // is being bought is itemised.
+  details.append(el('div', 'meta', 'SERVICES'));
+  const lines = el('div', 'cart-lines');
+  for (const service of picked) {
+    const line = el('div', 'cart-line');
+    const grow = el('div', 'grow');
+    grow.append(el('div', 'cart-name', service.name));
+    grow.append(el('div', 'meta', `${service.durationMin} min`));
+    line.append(grow, el('strong', null, rupees(service.price)));
+    lines.append(line);
+  }
+  details.append(lines);
+
+  const totals = cartTotals(picked);
+  const totalRow = el('div', 'cart-totals');
+  const totalLabel = el('div');
+  totalLabel.append(el('div', null, 'Total'));
+  totalLabel.append(
+    el('div', 'meta', `${totals.count} service${totals.count > 1 ? 's' : ''} · about ${totals.durationMin} min`),
+  );
+  totalRow.append(totalLabel, el('div', null, rupees(total)));
   details.append(totalRow);
   body.append(details);
 
@@ -328,6 +517,9 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
           body: JSON.stringify({ salonId: salon.id, serviceIds: picked.map((s) => s.serviceId), startAt: iso }),
         });
         close();
+        // The cart has been spent: these services are on a booking now, and a
+        // basket still sitting there afterwards invites booking them twice.
+        clearCart();
 
         if (!booking.checkout) {
           // No payment provider is configured, so the booking is already

@@ -89,9 +89,9 @@ export function BookingCard(booking, { timezone = 'Asia/Kolkata', onCancel, onPa
   // canReschedule is computed server-side from the §4 deadline and the §10 cap,
   // so the button and the endpoint cannot disagree about whether it will work.
   if (onReschedule && booking.canReschedule) {
-    const moveBtn = el('button', 'btn sm', 'Move');
-    moveBtn.onclick = () => onReschedule(booking);
-    item.append(moveBtn);
+    const rescheduleBtn = el('button', 'btn sm', 'Reschedule');
+    rescheduleBtn.onclick = () => onReschedule(booking);
+    item.append(rescheduleBtn);
   }
 
   if (onCancel && CANCELLABLE.has(booking.status)) {
