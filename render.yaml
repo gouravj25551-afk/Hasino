@@ -31,10 +31,12 @@ services:
     # a region that already holds a service in another region, so if you get a
     # region error this is the line to change.
     region: singapore
-    # Pinned, because the deploy is on a branch and the repo's default is main.
-    # Left unset, Render follows the default branch and would deploy a tree
-    # without this file in it. Change this line when the branch merges.
-    branch: admin-panel-and-real-auth
+    # main, now that the work has merged there. Stated rather than left unset:
+    # Render falls back to the repo's default branch, which is main today and
+    # is one settings change away from not being — and a deploy that silently
+    # follows a renamed default is the kind of thing nobody looks at until the
+    # wrong tree is live.
+    branch: main
     dockerfilePath: ./Dockerfile
     # No database call, so a Neon blip does not get the service restarted in a
     # loop. /readyz is the one that checks the DB.
@@ -98,7 +100,10 @@ services:
     runtime: docker
     plan: free
     region: singapore
-    branch: admin-panel-and-real-auth
+    # Same branch as the customer service above, deliberately: the two share a
+    # database and a schema, so a panel running an older tree than the app it
+    # administers is a migration mismatch waiting to happen.
+    branch: main
     dockerfilePath: ./Dockerfile
     # The one line that makes this the admin panel instead of a second copy of
     # the customer app.
