@@ -89,17 +89,17 @@ export const TEMPLATES: Record<string, (p: Payload) => Rendered> = {
     text:
       `Hi ${s(p, 'customerName', 'there')},\n\n` +
       `Your booking at ${s(p, 'salonName')} is cancelled.\n\n` +
-      `You can move it to another time free of charge until ` +
+      `You can reschedule it to another time free of charge until ` +
       `${whenText(p['rescheduleDeadline'], p['timezone'])} — open the booking in the ` +
       `app and pick a new slot.` +
       sign('Hasino'),
   }),
 
   booking_rescheduled: (p) => ({
-    subject: `Moved: ${s(p, 'salonName')}, now ${whenText(p['startAt'], p['timezone'])}`,
+    subject: `Rescheduled: ${s(p, 'salonName')}, now ${whenText(p['startAt'], p['timezone'])}`,
     text:
       `Hi ${s(p, 'customerName', 'there')},\n\n` +
-      `Your booking at ${s(p, 'salonName')} has moved.\n\n` +
+      `Your booking at ${s(p, 'salonName')} has been rescheduled.\n\n` +
       `Was: ${whenText(p['previousStartAt'], p['timezone'])}\n` +
       `Now: ${whenText(p['startAt'], p['timezone'])}\n\n` +
       `Nothing more to pay.` +

@@ -48,14 +48,14 @@ export class RescheduleWindowError extends BookingError {
 
 export class RescheduleLimitError extends BookingError {
   constructor() {
-    super('RESCHEDULE_LIMIT', 'A booking can only be moved once. Book a new slot instead.');
+    super('RESCHEDULE_LIMIT', 'A booking can only be rescheduled once. Book a new slot instead.');
     this.name = 'RescheduleLimitError';
   }
 }
 
 export class NotReschedulableError extends BookingError {
   constructor(status: BookingStatus) {
-    super('NOT_RESCHEDULABLE', `A ${status} booking cannot be moved`);
+    super('NOT_RESCHEDULABLE', `A ${status} booking cannot be rescheduled`);
     this.name = 'NotReschedulableError';
   }
 }

@@ -1,6 +1,9 @@
 /**
- * §4's reschedule: a no-show or a cancellation may be moved to a new slot
- * within 36 hours, at no extra charge.
+ * §4's reschedule: a no-show or a cancellation may be rescheduled to a new
+ * slot within 36 hours, at no extra charge.
+ *
+ * "Reschedule" is what the customer app calls this — the button used to say
+ * "Move" and the endpoint never changed.
  *
  * The invariant worth protecting is atomicity. Retiring the old booking and
  * taking the new one are one transaction, so there is no observable moment
@@ -16,7 +19,8 @@ import { createBooking } from '../src/booking/create.ts';
 import { SlotUnavailableError } from '../src/booking/errors.ts';
 import { customerCancelBooking, transition } from '../src/booking/status.ts';
 import { rescheduleBooking } from '../src/booking/reschedule.ts';
-import { DATE, NOW, at, hhmm } from './helpers.ts';
+import { listBookingsForDay } from '../src/business/repo.ts';
+import { DATE, NOW, TZ, at, hhmm } from './helpers.ts';
 import { addDays } from '../src/time/tz.ts';
 import { type Fixture, bookingStatus, chairsHeld, connect, seed } from './db.ts';
 
@@ -45,7 +49,7 @@ async function booked(db: pg.Pool, fx: Fixture, startAt: Date, customerIndex = 0
 }
 
 describe('reschedule', () => {
-  it('moves a live booking and frees the old chair', async (t) => {
+  it('reschedules a live booking and frees the old chair', async (t) => {
     if (!pool) return t.skip('no test database reachable');
     const db = pool;
     const fx = await seed(db, { onlineCapacity: 1 });
@@ -64,7 +68,7 @@ describe('reschedule', () => {
     assert.equal(await chairsHeld(db, fx.salonId, at('12:00'), NOW), 1);
   });
 
-  it('can move a booking onto its own old slot at a single-chair salon', async (t) => {
+  it('can reschedule a booking onto its own old slot at a single-chair salon', async (t) => {
     if (!pool) return t.skip('no test database reachable');
     const db = pool;
     // The obvious implementation fails this: the new booking asks whether the
@@ -122,7 +126,7 @@ describe('reschedule', () => {
     assert.equal(await bookingStatus(db, result.booking.id), 'booked');
   });
 
-  it('allows exactly one move — §10 Q2', async (t) => {
+  it('allows exactly one reschedule — §10 Q2', async (t) => {
     if (!pool) return t.skip('no test database reachable');
     const db = pool;
     const fx = await seed(db, { onlineCapacity: 1 });
@@ -209,7 +213,7 @@ describe('reschedule', () => {
     assert.equal(await chairsHeld(db, fx.salonId, at('11:00'), NOW), 1);
   });
 
-  it('will not move someone else’s booking', async (t) => {
+  it('will not reschedule someone else’s booking', async (t) => {
     if (!pool) return t.skip('no test database reachable');
     const db = pool;
     const fx = await seed(db, { onlineCapacity: 2, customers: 2 });
@@ -226,7 +230,7 @@ describe('reschedule', () => {
     );
   });
 
-  it('will not move a completed booking', async (t) => {
+  it('will not reschedule a completed booking', async (t) => {
     if (!pool) return t.skip('no test database reachable');
     const db = pool;
     const fx = await seed(db, { onlineCapacity: 1 });
@@ -244,6 +248,141 @@ describe('reschedule', () => {
         ),
       (err: Error) => err.name === 'NotReschedulableError',
     );
+  });
+});
+
+/**
+ * What the Reschedule button promises, checked against the endpoint behind it.
+ *
+ * The rename is only a label; these are the rules the label is standing in
+ * front of, and each one is enforced by the same createBookingTx a first-time
+ * booking goes through — there is no second, laxer path into the calendar.
+ */
+describe('reschedule — the rules behind the button', () => {
+  it('cannot be rescheduled into the past, or into the next few minutes', async (t) => {
+    if (!pool) return t.skip('no test database reachable');
+    const db = pool;
+    const fx = await seed(db, { onlineCapacity: 1 });
+    const original = await booked(db, fx, at('12:30'));
+
+    // The clock says 11:20. 10:00 has been and gone; 11:30 is ten minutes out,
+    // inside the 15-minute lead time a salon needs to see it coming.
+    const now = at('11:20');
+    for (const target of ['10:00', '11:00', '11:30']) {
+      await assert.rejects(
+        () =>
+          rescheduleBooking(
+            db,
+            { bookingId: original.id, customerId: fx.customerIds[0]!, startAt: at(target) },
+            { now },
+          ),
+        (err: Error) => err.name === 'InvalidStartError',
+        `${target} must be refused at 11:20`,
+      );
+    }
+
+    // ...and the booking they had is still theirs.
+    assert.equal(await bookingStatus(db, original.id), 'booked');
+  });
+
+  it('respects the salon’s chairs at the new slot, not just at the old one', async (t) => {
+    if (!pool) return t.skip('no test database reachable');
+    const db = pool;
+    // Two chairs, and two other customers already at 12:00.
+    const fx = await seed(db, { onlineCapacity: 2, customers: 3 });
+    const mine = await booked(db, fx, at('11:00'), 0);
+    await booked(db, fx, at('12:00'), 1);
+
+    // One chair left at 12:00: allowed.
+    const moved = await rescheduleBooking(
+      db,
+      { bookingId: mine.id, customerId: fx.customerIds[0]!, startAt: at('12:00') },
+      { now: NOW },
+    );
+    assert.equal(hhmm(moved.booking.startAt), '12:00');
+    assert.equal(await chairsHeld(db, fx.salonId, at('12:00'), NOW), 2, 'both chairs are now taken');
+
+    // The third customer finds it full — the rescheduled booking consumes a
+    // chair exactly like any other.
+    const third = await booked(db, fx, at('10:00'), 2);
+    await assert.rejects(
+      () =>
+        rescheduleBooking(
+          db,
+          { bookingId: third.id, customerId: fx.customerIds[2]!, startAt: at('12:00') },
+          { now: NOW },
+        ),
+      SlotUnavailableError,
+    );
+  });
+
+  it('keeps every service that was booked', async (t) => {
+    if (!pool) return t.skip('no test database reachable');
+    const db = pool;
+    const fx = await seed(db, {
+      onlineCapacity: 1,
+      closeAt: '19:00',
+      services: [
+        { name: 'haircut', durationMin: 30, price: 30_000 },
+        { name: 'beard', durationMin: 20, price: 20_000 },
+      ],
+    });
+
+    const original = await createBooking(
+      db,
+      {
+        salonId: fx.salonId,
+        customerId: fx.customerIds[0]!,
+        serviceIds: [fx.serviceIds['haircut']!, fx.serviceIds['beard']!],
+        startAt: at('11:00'),
+      },
+      { now: NOW },
+    );
+    assert.equal(original.amount, 50_000);
+
+    const moved = await rescheduleBooking(
+      db,
+      { bookingId: original.id, customerId: fx.customerIds[0]!, startAt: at('14:00') },
+      { now: NOW },
+    );
+
+    const items = await db.query<{ name: string; price: number }>(
+      `SELECT s.name, bi.price FROM booking_items bi
+         JOIN services s ON s.id = bi.service_id
+        WHERE bi.booking_id = $1 ORDER BY s.name`,
+      [moved.booking.id],
+    );
+    assert.deepEqual(items.rows.map((r) => r.name), ['beard', 'haircut'], 'both services carried over');
+    assert.equal(moved.booking.amount, 50_000, 'and the total is unchanged — no second charge');
+    // The cart is longer than one slot, so this also proves the new time was
+    // checked against the whole duration rather than just its first half hour.
+    assert.equal(moved.booking.slots.length, 2);
+  });
+
+  it('shows up in the salon’s day at the new time, and only there', async (t) => {
+    if (!pool) return t.skip('no test database reachable');
+    const db = pool;
+    const fx = await seed(db, { onlineCapacity: 1 });
+    const original = await booked(db, fx, at('11:00'));
+
+    const moved = await rescheduleBooking(
+      db,
+      { bookingId: original.id, customerId: fx.customerIds[0]!, startAt: at('12:00') },
+      { now: NOW },
+    );
+
+    // The barber's Today screen: one booking, at the new time. The retired row
+    // is 'rescheduled', which listBookingsForDay does show — a salon that had
+    // an 11:00 in the book deserves to see where it went — but the live
+    // booking is the 12:00 one.
+    const day = await listBookingsForDay(db, fx.salonId, TZ, DATE);
+    const live = day.filter((b) => b.status === 'booked');
+    assert.equal(live.length, 1);
+    assert.equal(live[0]!.id, moved.booking.id);
+    assert.equal(hhmm(new Date(live[0]!.startAt)), '12:00');
+
+    const retired = day.find((b) => b.id === original.id);
+    assert.equal(retired?.status, 'rescheduled', 'the old time is not still live in the salon’s book');
   });
 });
 
