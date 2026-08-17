@@ -734,7 +734,7 @@ async function servicesView() {
   /** One row of the owner's own menu: edit in place, or take it off. */
   function myServiceRow(s) {
     const tr = el('tr');
-    const name = el('td');
+    const name = el('td', 'name-cell');
     name.append(el('div', null, s.name));
     name.append(el('div', 'meta', s.category));
     tr.append(name);
@@ -750,10 +750,22 @@ async function servicesView() {
 
     const active = el('input'); active.type = 'checkbox'; active.checked = s.active;
 
-    for (const node of [price, dur, buf]) { const td = el('td'); td.append(node); tr.append(td); }
-    const tdA = el('td'); tdA.append(active); tr.append(tdA);
+    // The label rides on the cell so the same markup can be a table on a
+    // desktop and a labelled card on a phone — see .table-cards in brand.css.
+    // A second, mobile-only rendering would be two versions of this row to
+    // keep in step, and the one that gets forgotten is always the small one.
+    for (const [node, label] of [[price, 'Price (₹)'], [dur, 'Duration'], [buf, 'Buffer']]) {
+      const td = el('td');
+      td.dataset.label = label;
+      td.append(node);
+      tr.append(td);
+    }
+    const tdA = el('td');
+    tdA.dataset.label = 'Live';
+    tdA.append(active);
+    tr.append(tdA);
 
-    const actions = el('td');
+    const actions = el('td', 'actions-cell');
     // No re-render on success: redrawing the screen would throw away the
     // "Saved" state the owner just earned, which is the whole point of it.
     const save = saveButton({
@@ -813,7 +825,7 @@ async function servicesView() {
       'Nothing on your menu yet. Add your first service below — customers see it as soon as you do.'));
     view.append(empty);
   } else {
-    const panel = el('div', 'panel scroll-x');
+    const panel = el('div', 'panel scroll-x table-cards');
     const table = el('table');
     table.innerHTML = `<thead><tr>
       <th>Service</th><th>Price (₹)</th><th>Duration</th><th>Buffer</th><th>Live</th><th></th>

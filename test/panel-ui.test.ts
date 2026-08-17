@@ -111,6 +111,68 @@ describe('salon panel — Save sits beside Remove, not above it', () => {
   });
 });
 
+/**
+ * The services menu is six columns wide. On a phone that meant scrolling
+ * sideways to reach the price, with Save parked past the right edge where
+ * nobody looks — so below 640px the same rows are cards.
+ *
+ * One markup, two layouts. A second mobile-only rendering would be two
+ * versions of the row to keep in step, and it is always the small one that
+ * goes stale.
+ */
+describe('salon panel — the services table is cards on a phone', () => {
+  const css = read('src/http/public/brand.css');
+
+  it('every cell carries its column name', () => {
+    const row = /function myServiceRow\(s\) \{[\s\S]*?\n  \}/.exec(business)?.[0] ?? '';
+    for (const label of ['Price \\(₹\\)', 'Duration', 'Buffer', 'Live']) {
+      assert.match(row, new RegExp(`'${label}'`), `${label} must be on the cell as a label`);
+    }
+    assert.match(row, /td\.dataset\.label = label/);
+    assert.match(row, /tdA\.dataset\.label = 'Live'/);
+  });
+
+  it('and the labels are what the card prints instead of a header row', () => {
+    const block = /@media \(max-width: 640px\) \{[\s\S]*?\n\}/.exec(css)?.[0] ?? '';
+    assert.notEqual(block, '', 'no card layout found');
+    assert.match(block, /\.table-cards thead \{ display: none; \}/);
+    assert.match(block, /content: attr\(data-label\)/);
+    assert.match(block, /\.table-cards tr \{[^}]*border-radius/, 'each row becomes a card');
+  });
+
+  it('stops the sideways scroll rather than keeping it', () => {
+    const block = /@media \(max-width: 640px\) \{[\s\S]*?\n\}/.exec(css)?.[0] ?? '';
+    // .scroll-x is still on the panel for the desktop table; the card layout
+    // turns it off, or the cards would sit in a scroller with nothing to
+    // scroll to.
+    assert.match(block, /\.table-cards \{[^}]*overflow-x: visible/);
+    assert.match(business, /'panel scroll-x table-cards'/);
+  });
+
+  it('keeps the service name as the card heading, not a labelled field', () => {
+    const block = /@media \(max-width: 640px\) \{[\s\S]*?\n\}/.exec(css)?.[0] ?? '';
+    assert.match(block, /\.table-cards td\.name-cell::before \{ content: none; \}/);
+    assert.match(business, /el\('td', 'name-cell'\)/);
+  });
+
+  it('gives the actions the full card width, still side by side', () => {
+    const block = /@media \(max-width: 640px\) \{[\s\S]*?\n\}/.exec(css)?.[0] ?? '';
+    assert.match(block, /\.actions-cell \.row-actions \{ width: 100%; \}/);
+    assert.match(block, /\.actions-cell \.row-actions \.btn \{ flex: 1; \}/);
+    // .row-actions itself is never allowed to wrap, at any width.
+    assert.match(css, /\.row-actions \{[^}]*flex-wrap: nowrap/);
+    assert.match(business, /el\('td', 'actions-cell'\)/);
+  });
+
+  it('changes nothing above the breakpoint', () => {
+    // The card rules live entirely inside the media query — a desktop still
+    // gets a real table with a header row.
+    const outside = css.replace(/@media[^{]*\{[\s\S]*?\n\}/g, '');
+    assert.doesNotMatch(outside, /\.table-cards thead/);
+    assert.doesNotMatch(outside, /content: attr\(data-label\)/);
+  });
+});
+
 describe('salon panel — no-show policy is not the salon owner’s to set', () => {
   it('the no-show rate tile is gone from the owner’s insights', () => {
     const insights = /async function insightsView\(\)[\s\S]*?\n}/.exec(business)?.[0] ?? '';
