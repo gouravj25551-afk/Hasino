@@ -332,21 +332,9 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
   // empty `relation` list is a positive statement that no app may handle
   // these links, and Android caches it.
   if (read && path === '/.well-known/assetlinks.json') {
-    const fingerprints = (process.env['ANDROID_CERT_FINGERPRINTS'] ?? '')
-      .split(',')
-      .map((f) => f.trim().toUpperCase())
-      .filter(Boolean);
-    if (fingerprints.length === 0) throw new HttpError(404, 'Not found');
-    return json(res, 200, [
-      {
-        relation: ['delegate_permission/common.handle_all_urls'],
-        target: {
-          namespace: 'android_app',
-          package_name: process.env['ANDROID_PACKAGE'] ?? 'com.hasino.app',
-          sha256_cert_fingerprints: fingerprints,
-        },
-      },
-    ]);
+    const statements = assetLinkStatements();
+    if (!statements) throw new HttpError(404, 'Not found');
+    return json(res, 200, statements);
   }
 
   // Clerk's publishable key is not secret — it ships to every browser by
@@ -832,6 +820,35 @@ function isoDate(value: unknown): Date {
  * detail: an unexpected error's message can contain a SQL fragment or a
  * connection string, and the customer does not need either.
  */
+/**
+ * The Digital Asset Links statement, or null when there is nothing to say.
+ *
+ * Read from env on every request rather than at boot so the value can be added
+ * to a running deployment without a restart — the whole failure this addresses
+ * is that it was never set at all, and the endpoint 404'd in production while
+ * the APK sat there claiming links nobody vouched for.
+ *
+ * Null rather than an empty list: `relation: []` is a positive statement that
+ * NO app may handle these links, and Android caches the answer.
+ */
+export function assetLinkStatements(): unknown[] | null {
+  const fingerprints = (process.env['ANDROID_CERT_FINGERPRINTS'] ?? '')
+    .split(',')
+    .map((f) => f.trim().toUpperCase())
+    .filter(Boolean);
+  if (fingerprints.length === 0) return null;
+  return [
+    {
+      relation: ['delegate_permission/common.handle_all_urls'],
+      target: {
+        namespace: 'android_app',
+        package_name: process.env['ANDROID_PACKAGE'] ?? 'com.hasino.app',
+        sha256_cert_fingerprints: fingerprints,
+      },
+    },
+  ];
+}
+
 export function respondToError(res: ServerResponse, err: unknown): void {
   if (res.headersSent) return;
 

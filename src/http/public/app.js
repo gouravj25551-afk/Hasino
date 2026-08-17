@@ -15,8 +15,10 @@ import {
   completeRedirectCallback,
   signOut,
   isNativeApp,
+  isAndroidBrowser,
   callbackWantsNativeApp,
   nativeCallbackUrl,
+  nativeCallbackIntentUrl,
 } from './lib/auth.js';
 import { TopBar, highlightTopBarNav } from './components/TopBar.js';
 import { LocationSheet } from './components/LocationSheet.js';
@@ -265,7 +267,8 @@ installBackHandler({
  * the handshake perfectly well; the session would just be in the wrong place.
  */
 function handOffToNativeApp() {
-  const url = nativeCallbackUrl();
+  const intentUrl = nativeCallbackIntentUrl();
+  const schemeUrl = nativeCallbackUrl();
 
   viewRoot.innerHTML = '';
   const card = el('div', 'panel');
@@ -273,10 +276,17 @@ function handOffToNativeApp() {
   card.append(el('h1', null, 'Signed in'));
   card.append(el('p', 'sub', 'Returning you to the Hasino app…'));
 
+  // The intent: form first — it is the one Chrome on Android is built to
+  // honour. The scheme link below it is for the browsers that are not Chrome.
   const back = el('a', 'btn primary', 'Open the Hasino app');
-  back.href = url;
+  back.href = intentUrl;
   back.style.marginTop = '20px';
   card.append(back);
+
+  const alt = el('a', 'btn sm', 'Open with hasino://');
+  alt.href = schemeUrl;
+  alt.style.cssText = 'margin-top:10px; display:inline-block';
+  card.append(alt);
 
   card.append(
     Object.assign(
@@ -286,11 +296,32 @@ function handOffToNativeApp() {
       { style: 'margin-top:20px; text-align:left' },
     ),
   );
+
+  // The way out for someone who has no Hasino app on this device: an Android
+  // browser is only a hint that the app might be there, so this page must not
+  // be a dead end for a person who signed in on the web. It finishes the
+  // handshake here instead, which is what would have happened anyway.
+  const stay = el('button', 'btn sm');
+  stay.type = 'button';
+  stay.textContent = 'Continue in this browser instead';
+  stay.style.marginTop = '14px';
+  stay.onclick = async () => {
+    stay.disabled = true;
+    try {
+      await completeRedirectCallback();
+    } catch (err) {
+      console.error('sign-in could not be completed', err);
+      sessionStorage.setItem('ssoError', err?.message ?? 'Sign-in could not be completed');
+      location.replace('/#/login');
+    }
+  };
+  card.append(stay);
+
   viewRoot.append(card);
 
   // location.replace, not assign: the callback URL must not sit in history
   // where Back would replay a consumed one-time code.
-  window.location.replace(url);
+  window.location.replace(intentUrl);
 }
 
 async function boot() {
@@ -315,7 +346,13 @@ async function boot() {
     // hold: no network at install time, a sideloaded build, a device that
     // never rechecked. Handing the callback on by scheme needs no
     // verification and cannot fail that way.
-    if (callbackWantsNativeApp() && !isNativeApp()) {
+    // Two signals, either one is enough. `?native=1` is the precise one, set
+    // when the sign-in started in the app — but it has to survive Clerk and
+    // Google, and if it is dropped the browser silently finishes the sign-in
+    // and the app stays signed out, which is the bug rather than a detail. An
+    // Android browser on this page is the second signal; the hand-off screen
+    // it leads to can always be declined.
+    if (!isNativeApp() && (callbackWantsNativeApp() || isAndroidBrowser())) {
       return handOffToNativeApp();
     }
 

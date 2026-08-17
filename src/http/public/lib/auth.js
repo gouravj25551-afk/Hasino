@@ -165,6 +165,40 @@ export function isRedirectCallback() {
 }
 
 /**
+ * An Android browser, as opposed to a desktop one or the app itself.
+ *
+ * Used on the callback page to decide whether offering to hand the sign-in
+ * back to the app makes any sense. `?native=1` is the precise signal, but it
+ * has to survive a round trip through Clerk and Google and is not ours to
+ * guarantee — and when it goes missing the symptom is the whole bug this
+ * exists to prevent: the browser finishes the sign-in and the app is still
+ * signed out. An Android browser is a good enough second signal, because the
+ * cost of offering the hand-off to an Android user who has no app installed is
+ * one extra button next to "continue in this browser".
+ */
+export function isAndroidBrowser() {
+  return /\bAndroid\b/.test(navigator.userAgent) && !isNativeApp();
+}
+
+/**
+ * The same hand-off as an Android intent: URL.
+ *
+ * Chrome routinely refuses a scripted navigation to an unowned scheme like
+ * `hasino://` — it fires nothing and reports nothing, which is exactly how a
+ * user ends up parked on the callback page. An intent: URL naming the package
+ * is the form Chrome is built to honour, and it carries the same query string
+ * to the same place. Both are offered: the intent for Chrome, the scheme for
+ * the browsers that do not implement intent:.
+ */
+export function nativeCallbackIntentUrl() {
+  const query = window.location.search.replace(/^\?/, '');
+  return (
+    `intent://${CALLBACK_PATH.slice(1)}${query ? `?${query}` : ''}` +
+    `#Intent;scheme=${NATIVE_SCHEME};package=com.hasino.app;end`
+  );
+}
+
+/**
  * True when this callback belongs to a sign-in that started in the app.
  *
  * Set on the way out, read on the way back — the browser that lands here has

@@ -215,8 +215,13 @@ describe('the OAuth return comes back into the Android app', () => {
     assert.match(server, /\/\.well-known\/assetlinks\.json/);
     assert.match(server, /delegate_permission\/common\.handle_all_urls/);
     // An empty fingerprint list is a positive "no app may handle these links",
-    // and Android caches it. 404 leaves the question open.
-    assert.match(server, /if \(fingerprints\.length === 0\) throw new HttpError\(404/);
+    // and Android caches it. 404 leaves the question open. The rule itself now
+    // lives in assetLinkStatements(), which test/app-links.test.ts drives
+    // directly; what this file still holds is that the route serves it and
+    // that "nothing to declare" is a 404 rather than an empty declaration.
+    assert.match(server, /const statements = assetLinkStatements\(\);/);
+    assert.match(server, /if \(!statements\) throw new HttpError\(404/);
+    assert.match(server, /if \(fingerprints\.length === 0\) return null;/);
   });
 });
 

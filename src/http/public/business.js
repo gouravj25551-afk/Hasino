@@ -233,13 +233,39 @@ function noShowButton(booking, serverTime, graceMin, send) {
   }
 
   ns.disabled = true;
-  ns.textContent = `No-show after ${time(booking.noShowAvailableAt)}`;
   ns.title = `A customer gets ${graceMin} minutes past their booking time before they can be marked absent.`;
 
-  // Only worth a timer for a booking that is nearly there. A booking later
-  // today is re-evaluated whenever the screen is next drawn.
+  // Counted down, not just stated: a barber standing at the counter wants to
+  // know how long, and "in 8 min" answers that where a clock time makes them
+  // work it out. Far-off bookings get the time instead — "in 214 min" is not
+  // an answer anybody wanted.
+  const paint = () => {
+    const leftMs = availableAt - serverTime();
+    if (leftMs <= 0) return arm();
+    const mins = Math.ceil(leftMs / 60_000);
+    ns.textContent = mins <= 60 ? `No-show in ${mins} min` : `No-show after ${time(booking.noShowAvailableAt)}`;
+  };
+  paint();
+
+  // Ticks while the wait is short enough to be watched, and arms itself on the
+  // minute — the barber should not have to reload the screen to be allowed to
+  // do the thing the screen is telling them they may do shortly.
   const wait = availableAt - serverTime();
-  if (wait <= 60 * 60_000) setTimeout(arm, wait + 1000);
+  if (wait <= 60 * 60_000) {
+    const tick = setInterval(() => {
+      if (!ns.isConnected) return clearInterval(tick);
+      if (availableAt - serverTime() <= 0) {
+        clearInterval(tick);
+        arm();
+        return;
+      }
+      paint();
+    }, 15_000);
+    setTimeout(() => {
+      clearInterval(tick);
+      arm();
+    }, wait + 1000);
+  }
   return ns;
 }
 

@@ -71,6 +71,27 @@ services:
         sync: false
       - key: ADMIN_EMAILS
         sync: false
+      # Android App Links. Without these two the server 404s
+      # /.well-known/assetlinks.json, Android cannot verify that this site and
+      # the Hasino app are the same publisher, and the OAuth return therefore
+      # stays in the browser — the user signs in in Chrome while the app they
+      # started from is still signed out. That is the whole bug; the APK has
+      # claimed these links since the first Android build.
+      #
+      # ANDROID_CERT_FINGERPRINTS is the SHA-256 of the certificate the APK
+      # was signed with, uppercase hex with colons, comma-separated when there
+      # is more than one. A debug APK and a release APK have different
+      # certificates: list both while you are sideloading debug builds, or the
+      # build on the phone is not the build the site vouches for.
+      #
+      #   apksigner verify --print-certs app-debug.apk
+      #
+      # Not hardcoded here because it is per keystore, and a wrong value fails
+      # closed rather than loudly — links quietly open in the browser again.
+      - key: ANDROID_CERT_FINGERPRINTS
+        sync: false
+      - key: ANDROID_PACKAGE
+        value: com.hasino.app
 
   # ------------------------------------------------------------------ admin
   # The admin panel, hosted. Same repo, same image, different process: the

@@ -108,6 +108,50 @@ describe('no-show — the 15-minute grace period', () => {
     assert.equal(await bookingStatus(db, booking.id), 'booked');
   });
 
+  it('refuses at 14 minutes 59 seconds and allows at 15:00 exactly', async (t) => {
+    if (!pool) return t.skip('no test database reachable');
+    const db = pool;
+    const fx = await seed(db, { onlineCapacity: 1 });
+    const booking = await bookedAt11(db, fx);
+
+    // The boundary, to the second. A minute-granular check would pass both of
+    // these and the rule would be "14 minutes" on a bad day.
+    const oneSecondEarly = new Date(at('11:15').getTime() - 1000);
+    await assert.rejects(
+      transition(db, fx.salonId, booking.id, 'no_show', { now: oneSecondEarly }),
+      NoShowTooEarlyError,
+    );
+    assert.equal(await bookingStatus(db, booking.id), 'booked');
+
+    const exactly = await transition(db, fx.salonId, booking.id, 'no_show', { now: at('11:15') });
+    assert.equal(exactly.status, 'no_show');
+  });
+
+  it("another salon cannot mark this salon's booking absent", async (t) => {
+    if (!pool) return t.skip('no test database reachable');
+    const db = pool;
+    const fx = await seed(db, { onlineCapacity: 1 });
+    const booking = await bookedAt11(db, fx);
+
+    const stranger = await db.query<{ id: string }>(
+      `INSERT INTO users (phone, name, email, role)
+       VALUES ('+919000000077', 'Stranger', 'stranger@example.test', 'business') RETURNING id`,
+    );
+    const strangerSalon = await db.query<{ id: string }>(
+      `INSERT INTO salons (owner_id, name, address, lat, lng, status)
+       VALUES ($1, 'Not Your Salon', 'Elsewhere', 12.9, 77.6, 'active') RETURNING id`,
+      [stranger.rows[0]!.id],
+    );
+
+    // Well past the grace period, and still refused: the booking is scoped to
+    // the salon before the clock is even consulted.
+    await assert.rejects(
+      transition(db, strangerSalon.rows[0]!.id, booking.id, 'no_show', { now: at('12:00') }),
+      (err: unknown) => err instanceof Error && err.name === 'BookingNotFoundError',
+    );
+    assert.equal(await bookingStatus(db, booking.id), 'booked');
+  });
+
   it('allows the no-show exactly on the fifteenth minute', async (t) => {
     if (!pool) return t.skip('no test database reachable');
     const db = pool;
