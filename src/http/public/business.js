@@ -109,7 +109,7 @@ function renderNotAnOwner(err) {
 
 const routes = {
   '#/today': todayView, '#/services': servicesView, '#/timings': timingsView,
-  '#/insights': insightsView, '#/payouts': payoutsView,
+  '#/insights': insightsView, '#/payouts': payoutsView, '#/profile': profileView,
 };
 
 /**
@@ -499,6 +499,211 @@ function salonImagePanel(salon) {
   return panel;
 }
 
+/* ---------- profile: the salon as customers see it ---------- */
+
+/**
+ * One screen for what a salon *is*, as opposed to what it is doing today.
+ *
+ * Everything here writes the same salons row the customer app reads, so the
+ * name, photo, description and address a customer sees are these. Nothing is
+ * duplicated: the photo panel is the one the Today screen uses, timings and
+ * services are links to the screens that own them, and the save buttons are
+ * the same helper — "Saved" only after the server says so.
+ *
+ * Two things are deliberately not editable. The account the owner signs in
+ * with, because that is Clerk's and changing it here would let a salon point
+ * itself at a different identity; and anything about no-show refunds, which is
+ * Hasino's policy and never the salon's to set.
+ */
+async function profileView() {
+  const view = $('#view');
+  view.innerHTML = '';
+
+  const salon = await api('/api/business/profile');
+  tz = salon.timezone;
+
+  view.append(el('h1', null, 'Profile'));
+  view.append(el('p', 'sub', 'What customers see when they find your salon.'));
+
+  if (salon.status !== 'active') {
+    view.append(el('div', 'note',
+      salon.status === 'pending'
+        ? 'Your salon is still under review. You can fill this in now — it is what the reviewer reads.'
+        : `This salon is ${salon.status}.`));
+  }
+
+  // ---- the photo, from the panel the Today screen already uses ----
+  view.append(salonImagePanel(salon));
+
+  // ---- name, description ----
+  const about = el('div', 'panel');
+  about.append(el('h2', null, 'Salon details'));
+
+  const field = (label, node, hint) => {
+    const wrap = el('label', 'field');
+    wrap.append(el('span', null, label));
+    wrap.append(node);
+    if (hint) wrap.append(el('div', 'meta', hint));
+    return wrap;
+  };
+  const input = (value, placeholder = '', attrs = {}) => {
+    const i = el('input');
+    i.type = 'text';
+    i.value = value ?? '';
+    i.placeholder = placeholder;
+    Object.assign(i, attrs);
+    return i;
+  };
+
+  const name = input(salon.name, 'Sharma Hair Studio', { maxLength: 120 });
+  const description = el('textarea');
+  description.value = salon.description ?? '';
+  description.rows = 4;
+  description.maxLength = 2000;
+  description.placeholder = 'Two chairs, open since 2019. Fades, beard work and colour.';
+  description.style.cssText = 'width:100%; font:inherit; padding:10px 12px; border-radius:10px; '
+    + 'border:1px solid var(--line); background:var(--surface); color:var(--text)';
+
+  const address = input(salon.address, '12 MG Road, Indiranagar');
+  const city = input(salon.city, 'Bengaluru');
+  const area = input(salon.area, 'Indiranagar');
+  const phone = input(salon.phone, '+918012345678');
+  const salonEmail = input(salon.email, 'salon@example.com', { type: 'email' });
+
+  const grid = el('div', 'grid two');
+  grid.append(field('Salon name', name));
+  grid.append(field('Phone customers can call', phone));
+  about.append(grid);
+  about.append(field('About your salon', description,
+    'Shown on your page. What you are known for, in a sentence or two.'));
+
+  const locationGrid = el('div', 'grid two');
+  locationGrid.append(field('Address', address, 'Changing this re-places your pin on the map.'));
+  locationGrid.append(field('City', city, 'What customers filter by — keep it the real city name.'));
+  locationGrid.append(field('Area', area, 'Optional. The neighbourhood, for search.'));
+  locationGrid.append(field('Salon email', salonEmail, 'For customers. Not your sign-in.'));
+  about.append(locationGrid);
+
+  const detailStatus = el('div');
+  const saveDetails = saveButton({
+    watch: [name, description, address, city, area, phone, salonEmail],
+    snapshot: () =>
+      [name.value, description.value, address.value, city.value, area.value, phone.value, salonEmail.value].join('|'),
+    submit: async () => {
+      detailStatus.innerHTML = '';
+      const result = await api('/api/business/profile', {
+        method: 'PUT',
+        body: JSON.stringify({
+          name: name.value.trim(),
+          description: description.value.trim() || null,
+          address: address.value.trim(),
+          city: city.value.trim(),
+          area: area.value.trim() || null,
+          phone: phone.value.trim() || null,
+          email: salonEmail.value.trim() || null,
+        }),
+      });
+      if (result.geocoded) {
+        detailStatus.append(el('div', 'out ok', 'Saved. Your map pin was moved to the new address.'));
+      }
+    },
+    onError: (err) => toast(view, err.message, true),
+  });
+  saveDetails.style.marginTop = '12px';
+  about.append(saveDetails, detailStatus);
+  view.append(about);
+
+  // ---- who this account is ----
+  const identity = el('div', 'panel');
+  identity.append(el('h2', null, 'Account'));
+  const who = el('div', 'list');
+  const row = (label, value) => {
+    const item = el('div', 'item');
+    item.append(el('div', 'grow', label));
+    item.append(el('span', 'meta', value || '—'));
+    return item;
+  };
+  who.append(row('Signed in as', salon.account.email));
+  if (salon.account.name) who.append(row('Name on the account', salon.account.name));
+  who.append(row('Timezone', salon.timezone));
+  identity.append(who);
+  identity.append(el('div', 'note',
+    'Your salon is tied to the Google account you sign in with, and that link is what makes this '
+    + 'panel yours. It cannot be changed here — contact Hasino support if the salon needs to move '
+    + 'to a different account.'));
+  view.append(identity);
+
+  // ---- chairs ----
+  const chairsPanel = el('div', 'panel');
+  chairsPanel.append(el('h2', null, 'Chairs'));
+  chairsPanel.append(el('p', 'sub',
+    'How many customers you can serve at the same time. A 10:00 slot takes this many bookings before it is full.'));
+
+  if (salon.chairsVary) {
+    chairsPanel.append(el('div', 'note',
+      'Your chair count is different on different days, which is deliberate enough that this screen '
+      + 'will not flatten it. Edit each day under Timings.'));
+    const toTimings = el('a', 'btn sm', 'Open Timings →');
+    toTimings.href = '#/timings';
+    chairsPanel.append(toTimings);
+  } else {
+    const chairs = el('input');
+    chairs.type = 'number';
+    chairs.min = '0';
+    chairs.max = '50';
+    chairs.value = salon.chairs ?? 1;
+    chairs.style.maxWidth = '120px';
+    const chairStatus = el('div');
+
+    const saveChairs = saveButton({
+      watch: [chairs],
+      snapshot: () => String(chairs.value),
+      submit: async () => {
+        chairStatus.innerHTML = '';
+        const result = await api('/api/business/chairs', {
+          method: 'PUT',
+          body: JSON.stringify({ chairs: Number(chairs.value) }),
+        });
+        chairStatus.append(el('div', 'out ok', `Applied to ${result.weekdaysUpdated} working day(s).`));
+      },
+      onError: (err) => {
+        // The one refusal worth explaining in place rather than as a toast:
+        // it is about bookings the owner already has.
+        chairStatus.innerHTML = '';
+        chairStatus.append(el('div', 'out bad', err.message));
+      },
+    });
+    saveChairs.style.marginTop = '12px';
+
+    chairsPanel.append(field('Chairs available to online booking', chairs,
+      `Applied to all ${salon.workingDays} day(s) you are open.`));
+    chairsPanel.append(saveChairs, chairStatus);
+    chairsPanel.append(el('div', 'note',
+      'Lowering this is refused when you already have more bookings than that sharing a slot — '
+      + 'those customers have a chair, and taking it away here would only surprise you on the day.'));
+  }
+  view.append(chairsPanel);
+
+  // ---- the screens that own the rest ----
+  const links = el('div', 'panel');
+  links.append(el('h2', null, 'Manage'));
+  const list = el('div', 'list');
+  const linkRow = (label, hint, href) => {
+    const item = el('a', 'item');
+    item.href = href;
+    item.style.cssText = 'text-decoration:none; color:inherit';
+    const grow = el('div', 'grow');
+    grow.append(el('div', null, label));
+    grow.append(el('div', 'meta', hint));
+    item.append(grow, el('span', 'meta', '→'));
+    return item;
+  };
+  list.append(linkRow('Services', 'Your menu, prices and durations', '#/services'));
+  list.append(linkRow('Timings & capacity', 'Opening hours, breaks, slot size and holidays', '#/timings'));
+  links.append(list);
+  view.append(links);
+}
+
 /* ---------- screen 1: service setup ---------- */
 async function servicesView() {
   const view = $('#view');
@@ -570,8 +775,7 @@ async function servicesView() {
       onError: (err) => toast(view, err.message, true),
     });
 
-    const remove = el('button', 'btn sm', 'Remove');
-    remove.style.marginLeft = '8px';
+    const remove = el('button', 'btn sm danger', 'Remove');
     remove.onclick = async () => {
       // Removing a service is not the same as unticking Live, and the
       // difference is worth one question: Live keeps the price for later,
@@ -591,7 +795,12 @@ async function servicesView() {
       } catch (err) { toast(view, err.message, true); }
     };
 
-    actions.append(save, remove);
+    // Side by side, and staying that way: a Save stacked on top of a Remove
+    // reads as a list of two unrelated things, and puts a destructive button
+    // directly under the one the owner taps most.
+    const pair = el('div', 'row-actions');
+    pair.append(save, remove);
+    actions.append(pair);
     tr.append(actions);
     return tr;
   }

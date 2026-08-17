@@ -38,11 +38,29 @@ describe('salon panel — Save means saved', () => {
     assert.match(helper, /snapshot\(\) === savedAt/, 'saved-ness is a comparison against what was saved');
   });
 
-  it('both salon settings forms use it', () => {
+  it('every salon-owner form with a Save goes through it', () => {
     // Services: price, duration, buffer, live.
     assert.match(business, /watch: \[price, dur, buf, active\]/);
     // Timings: the whole day card, capacity and slot size included.
     assert.match(business, /watch: \[working, open, close, bs, be, cap, iv\]/);
+    // Profile: the salon's details, and its chair count.
+    assert.match(business, /watch: \[name, description, address, city, area, phone, salonEmail\]/);
+    assert.match(business, /watch: \[chairs\]/);
+
+    // And nothing hand-rolls a save button beside them: every "Save" label in
+    // the panel comes from the helper, so none of them can drift into
+    // announcing success before the server has agreed.
+    const handRolled = business.match(/el\('button',[^)]*,\s*'Save[^']*'\)/g) ?? [];
+    assert.deepEqual(handRolled, [], `hand-rolled save buttons: ${handRolled.join(', ')}`);
+  });
+
+  it('keeps what the owner typed when a save fails', () => {
+    const helper = /function saveButton\([\s\S]*?\n}/.exec(business)?.[0] ?? '';
+    // Nothing in the failure path clears or re-reads the inputs — the values
+    // stay on screen so the owner can fix one field and press Save again.
+    const failurePath = /catch \(err\) \{[\s\S]*?\n    \}/.exec(helper)?.[0] ?? '';
+    assert.match(failurePath, /onError/);
+    assert.doesNotMatch(failurePath, /\.value\s*=|innerHTML/);
   });
 
   it('saving a service no longer redraws the screen out from under it', () => {
@@ -50,6 +68,46 @@ describe('salon panel — Save means saved', () => {
     assert.notEqual(row, '', 'myServiceRow() not found');
     const saveBlock = /saveButton\(\{[\s\S]*?\}\);/.exec(row)?.[0] ?? '';
     assert.doesNotMatch(saveBlock, /servicesView\(\)/, 'a re-render would discard the Saved state');
+  });
+});
+
+describe('salon panel — Save sits beside Remove, not above it', () => {
+  const css = read('src/http/public/brand.css');
+
+  it('the service row puts both actions in one flex row', () => {
+    const row = /function myServiceRow\(s\) \{[\s\S]*?\n  \}/.exec(business)?.[0] ?? '';
+    assert.match(row, /el\('div', 'row-actions'\)/);
+    assert.match(row, /pair\.append\(save, remove\)/);
+    // The old version spaced them with a margin and let the cell wrap.
+    assert.doesNotMatch(row, /remove\.style\.marginLeft/);
+  });
+
+  it('and that row refuses to wrap', () => {
+    const rule = /\.row-actions \{[^}]*\}/.exec(css)?.[0] ?? '';
+    assert.notEqual(rule, '', '.row-actions rule not found');
+    assert.match(rule, /display: flex/);
+    assert.match(rule, /flex-wrap: nowrap/);
+    assert.match(rule, /gap:/);
+    assert.match(rule, /align-items: center/);
+  });
+
+  it('tightens on a narrow phone instead of stacking', () => {
+    const narrow = /@media \(max-width: 560px\) \{\s*\.row-actions[\s\S]*?\n\}/.exec(css)?.[0] ?? '';
+    assert.notEqual(narrow, '', 'no narrow-screen rule for .row-actions');
+    assert.match(narrow, /padding-left|padding-right|font-size/);
+    // Smaller, but never below a thumb: the base rule keeps the hit area.
+    assert.match(css, /\.row-actions \.btn \{[^}]*min-height: 40px/);
+  });
+
+  it('keeps Remove visually distinct without making it loud', () => {
+    const row = /function myServiceRow\(s\) \{[\s\S]*?\n  \}/.exec(business)?.[0] ?? '';
+    assert.match(row, /'btn sm danger', 'Remove'/);
+    assert.match(css, /\.btn\.danger \{/);
+  });
+
+  it('and Saved reads as a state rather than a dead button', () => {
+    assert.match(css, /\.btn\.is-saved/);
+    assert.match(business, /classList\.toggle\('is-saved', saved\)/);
   });
 });
 

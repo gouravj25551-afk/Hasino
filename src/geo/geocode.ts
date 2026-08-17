@@ -33,7 +33,19 @@ export interface Place {
   label: string;
 }
 
-const BASE = process.env['GEOCODER_URL'] ?? 'https://nominatim.openstreetmap.org';
+/**
+ * Read per call rather than captured at import.
+ *
+ * The provider is meant to be swappable — Nominatim, Mapbox, a self-hosted
+ * instance — and a module-load capture means an operator repointing it has to
+ * restart the process to be sure it took. It also makes the outage path
+ * testable: a test can point this at a closed port and assert that a failed
+ * lookup leaves the salon's existing coordinates alone rather than zeroing
+ * them.
+ */
+function geocoderBase(): string {
+  return process.env['GEOCODER_URL'] ?? 'https://nominatim.openstreetmap.org';
+}
 
 /**
  * Nominatim asks for an identifying User-Agent and refuses anonymous traffic.
@@ -112,7 +124,7 @@ function toPlace(raw: NominatimPlace): Place | null {
 }
 
 async function call(path: string, params: Record<string, string>): Promise<unknown> {
-  const url = new URL(path, BASE);
+  const url = new URL(path, geocoderBase());
   for (const [k, v] of Object.entries({ format: 'jsonv2', addressdetails: '1', ...params })) {
     url.searchParams.set(k, v);
   }

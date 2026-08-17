@@ -5,6 +5,7 @@ import type { SnapshotCache } from '../availability/cache.ts';
 import { localDateKey } from '../time/tz.ts';
 import { NO_SHOW_GRACE_MIN, closeForDay, transition, type BookingStatus } from '../booking/status.ts';
 import {
+  ChairsBelowBookedError,
   addHoliday,
   addSalonService,
   dayBounds,
@@ -15,9 +16,13 @@ import {
   listServiceSetup,
   removeHoliday,
   removeService,
+  peakFutureChairUsage,
   salonForOwner,
+  salonProfile,
   salonStats,
   saveHours,
+  setChairsEveryDay,
+  updateSalonProfile,
   upsertService,
 } from '../business/repo.ts';
 import { listPayouts, salonBalance, salonEarnings, salonLedger } from '../payments/ledger.ts';
@@ -52,6 +57,63 @@ export async function businessRoutes(
       listBookingsForDay(db, salon.id, salon.timezone, today),
     ]);
     json(res, 200, { salon, today, stats, todayCount: bookings.length });
+    return true;
+  }
+
+  // ---- the salon's profile ----
+  //
+  // Reads and writes the salon row the customer app already reads, so an edit
+  // here is what a customer sees. `salon.id` comes from salonForOwner above —
+  // the authenticated owner — so there is no salon id in either request for
+  // anyone to swap for somebody else's.
+  if (tail[0] === 'profile' && tail.length === 1) {
+    if (method === 'GET') {
+      json(res, 200, await salonProfile(db, salon.id));
+      return true;
+    }
+    if (method === 'PUT') {
+      const body = await readJson(req);
+      try {
+        const result = await updateSalonProfile(db, salon.id, {
+          name: str(body, 'name'),
+          description: (body['description'] as string | null) ?? null,
+          address: str(body, 'address'),
+          city: str(body, 'city'),
+          area: (body['area'] as string | null) ?? null,
+          phone: (body['phone'] as string | null) ?? null,
+          email: (body['email'] as string | null) ?? null,
+          // Note what is absent: the account this owner signs in with. That is
+          // Clerk's, resolved server-side on every request, and a form on this
+          // screen must not be able to point a salon at a different identity.
+        });
+        // The address may have moved the pin, and the availability window is
+        // keyed by salon; cheap insurance either way.
+        await cache.invalidate(salon.id);
+        json(res, 200, { ok: true, ...result, salon: await salonProfile(db, salon.id) });
+      } catch (err) {
+        throw new HttpError(400, (err as Error).message);
+      }
+      return true;
+    }
+  }
+
+  // PUT /api/business/chairs — capacity as one number across the working week.
+  //
+  // Refused when it would drop below what future bookings already occupy: the
+  // customers holding those chairs booked in good faith, and silently putting
+  // a salon over its own capacity is a problem the barber meets on the day.
+  if (method === 'PUT' && tail[0] === 'chairs' && tail.length === 1) {
+    const body = await readJson(req);
+    try {
+      const result = await setChairsEveryDay(db, salon.id, int(body, 'chairs'));
+      await cache.invalidate(salon.id);
+      json(res, 200, { ok: true, ...result });
+    } catch (err) {
+      if (err instanceof ChairsBelowBookedError) {
+        throw new HttpError(409, err.message, err.code);
+      }
+      throw new HttpError(400, (err as Error).message);
+    }
     return true;
   }
 
@@ -133,6 +195,27 @@ export async function businessRoutes(
     if (method === 'PUT' && tail.length === 2) {
       const weekday = Number(tail[1]);
       const body = await readJson(req);
+
+      // The same protection the Profile screen's chair control has, because
+      // this is the other way an owner can lower capacity. Only on the way
+      // down: a salon that already has three bookings sharing a slot next
+      // Tuesday cannot declare two chairs for Tuesdays.
+      //
+      // Deliberately not inside saveHours(): the admin route calls that too,
+      // and an operator fixing a salon's data is doing so knowingly. This is
+      // the owner's own screen.
+      const requested = int(body, 'onlineCapacity');
+      const working = bool(body, 'working');
+      if (working) {
+        const { peak } = await peakFutureChairUsage(db, salon.id, {
+          weekday,
+          timezone: salon.timezone,
+        });
+        if (requested < peak) {
+          throw new HttpError(409, new ChairsBelowBookedError(peak, null).message, 'CHAIRS_BELOW_BOOKED');
+        }
+      }
+
       try {
         await saveHours(db, salon.id, weekday, {
           working: bool(body, 'working'),

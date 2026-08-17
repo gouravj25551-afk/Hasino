@@ -1,6 +1,8 @@
 import type { Pool, PoolClient } from '../db/pool.ts';
 import { addDays, localDateKey, zonedTimeToUtc } from '../time/tz.ts';
 import { noShowAvailableAt } from '../booking/status.ts';
+import { chairConsumingSql } from '../booking/occupancy.ts';
+import { resolveCoords } from '../admin/repo.ts';
 
 type Queryable = Pool | PoolClient;
 
@@ -50,6 +52,164 @@ export async function salonForOwner(
     commissionBps: row.commission_bps,
     coverImage: row.cover_url,
   };
+}
+
+// ---------- the salon's own profile ----------
+
+/**
+ * Everything the owner's Profile screen shows, from the salon row it already
+ * has. No new table and no second copy: these are the same columns the
+ * customer app reads for the salon card and detail page, which is what makes
+ * an edit here visible there.
+ *
+ * The email is the salon's own contact address (salons.email), not the account
+ * the owner signs in with — that one belongs to Clerk and is never editable
+ * from a form. The account identity is reported separately so the screen can
+ * say whose it is without offering to change it.
+ */
+export async function salonProfile(db: Queryable, salonId: string) {
+  const res = await db.query<{
+    id: string;
+    name: string;
+    description: string | null;
+    address: string;
+    city: string | null;
+    area: string | null;
+    lat: number;
+    lng: number;
+    phone: string | null;
+    email: string | null;
+    timezone: string;
+    status: string;
+    cover_url: string | null;
+    owner_email: string | null;
+    owner_name: string | null;
+    chairs: number[];
+    working_days: number;
+  }>(
+    `SELECT s.id, s.name, s.description, s.address, s.city, s.area, s.lat, s.lng,
+            s.phone, s.email, s.timezone, s.status, s.cover_url,
+            u.email AS owner_email, u.name AS owner_name,
+            coalesce(
+              (SELECT array_agg(DISTINCT sh.online_capacity) FROM salon_hours sh WHERE sh.salon_id = s.id),
+              '{}'
+            ) AS chairs,
+            (SELECT count(*)::int FROM salon_hours sh WHERE sh.salon_id = s.id) AS working_days
+       FROM salons s
+       JOIN users u ON u.id = s.owner_id
+      WHERE s.id = $1`,
+    [salonId],
+  );
+  const r = res.rows[0];
+  if (!r) throw new ForbiddenError('No salon is registered to this account');
+
+  const distinct = r.chairs.map(Number).sort((a, b) => a - b);
+  return {
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    address: r.address,
+    city: r.city,
+    area: r.area,
+    lat: r.lat,
+    lng: r.lng,
+    phone: r.phone,
+    email: r.email,
+    timezone: r.timezone,
+    status: r.status,
+    coverImage: r.cover_url,
+    // Who this account is, for display only. Changing it is Clerk's business.
+    account: { email: r.owner_email, name: r.owner_name },
+    // One number when every working day runs on the same count, which is the
+    // normal case; null when they differ, and the screen sends the owner to
+    // Timings rather than flattening a deliberate Sunday difference.
+    chairs: distinct.length === 1 ? distinct[0]! : null,
+    chairsVary: distinct.length > 1,
+    workingDays: Number(r.working_days),
+  };
+}
+
+export interface ProfileInput {
+  name: string;
+  description: string | null;
+  address: string;
+  city: string;
+  area: string | null;
+  phone: string | null;
+  email: string | null;
+}
+
+/**
+ * Save the salon's own details.
+ *
+ * The address is geocoded when it changes, because lat/lng is what customer
+ * discovery sorts by: an owner who corrects their street and keeps the old
+ * pin is a salon that shows up in the wrong part of town. A geocoder that
+ * cannot place the new address leaves the old coordinates alone and says so —
+ * better a stale pin than one in the sea.
+ *
+ * `salonId` is resolved from the authenticated owner by the route. Nothing
+ * here takes a salon id from a request body.
+ */
+export async function updateSalonProfile(
+  db: Queryable,
+  salonId: string,
+  input: ProfileInput,
+): Promise<{ geocoded: boolean }> {
+  const name = input.name.trim();
+  const address = input.address.trim();
+  const city = input.city.trim();
+  if (!name) throw new Error('name is required');
+  if (!address) throw new Error('address is required');
+  if (!city) throw new Error('city is required');
+  if (name.length > 120) throw new Error('name must be 120 characters or fewer');
+  if ((input.description ?? '').length > 2000) {
+    throw new Error('description must be 2000 characters or fewer');
+  }
+
+  const current = await db.query<{ address: string; city: string | null; area: string | null }>(
+    `SELECT address, city, area FROM salons WHERE id = $1`,
+    [salonId],
+  );
+  const before = current.rows[0];
+  if (!before) throw new ForbiddenError('No salon is registered to this account');
+
+  const area = input.area?.trim() || null;
+  const moved =
+    before.address !== address || (before.city ?? '') !== city || (before.area ?? '') !== (area ?? '');
+
+  let coords: { lat: number; lng: number } | null = null;
+  if (moved) {
+    try {
+      coords = await resolveCoords({ address, city, area });
+    } catch {
+      // Keep the pin the salon already had. The alternative is refusing an
+      // otherwise valid edit because a third-party geocoder was down.
+      coords = null;
+    }
+  }
+
+  await db.query(
+    `UPDATE salons
+        SET name = $2, description = $3, address = $4, city = $5, area = $6,
+            phone = $7, email = $8,
+            lat = coalesce($9, lat), lng = coalesce($10, lng)
+      WHERE id = $1`,
+    [
+      salonId,
+      name,
+      input.description?.trim() || null,
+      address,
+      city,
+      area,
+      input.phone?.trim() || null,
+      input.email?.trim() || null,
+      coords?.lat ?? null,
+      coords?.lng ?? null,
+    ],
+  );
+
+  return { geocoded: coords !== null };
 }
 
 // ---------- screen 1: service setup ----------
@@ -243,6 +403,98 @@ export async function listHours(db: Queryable, salonId: string) {
       : { weekday, working: false, openAt: '10:00', closeAt: '20:00', breakStart: null,
           breakEnd: null, onlineCapacity: 1, slotIntervalMin: 30 };
   });
+}
+
+/**
+ * The most chairs any one future slot already has committed to it.
+ *
+ * The number a salon may safely reduce its capacity to. Chairs are concurrency
+ * — three chairs means three bookings can share 10:00-10:30 — so lowering the
+ * count below what is already booked would leave existing customers holding
+ * chairs the salon says it does not have. The availability engine would stop
+ * offering the slot, which is right, but the bookings already taken would
+ * quietly be over capacity and the barber would find out on the day.
+ *
+ * Counts what the availability read counts, via the one predicate in
+ * booking/occupancy.ts — including live payment holds, because a hold is a
+ * chair somebody is in the middle of paying for.
+ *
+ * `weekday` narrows it to one day of the week, in the salon's own timezone,
+ * for the per-day capacity on the Timings screen. Omitted, it is the peak
+ * across the whole future, which is what a single "chairs" control needs.
+ */
+export async function peakFutureChairUsage(
+  db: Queryable,
+  salonId: string,
+  opts: { weekday?: number; timezone?: string; now?: Date } = {},
+): Promise<{ peak: number; at: Date | null }> {
+  const now = opts.now ?? new Date();
+  const params: unknown[] = [salonId, now];
+  let dayFilter = '';
+  if (opts.weekday !== undefined) {
+    params.push(opts.timezone ?? 'Asia/Kolkata', opts.weekday);
+    dayFilter = `AND EXTRACT(DOW FROM bs.slot_start_at AT TIME ZONE $3)::int = $4`;
+  }
+
+  const res = await db.query<{ slot_start_at: Date; booked: number }>(
+    `SELECT bs.slot_start_at, COUNT(*)::int8 AS booked
+       FROM booking_slots bs
+       JOIN bookings b ON b.id = bs.booking_id
+      WHERE bs.salon_id = $1
+        AND bs.slot_start_at >= $2
+        AND ${chairConsumingSql('$2')}
+        ${dayFilter}
+      GROUP BY bs.slot_start_at
+      ORDER BY COUNT(*) DESC, bs.slot_start_at
+      LIMIT 1`,
+    params,
+  );
+  const row = res.rows[0];
+  return { peak: row ? Number(row.booked) : 0, at: row ? row.slot_start_at : null };
+}
+
+export class ChairsBelowBookedError extends Error {
+  readonly code = 'CHAIRS_BELOW_BOOKED';
+  readonly peak: number;
+  readonly at: Date | null;
+  constructor(peak: number, at: Date | null) {
+    super(
+      `You already have ${peak} booking${peak === 1 ? '' : 's'} sharing a slot, so this cannot go below ${peak} chair${peak === 1 ? '' : 's'}. ` +
+        'Cancel or move those bookings first.',
+    );
+    this.name = 'ChairsBelowBookedError';
+    this.peak = peak;
+    this.at = at;
+  }
+}
+
+/**
+ * Chairs, as one number across every working day.
+ *
+ * The schema keeps capacity per weekday, which is the right model — a salon
+ * with a Sunday skeleton crew is normal — and the Timings screen is where that
+ * is edited. This is the answer to "how many chairs do you have?", which is
+ * how an owner thinks about it, and it only touches days the salon already
+ * works: it will not turn a closed Sunday into an open one.
+ */
+export async function setChairsEveryDay(
+  db: Queryable,
+  salonId: string,
+  chairs: number,
+  now: Date = new Date(),
+): Promise<{ weekdaysUpdated: number }> {
+  if (!Number.isInteger(chairs) || chairs < 0 || chairs > 50) {
+    throw new Error('chairs must be a whole number between 0 and 50');
+  }
+
+  const { peak, at } = await peakFutureChairUsage(db, salonId, { now });
+  if (chairs < peak) throw new ChairsBelowBookedError(peak, at);
+
+  const res = await db.query(
+    `UPDATE salon_hours SET online_capacity = $2 WHERE salon_id = $1`,
+    [salonId, chairs],
+  );
+  return { weekdaysUpdated: res.rowCount ?? 0 };
 }
 
 export interface HoursInput {
