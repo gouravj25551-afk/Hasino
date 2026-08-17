@@ -95,6 +95,52 @@ export function generateVerifyCode(): string {
   return String(randomInt(0, 1_000_000)).padStart(6, '0');
 }
 
+/**
+ * The statuses in which a booking's code can still be typed in at a counter.
+ *
+ * Two live bookings at one salon must never share one — see
+ * db/migrations/009_unique_verify_codes.sql. A finished booking keeps its code
+ * as a record and is deliberately outside this set: history must not use up
+ * six-digit numbers for a salon that has been open for years.
+ */
+export const CODE_LIVE_STATUSES = [
+  'pending_payment',
+  'booked',
+  'verified',
+  'in_progress',
+] as const;
+
+/**
+ * A code no live booking at this salon is already using.
+ *
+ * Called inside createBookingTx, which holds the per-salon advisory lock, so
+ * the check and the insert cannot be interleaved with another booking at the
+ * same salon. The unique index is still there underneath: this makes a
+ * collision impossible in practice, and the index makes it impossible in fact,
+ * including for any future writer that skips this path.
+ *
+ * Ten attempts against a space of a million, with a few dozen live codes at a
+ * busy salon, is far past the point where failure means something is wrong
+ * rather than unlucky — so it throws instead of looping forever.
+ */
+export async function reserveVerifyCode(tx: PoolClient, salonId: string): Promise<string> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const code = generateVerifyCode();
+    const taken = await tx.query(
+      `SELECT 1 FROM bookings
+        WHERE salon_id = $1 AND verify_code = $2
+          AND status IN ('pending_payment','booked','verified','in_progress')
+        LIMIT 1`,
+      [salonId, code],
+    );
+    if (taken.rowCount === 0) return code;
+  }
+  throw new BookingError(
+    'CODE_EXHAUSTED',
+    'Could not allocate a verification code for this salon. This should not happen — please retry.',
+  );
+}
+
 /** Spec §4: no_show / cancel -> reschedule allowed within 36 hours. */
 export const RESCHEDULE_WINDOW_HOURS = 36;
 

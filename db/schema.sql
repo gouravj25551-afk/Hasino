@@ -292,6 +292,16 @@ CREATE TABLE IF NOT EXISTS bookings (
 
 CREATE INDEX IF NOT EXISTS bookings_customer_idx ON bookings (customer_id, start_at DESC);
 
+-- [DEVIATION 12] one live code per salon.
+--   The code is what a barber types to check somebody in, so two live bookings
+--   at one salon sharing six digits would let the wrong customer be verified.
+--   Partial: history keeps its codes, and a finished booking must not reserve
+--   a number forever. See db/migrations/009_unique_verify_codes.sql.
+CREATE UNIQUE INDEX IF NOT EXISTS bookings_live_verify_code_idx
+  ON bookings (salon_id, verify_code)
+  WHERE verify_code IS NOT NULL
+    AND status IN ('pending_payment','booked','verified','in_progress');
+
 -- The hold sweeper's only query. Partial, so it stays tiny regardless of how
 -- many bookings exist.
 CREATE INDEX IF NOT EXISTS bookings_hold_idx

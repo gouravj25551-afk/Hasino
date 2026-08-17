@@ -70,6 +70,21 @@
   --space-8: 32px;
   --space-10: 40px;
 
+  /* ---------- what is covering the bottom of the page ----------
+     Three fixed things can sit over the end of a scrolling view: the bottom
+     nav, the phone's own gesture bar, and the cart bar on the booking screen.
+     Content has to reserve room for whichever of them are present, and the
+     answer differs per screen and per device — so they are tokens, and .wrap
+     adds them up.
+
+     --cart-bar-height is 0 until a view says otherwise. views/salon.js
+     measures the bar it actually rendered and writes the real number here,
+     because that bar's height depends on the text in it and on the font size
+     the customer's phone is set to; a hardcoded guess is right on one device. */
+  --bottom-nav-height: 0px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --cart-bar-height: 0px;
+
   /* aspect ratios for image containers */
   --aspect-card:   16 / 10;
   --aspect-square: 1 / 1;
@@ -322,7 +337,17 @@ body {
 }
 .banner a { color: inherit; }
 
-.wrap { max-width: 1180px; margin: 0 auto; padding: 22px; }
+/* The page. Its bottom padding is whatever is floating over the bottom of it:
+   the nav bar, the gesture bar under that, and the cart bar when a view has
+   put one there. Without this the tail of a long screen — the last services
+   and the whole "Pick date & time" grid — is scrolled to but never reachable,
+   because it is underneath something. */
+.wrap {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 22px;
+  padding-bottom: calc(22px + var(--bottom-nav-height) + var(--safe-bottom) + var(--cart-bar-height));
+}
 
 h1 { font-size: 24px; letter-spacing: -0.02em; margin: 0 0 4px; }
 h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .09em;
@@ -510,7 +535,12 @@ td input, td select { min-width: 72px; }
 }
 @media (max-width: 768px) {
   .bottom-nav { display: flex; }
-  .wrap { padding-bottom: 80px; }
+  /* The nav is 64px of content plus the gesture bar it pads itself with
+     (box-sizing: content-box above). --safe-bottom is added by .wrap, so this
+     is only the 64. The flat 80px this replaces was less than the two of them
+     together on any phone with a gesture bar, which is why the last rows of a
+     screen sat under the nav even before a cart bar existed. */
+  :root { --bottom-nav-height: 64px; }
 }
 .bottom-nav .nav-item {
   display: flex;
@@ -747,7 +777,10 @@ td input, td select { min-width: 72px; }
 /* Sticky Booking Bar */
 .sticky-booking-bar {
   position: fixed;
-  bottom: 0;
+  /* Above the nav and above the gesture bar, on a phone; flush to the bottom
+     on a desktop, where both tokens are 0. One rule instead of a media query
+     that had to know the nav's height a second time. */
+  bottom: calc(var(--bottom-nav-height) + var(--safe-bottom));
   left: 0;
   right: 0;
   background: var(--surface);
@@ -759,11 +792,6 @@ td input, td select { min-width: 72px; }
   justify-content: space-between;
   align-items: center;
   animation: slideUp 0.2s ease;
-}
-@media (max-width: 768px) {
-  /* Clear of the bottom nav, and clear of the home indicator under it, so the
-     cart bar never sits on top of the tab a customer is reaching for. */
-  .sticky-booking-bar { bottom: calc(64px + env(safe-area-inset-bottom)); }
 }
 
 /* ---------- the cart ---------- */
@@ -871,7 +899,10 @@ td input, td select { min-width: 72px; }
   border: 1px solid var(--line);
   max-width: 520px;
   width: 100%;
-  max-height: 90vh;
+  /* dvh, not vh: in a mobile browser vh is the tallest the viewport ever gets
+     — with the URL bar hidden — so a 90vh dialog is taller than the screen
+     while that bar is showing, and its buttons are off the bottom. */
+  max-height: 90dvh;
   overflow-y: auto;
   box-shadow: 0 20px 40px rgba(0,0,0,0.25);
   animation: popIn 0.2s ease;
@@ -889,8 +920,12 @@ td input, td select { min-width: 72px; }
   width: 100%;
   max-width: 640px;
   margin: 0 auto;
-  max-height: 85vh;
+  max-height: 85dvh;
   overflow-y: auto;
+  /* The sheet reaches the bottom edge of the screen, so its own content has
+     to clear the gesture bar — otherwise the last row of buttons in the cart
+     sits under it. */
+  padding-bottom: var(--safe-bottom);
   box-shadow: 0 -8px 40px rgba(0,0,0,0.2);
   animation: slideUp 0.2s ease;
 }

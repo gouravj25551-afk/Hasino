@@ -13,7 +13,7 @@ import {
   SalonUnavailableError,
   SlotUnavailableError,
 } from './errors.ts';
-import { generateVerifyCode } from './status.ts';
+import { reserveVerifyCode } from './status.ts';
 import { chairConsumingSql } from './occupancy.ts';
 
 export interface CreateBookingInput {
@@ -243,7 +243,7 @@ export async function createBookingTx(
         amount,
         input.rzpOrderId ?? null,
         input.rzpPaymentId ?? null,
-        generateVerifyCode(),
+        await reserveVerifyCode(tx, input.salonId),
         status,
         holdExpiresAt,
         input.rescheduledFrom ?? null,

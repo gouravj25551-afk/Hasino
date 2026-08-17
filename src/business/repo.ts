@@ -529,9 +529,19 @@ export async function listCustomerBookings(db: Queryable, customerId: string, no
           r.reschedule_deadline.getTime() > now.getTime()),
     // Spec §4: the code appears 15 minutes before the slot. Withheld until
     // then so a screenshot taken at booking time is not a permanent key.
+    //
+    // Per booking, from that booking's own row — a customer with three live
+    // bookings gets three codes, each revealed on its own slot's clock, and
+    // one of them being verified changes nothing about the other two.
     verifyCode:
       r.verify_code && r.start_at.getTime() - now.getTime() <= 15 * 60_000 && r.status === 'booked'
         ? r.verify_code
+        : null,
+    // When this booking's code turns up, so the app can say so instead of
+    // showing a blank space that reads as a code having gone missing.
+    verifyCodeAt:
+      r.verify_code && r.status === 'booked'
+        ? new Date(r.start_at.getTime() - 15 * 60_000).toISOString()
         : null,
   }));
 }

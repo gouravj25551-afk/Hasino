@@ -198,6 +198,66 @@ describe('theme', () => {
   });
 });
 
+/**
+ * The booking screen scrolls past everything that floats over it.
+ *
+ * Three fixed things sit at the bottom of that screen — the nav, the gesture
+ * bar, and the cart bar — and the page has to end above all three. It used to
+ * end above a flat 80px, which is less than the nav plus a gesture bar on its
+ * own, and knew nothing about the cart bar at all: the last services and the
+ * whole date-and-time grid were scrolled to and still covered.
+ */
+describe('nothing is stranded under the bottom bars', () => {
+  const css = read('src/http/public/brand.css');
+  const salon = read('src/http/public/views/salon.js');
+
+  it('the page reserves room for the nav, the safe area and the cart bar', () => {
+    const wrap = /\.wrap \{[^}]*\}/.exec(css)?.[0] ?? '';
+    assert.notEqual(wrap, '', '.wrap rule not found');
+    for (const token of ['--bottom-nav-height', '--safe-bottom', '--cart-bar-height']) {
+      assert.ok(wrap.includes(token), `.wrap must account for ${token}`);
+    }
+    assert.doesNotMatch(css, /\.wrap \{[^}]*padding-bottom: 80px/, 'the flat 80px was the bug');
+  });
+
+  it('the safe-area inset is a real env() and not assumed to be zero', () => {
+    assert.match(css, /--safe-bottom: env\(safe-area-inset-bottom, 0px\)/);
+  });
+
+  it('the cart bar reports the height it actually rendered at', () => {
+    // A hardcoded number is right on one device and one font size.
+    assert.match(salon, /setProperty\('--cart-bar-height', `\$\{bar\.offsetHeight\}px`\)/);
+    assert.match(salon, /ResizeObserver/, 'it also wraps at large system text sizes');
+  });
+
+  it('and the reservation is released when the customer leaves that screen', () => {
+    assert.match(salon, /export function releaseCartBarSpace/);
+    assert.match(read('src/http/public/app.js'), /releaseCartBarSpace\(\)/);
+  });
+
+  it('sheets and dialogs measure against the visible viewport, not the tallest one', () => {
+    // vh in a mobile browser is the viewport with the URL bar hidden, so a
+    // 90vh dialog puts its buttons off the bottom of the screen.
+    assert.doesNotMatch(css, /max-height: \d+vh/);
+    assert.match(css, /max-height: 90dvh/);
+    assert.match(css, /max-height: 85dvh/);
+  });
+
+  it('the bottom sheet clears the gesture bar', () => {
+    const sheet = /\.sheet-card \{[^}]*\}/.exec(css)?.[0] ?? '';
+    assert.match(sheet, /padding-bottom: var\(--safe-bottom\)/);
+  });
+
+  it('nothing clips the page itself', () => {
+    // A height or an overflow on the scrolling container is the other way this
+    // screen loses its bottom half.
+    const wrap = /\.wrap \{[^}]*\}/.exec(css)?.[0] ?? '';
+    assert.doesNotMatch(wrap, /overflow|height:/);
+    const body = /\nbody \{[^}]*\}/.exec(css)?.[0] ?? '';
+    assert.doesNotMatch(body, /overflow|height:/);
+  });
+});
+
 describe('the signed-in customer lives in the top-right corner', () => {
   const topbar = read('src/http/public/components/TopBar.js');
 

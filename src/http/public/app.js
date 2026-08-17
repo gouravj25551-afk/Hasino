@@ -28,7 +28,7 @@ import { el } from './lib/dom.js';
 
 import { renderHome } from './views/home.js';
 import { renderExplore } from './views/explore.js';
-import { renderSalon } from './views/salon.js';
+import { renderSalon, releaseCartBarSpace } from './views/salon.js';
 import { renderCheckout } from './views/checkout.js';
 import { renderBookings } from './views/bookings.js';
 import { renderProfile } from './views/profile.js';
@@ -212,14 +212,29 @@ function showRouteError(err) {
   viewRoot.append(box);
 }
 
-register(/^#\/home$/, () => renderHome(viewRoot, app));
-register(/^#\/explore$/, () => renderExplore(viewRoot, app));
+/**
+ * The salon page reserves room at the bottom of the page for its cart bar.
+ * Every other route has no such bar, so the reservation is released on the way
+ * in — otherwise leaving the booking screen with services in the cart leaves a
+ * band of empty space at the bottom of home, explore and everything else.
+ */
+for (const [pattern, handler] of [
+  [/^#\/home$/, () => renderHome(viewRoot, app)],
+  [/^#\/explore$/, () => renderExplore(viewRoot, app)],
+  [/^#\/checkout\/([\w-]+)$/, (id) => renderCheckout(viewRoot, app, id)],
+  [/^#\/bookings$/, () => renderBookings(viewRoot, app)],
+  [/^#\/profile$/, () => renderProfile(viewRoot, app)],
+  [/^#\/login$/, () => renderLogin(viewRoot, app)],
+  [/^#\/apply$/, () => renderApply(viewRoot, app)],
+]) {
+  register(pattern, (...args) => {
+    releaseCartBarSpace();
+    return handler(...args);
+  });
+}
+
+// The one route that draws a cart bar, so it keeps its own reservation.
 register(/^#\/salon\/([\w-]+)$/, (id) => renderSalon(viewRoot, app, id));
-register(/^#\/checkout\/([\w-]+)$/, (id) => renderCheckout(viewRoot, app, id));
-register(/^#\/bookings$/, () => renderBookings(viewRoot, app));
-register(/^#\/profile$/, () => renderProfile(viewRoot, app));
-register(/^#\/login$/, () => renderLogin(viewRoot, app));
-register(/^#\/apply$/, () => renderApply(viewRoot, app));
 
 /**
  * Android's back button. Installed at module scope, before boot() awaits

@@ -67,9 +67,17 @@ export function BookingCard(booking, { timezone = 'Asia/Kolkata', onCancel, onPa
 
   item.append(grow);
 
-  // Withheld by the API until 15 minutes before the slot — absence here means "not yet", not an error.
+  // This booking's own code, from this booking's own row. Withheld by the API
+  // until 15 minutes before the slot (§4), which used to render as nothing at
+  // all — indistinguishable from a code that had gone missing, especially for
+  // a customer holding several bookings at once. So the card says which of the
+  // two it is, per booking.
   if (booking.verifyCode) {
     item.append(el('span', 'pill ok mono', 'CODE ' + booking.verifyCode));
+  } else if (booking.verifyCodeAt) {
+    const at = el('span', 'pill', `code at ${time(booking.verifyCodeAt, timezone)}`);
+    at.title = 'Your code appears 15 minutes before this booking, so a screenshot taken today is not a key to it.';
+    item.append(at);
   }
 
   item.append(el('strong', null, rupees(booking.amount)));

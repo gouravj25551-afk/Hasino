@@ -75,6 +75,7 @@ export async function renderSalon(container, app, salonId) {
   function drawCartBar() {
     if (!cart.size) {
       stickyBar.style.display = 'none';
+      reserveForCartBar(null);
       slotPanel.innerHTML = '';
       return;
     }
@@ -100,6 +101,12 @@ export async function renderSalon(container, app, salonId) {
       info,
       Button({ label: 'View cart →', variant: 'primary', onClick: openCart }),
     );
+
+    // The bar is fixed over the bottom of the page, so the page has to end
+    // above it. Measured rather than assumed: the bar wraps to two lines at
+    // large text sizes, and the services and slot grid below it are exactly
+    // what was being hidden.
+    reserveForCartBar(stickyBar);
 
     renderSlots(slotPanel, salon, cart, app);
   }
@@ -176,6 +183,49 @@ export async function renderSalon(container, app, salonId) {
   }
 
   drawCartBar();
+}
+
+/**
+ * Tell the page how much room the cart bar is taking at the bottom.
+ *
+ * `.wrap` adds --cart-bar-height to its bottom padding, so this is what keeps
+ * the end of the services list and the whole date-and-time grid scrollable
+ * into view instead of stranded under a fixed bar. Pass null when the bar is
+ * gone.
+ *
+ * The observer is here because the bar's height is not a constant: it wraps at
+ * a large system font size, and Android's WebView reports a different height
+ * once the safe-area insets resolve, which happens after the first paint.
+ */
+let cartBarObserver = null;
+
+function reserveForCartBar(bar) {
+  cartBarObserver?.disconnect();
+  cartBarObserver = null;
+
+  if (!bar) {
+    document.documentElement.style.setProperty('--cart-bar-height', '0px');
+    return;
+  }
+
+  const measure = () => {
+    document.documentElement.style.setProperty('--cart-bar-height', `${bar.offsetHeight}px`);
+  };
+  measure();
+
+  if (typeof ResizeObserver === 'function') {
+    cartBarObserver = new ResizeObserver(measure);
+    cartBarObserver.observe(bar);
+  }
+}
+
+/**
+ * Called when the customer leaves this screen: every other view has no cart
+ * bar, and a reservation left behind would put an unexplained gap at the
+ * bottom of all of them.
+ */
+export function releaseCartBarSpace() {
+  reserveForCartBar(null);
 }
 
 /** Put every Add button back in step with the cart after a change made elsewhere. */
