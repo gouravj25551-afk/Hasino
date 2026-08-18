@@ -9,21 +9,38 @@ import { ask } from '../lib/dialog.js';
 import { dateLong, rupees, time } from '../lib/format.js';
 
 const TABS = [
-  {
-    id: 'upcoming',
-    label: 'Upcoming',
-    // pending_payment first: it is the only tab where the customer has
-    // something time-limited to do, and burying it under "Past" is how an
-    // abandoned checkout becomes a support ticket.
-    statuses: ['pending_payment', 'booked', 'verified', 'in_progress'],
-  },
-  { id: 'past', label: 'Past', statuses: ['completed', 'no_show'] },
-  {
-    id: 'cancelled',
-    label: 'Cancelled',
-    statuses: ['cancelled_by_customer', 'cancelled_by_salon', 'rescheduled'],
-  },
+  { id: 'upcoming', label: 'Upcoming' },
+  { id: 'past', label: 'Past' },
+  { id: 'cancelled', label: 'Cancelled' },
 ];
+
+/**
+ * Which tab a booking is in used to be a lookup on its status, which meant a
+ * 'booked' row stayed under "Upcoming" forever: nothing moves a booking off
+ * that list except a salon pressing [Complete], and a salon that never presses
+ * it left yesterday's 10:00 appointment sitting above tomorrow's.
+ *
+ * So time decides instead, mirroring classifyBooking() on the server. Kept in
+ * step with it by the API, which sends both its own verdict (`category`) and
+ * the inputs — `serverNow` and `historyGraceMin` — so this can re-run the same
+ * rule as the clock advances without asking again.
+ */
+const CANCELLED_LIKE = new Set([
+  'cancelled_by_customer',
+  'cancelled_by_salon',
+  'rescheduled',
+  'expired',
+]);
+
+/**
+ * Outcomes the salon has already recorded. Historical on the strength of the
+ * status alone — the grace period covers the gap before anyone says how the
+ * visit went, and for these somebody has.
+ */
+const RESOLVED = new Set(['completed', 'no_show']);
+
+/** Fallback only; the real value arrives with every response. */
+const DEFAULT_GRACE_MIN = 30;
 
 export async function renderBookings(container, app) {
   if (!app.requireSession()) return;
@@ -51,8 +68,46 @@ export async function renderBookings(container, app) {
   list.append(SkeletonList(3));
 
   let bookings = [];
+  // The server's clock, as an offset from this device's. The panel screen
+  // already works this way (business.js) — a phone that is ten minutes out
+  // would otherwise move bookings to Past ten minutes early or late, and a
+  // customer looking at a booking that has "expired" on their own wrong clock
+  // has no way to tell which of the two is lying.
+  let clockSkewMs = 0;
+  let graceMs = DEFAULT_GRACE_MIN * 60_000;
+  let tickTimer = null;
+
+  function serverNow() {
+    return Date.now() + clockSkewMs;
+  }
+
+  /** end_at + grace: the instant this booking stops being current. */
+  function historyAt(booking) {
+    return Date.parse(booking.endAt) + graceMs;
+  }
+
+  /**
+   * Same rule as classifyBooking() on the server, re-run against the current
+   * clock. The server's own `category` is not used for the filtering — it was
+   * true when the response was built, and this list may have been open for an
+   * hour since — but it is what the first paint agrees with, because both are
+   * computed from the same instant.
+   */
+  function categoryOf(booking) {
+    if (CANCELLED_LIKE.has(booking.status)) return 'cancelled';
+    if (RESOLVED.has(booking.status)) return 'past';
+    // Only a booking still on the books is decided by the clock.
+    return serverNow() >= historyAt(booking) ? 'past' : 'upcoming';
+  }
+
+  function absorb(payload) {
+    bookings = payload.bookings ?? [];
+    if (payload.serverNow) clockSkewMs = Date.parse(payload.serverNow) - Date.now();
+    if (payload.historyGraceMin != null) graceMs = payload.historyGraceMin * 60_000;
+  }
+
   try {
-    ({ bookings } = await api('/api/me/bookings'));
+    absorb(await api('/api/me/bookings'));
   } catch (err) {
     list.innerHTML = '';
     list.append(EmptyState({ title: err.message || 'Could not load your bookings' }));
@@ -60,14 +115,67 @@ export async function renderBookings(container, app) {
   }
 
   async function refresh() {
-    ({ bookings } = await api('/api/me/bookings'));
+    absorb(await api('/api/me/bookings'));
     draw();
   }
+
+  /**
+   * One timer, armed for the next threshold any loaded booking will actually
+   * cross — not a poll. A booking ending at 10:30 moves itself at 11:00 with a
+   * single wakeup; a screen showing only next week's appointments sets no timer
+   * at all.
+   *
+   * It refetches rather than just redrawing, because crossing the line changes
+   * more than which list a row is in: the reschedule window and the verification
+   * code are computed server-side too, and re-deriving them here would be a
+   * second copy of those rules.
+   */
+  function scheduleTick() {
+    if (tickTimer) clearTimeout(tickTimer);
+    tickTimer = null;
+
+    // Only what is still current has a boundary left to cross. Asking
+    // categoryOf rather than re-listing statuses here means the timer cannot
+    // drift out of step with the classification it exists to refresh.
+    const next = bookings
+      .filter((b) => categoryOf(b) === 'upcoming')
+      .map(historyAt)
+      .filter((t) => t > serverNow())
+      .sort((a, b) => a - b)[0];
+    if (next === undefined) return;
+
+    // +1s so the wakeup lands just past the boundary rather than on it, and
+    // clamped: setTimeout is a 32-bit signed millisecond count, so a booking
+    // three months out would otherwise overflow and fire immediately.
+    const delay = Math.min(next - serverNow() + 1000, 0x7fffffff);
+    tickTimer = setTimeout(() => {
+      // This view has been replaced (the router clears the container and
+      // re-renders on every navigation, leaving this `list` detached). Nothing
+      // to update, and refetching would be a request for a screen nobody is
+      // looking at.
+      if (!list.isConnected) return;
+      refresh().catch(() => draw());
+    }, delay);
+  }
+
+  // Background tabs get their timers throttled, so a phone left on this screen
+  // in a pocket can wake up well past the threshold. Reclassifying on the way
+  // back is cheap and covers the gap.
+  const onVisible = () => {
+    if (document.visibilityState !== 'visible') return;
+    if (!list.isConnected) {
+      document.removeEventListener('visibilitychange', onVisible);
+      return;
+    }
+    refresh().catch(() => draw());
+  };
+  document.addEventListener('visibilitychange', onVisible);
 
   function draw() {
     list.innerHTML = '';
     const tab = TABS.find((t) => t.id === active);
-    const filtered = bookings.filter((b) => tab.statuses.includes(b.status));
+    const filtered = bookings.filter((b) => categoryOf(b) === tab.id);
+    scheduleTick();
     if (!filtered.length) {
       list.append(
         EmptyState({

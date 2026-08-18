@@ -1,6 +1,13 @@
 import type { Pool, PoolClient } from '../db/pool.ts';
 import { addDays, localDateKey, zonedTimeToUtc } from '../time/tz.ts';
-import { noShowAvailableAt } from '../booking/status.ts';
+import {
+  CANCELLED_LIKE_STATUSES,
+  HISTORY_GRACE_MIN,
+  RESOLVED_STATUSES,
+  classifyBooking,
+  noShowAvailableAt,
+} from '../booking/status.ts';
+import type { BookingCategory } from '../booking/status.ts';
 import { chairConsumingSql } from '../booking/occupancy.ts';
 import { resolveCoords } from '../admin/repo.ts';
 
@@ -720,8 +727,62 @@ export async function listReviews(db: Queryable, salonId: string) {
   return res.rows;
 }
 
-/** Customer's own bookings, newest first. */
-export async function listCustomerBookings(db: Queryable, customerId: string, now: Date = new Date()) {
+/**
+ * Customer's own bookings, newest first.
+ *
+ * `category` narrows the query itself rather than handing the caller everything
+ * and letting it filter: the tabbed UI wants all three lists at once, but an
+ * "Upcoming" screen elsewhere should not have to receive a customer's entire
+ * history to draw five rows. Both paths run the same rule — the SQL below and
+ * classifyBooking() are built from the same HISTORY_GRACE_MIN — so a filtered
+ * fetch and an unfiltered one can never disagree about where a booking belongs.
+ */
+export async function listCustomerBookings(
+  db: Queryable,
+  customerId: string,
+  now: Date = new Date(),
+  category?: BookingCategory,
+) {
+  // Time arithmetic in Postgres, on timestamptz + interval, against the `now`
+  // this function was given. Deliberately not now() — the caller's clock is
+  // what the rest of the response (serverNow, verifyCode, canReschedule) is
+  // computed against, and tests pin it. Two clocks in one response is how a
+  // booking ends up in "Past" with a code that says it starts in five minutes.
+  //
+  // The params are pushed only when a category is actually asked for: Postgres
+  // rejects a bind that supplies more parameters than the statement references,
+  // so the unfiltered query must carry exactly one.
+  // Placeholders are allocated as they are used, and every one carries an
+  // explicit cast: Postgres infers a parameter's type from its context, and
+  // both of these appear only inside an expression that gives it nothing to go
+  // on ("could not determine data type of parameter"). Binding only what the
+  // chosen branch references also keeps the unfiltered statement at one
+  // parameter, which is what it declares.
+  const params: unknown[] = [customerId];
+  const bind = (value: unknown, cast: string) => {
+    params.push(value);
+    return `$${params.length}${cast}`;
+  };
+
+  let categorySql = '';
+  if (category) {
+    const cancelledLike = `b.status = ANY(${bind(CANCELLED_LIKE_STATUSES, '::text[]')})`;
+    if (category === 'cancelled') {
+      categorySql = `AND ${cancelledLike}`;
+    } else {
+      // Historical either because the salon already recorded an outcome, or
+      // because the grace period ran out — the same two clauses
+      // classifyBooking() checks, in the same order.
+      const historical =
+        `(b.status = ANY(${bind(RESOLVED_STATUSES, '::text[]')})` +
+        ` OR b.end_at + make_interval(mins => ${HISTORY_GRACE_MIN}) <= ${bind(now, '::timestamptz')})`;
+      categorySql =
+        category === 'past'
+          ? `AND NOT ${cancelledLike} AND ${historical}`
+          : `AND NOT ${cancelledLike} AND NOT ${historical}`;
+    }
+  }
+
   const res = await db.query<{
     id: string;
     salon_name: string;
@@ -752,9 +813,10 @@ export async function listCustomerBookings(db: Queryable, customerId: string, no
         -- they never made. A live 'pending_payment' row does show — it is a
         -- payment they can still finish.
         AND b.status <> 'expired'
+        ${categorySql}
       GROUP BY b.id, s.name, s.id
       ORDER BY b.start_at DESC LIMIT 50`,
-    [customerId],
+    params,
   );
 
   return res.rows.map((r) => ({
@@ -764,6 +826,12 @@ export async function listCustomerBookings(db: Queryable, customerId: string, no
     startAt: r.start_at.toISOString(),
     endAt: r.end_at.toISOString(),
     status: r.status,
+    // Which list this booking belongs in, decided by the server so the browser
+    // is not the only thing that knows. The business status above is untouched
+    // and travels alongside it — a cancelled booking is still 'cancelled' after
+    // it turns historical, which is the whole reason these are two fields
+    // rather than one.
+    category: classifyBooking(r.status, r.end_at, now),
     amount: r.amount,
     refundStatus: r.refund_status,
     services: r.services,

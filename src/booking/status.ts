@@ -180,6 +180,99 @@ export class NoShowTooEarlyError extends BookingError {
   }
 }
 
+/**
+ * How long after a booking's scheduled end it still counts as "current".
+ *
+ * Separate from NO_SHOW_GRACE_MIN above, and deliberately so: that one is
+ * measured from the *start* and gates a write (a salon may write a customer
+ * off). This one is measured from the *end* and gates nothing — it only decides
+ * which list a booking is rendered in.
+ *
+ * The half hour exists because a slot ending at 10:30 is not over at 10:30:
+ * the customer is settling up, the barber has not pressed [Complete] yet, and
+ * a booking that vanishes from "Upcoming" the second its slot lapses reads as
+ * lost. After 30 minutes there is nothing left to do with it.
+ */
+export const HISTORY_GRACE_MIN = 30;
+
+/**
+ * The instant a booking stops being current: scheduled end + the grace period.
+ *
+ * Takes the stored `end_at`, which is a timestamptz — a real instant, already
+ * resolved out of the salon's wall clock when the booking was created. So this
+ * is zone-agnostic by construction: there is no date string to re-parse and no
+ * local-time arithmetic to get wrong. A 10:00-10:30 IST booking becomes
+ * historical at 11:00 IST whether the reader is in Mumbai or Berlin.
+ */
+export function historyAt(endAt: Date): Date {
+  return new Date(endAt.getTime() + HISTORY_GRACE_MIN * 60_000);
+}
+
+/**
+ * Statuses where the appointment is not going to happen at all.
+ *
+ * These are classified by *status*, not by the clock, because the clock is the
+ * wrong question for them. A cancellation is not a visit that is running late;
+ * it is a visit that was called off, and it must never sit in "Upcoming"
+ * waiting for its slot to lapse. They keep their own list so a customer can
+ * still tell a cancellation from a completed visit long after both are
+ * historical.
+ */
+export const CANCELLED_LIKE_STATUSES: BookingStatus[] = [
+  'cancelled_by_customer',
+  'cancelled_by_salon',
+  'rescheduled',
+  'expired',
+];
+
+/**
+ * Statuses where the salon has already settled what happened to the visit.
+ *
+ * These are classified by *status* rather than by the clock, because the grace
+ * period exists to cover the gap between a slot ending and somebody saying how
+ * it went — and here somebody has said. A completed haircut and a customer
+ * written off as absent are both finished business the moment they are
+ * recorded, whatever the slot's own clock says.
+ *
+ * Note what is *not* in here: 'verified' and 'in_progress'. Those say the visit
+ * is under way, not that it is over, so they still wait out the grace period.
+ */
+export const RESOLVED_STATUSES: BookingStatus[] = ['completed', 'no_show'];
+
+/** Which list a booking belongs in. Derived — never stored. */
+export type BookingCategory = 'upcoming' | 'past' | 'cancelled';
+
+/**
+ * Where a booking belongs right now.
+ *
+ * The rule the whole feature rests on: for anything still on the books, time
+ * decides, not status. A 'booked' row whose slot passed an hour ago is history
+ * even though nobody pressed anything — that is the bug this exists to fix, and
+ * the grace period is what stops it firing while the customer is still in the
+ * chair.
+ *
+ * The two exits from "still on the books" are checked first, because for them
+ * the clock is the wrong question:
+ *
+ *   - a cancellation — the visit was called off rather than running late, so it
+ *     must never sit in Upcoming waiting for its slot to lapse.
+ *   - a resolved visit (completed or no_show) — the salon has already recorded
+ *     the outcome, so there is nothing left for the grace period to wait for.
+ *
+ * This is a pure function of (status, end_at, now) so the API and the browser
+ * can both run it and agree. It writes nothing: the business status is the
+ * salon's and the payment system's to set, and a *view* must not overwrite it.
+ */
+export function classifyBooking(
+  status: BookingStatus | string,
+  endAt: Date,
+  now: Date = new Date(),
+): BookingCategory {
+  if ((CANCELLED_LIKE_STATUSES as string[]).includes(status)) return 'cancelled';
+  if ((RESOLVED_STATUSES as string[]).includes(status)) return 'past';
+  return now.getTime() >= historyAt(endAt).getTime() ? 'past' : 'upcoming';
+}
+
 interface TransitionOptions {
   code?: string;
   now?: Date;

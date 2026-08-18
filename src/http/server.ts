@@ -6,7 +6,7 @@ import { MemorySnapshotCache } from '../availability/cache.ts';
 import { getAvailability } from '../availability/service.ts';
 import { loadCart } from '../availability/repo.ts';
 import { createBooking } from '../booking/create.ts';
-import { NoShowTooEarlyError, customerCancelBooking } from '../booking/status.ts';
+import { HISTORY_GRACE_MIN, NoShowTooEarlyError, customerCancelBooking } from '../booking/status.ts';
 import { rescheduleBooking } from '../booking/reschedule.ts';
 import { BookingError, SlotUnavailableError } from '../booking/errors.ts';
 import { ForbiddenError, listCustomerBookings } from '../business/repo.ts';
@@ -614,7 +614,21 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
 
   if (method === 'GET' && path === '/api/me/bookings') {
     const s = await session(db, req);
-    return json(res, 200, { bookings: await listCustomerBookings(db, s.userId) });
+    const now = new Date();
+    const requested = url.searchParams.get('category');
+    // An unknown ?category= is dropped rather than rejected: the parameter is a
+    // narrowing convenience, and a typo should not 400 a customer's booking
+    // list. Omitted means "all three, each tagged".
+    const category = (['upcoming', 'past', 'cancelled'] as const).find((c) => c === requested);
+    return json(res, 200, {
+      bookings: await listCustomerBookings(db, s.userId, now, category),
+      // The clock the client classifies against, and the rule it is applying.
+      // Both are the server's: a phone an hour behind would otherwise hold a
+      // finished booking in "Upcoming" for an extra hour, and the threshold is
+      // a business rule that should not be duplicated as a literal in the view.
+      serverNow: now.toISOString(),
+      historyGraceMin: HISTORY_GRACE_MIN,
+    });
   }
 
   if (method === 'POST' && seg[0] === 'api' && seg[1] === 'me' && seg[2] === 'bookings' && seg[4] === 'cancel' && seg.length === 5) {
