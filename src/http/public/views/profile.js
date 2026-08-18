@@ -51,6 +51,14 @@ function salonSection(app, session) {
     panel.append(el('h2', null, 'Salon Application'));
     panel.append(el('div', null, salon.name));
     panel.append(el('div', 'pill bad', 'Not approved'));
+    // The admin's reason, where the owner is standing. Same field the apply
+    // screen shows; both read it from /api/me rather than keeping a copy.
+    if (salon.rejectionReason) {
+      const why = el('div', 'out bad');
+      why.style.whiteSpace = 'pre-line';
+      why.textContent = `Reason given: ${salon.rejectionReason}`;
+      panel.append(why);
+    }
     panel.append(el('div', 'note',
       'You can update the details and submit it again — it goes back for review.'));
     const again = Button({ label: 'View / reapply', onClick: () => app.navigate('#/apply') });

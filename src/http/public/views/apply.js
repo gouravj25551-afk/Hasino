@@ -3,6 +3,7 @@ import { api, ApiError } from '../lib/api.js';
 import { Button } from '../components/Button.js';
 import { Input } from '../components/Input.js';
 import { currentPosition } from '../lib/location.js';
+import { dateLong } from '../lib/format.js';
 
 /**
  * "List your salon" — a signed-in customer applying to join.
@@ -18,15 +19,47 @@ export function renderApply(container, app) {
 
   container.append(el('h1', null, 'Apply as a Salon'));
 
+  // Step one, before the form: a verified address. The server refuses an
+  // application from an unverified one (403 EMAIL_NOT_VERIFIED), so offering
+  // the form first would be twenty fields and then a refusal.
+  if (session.emailVerified === false) {
+    const gate = el('div', 'panel');
+    gate.append(el('h2', null, 'Verify your email first'));
+    gate.append(el('p', 'sub',
+      `A Hasino admin reviews every application and will reach you at ${session.email || 'your address'}, `
+      + 'so it has to be an address you have confirmed. Open the verification link your sign-in '
+      + 'provider sent you, then come back.'));
+    const again = Button({
+      label: 'I have verified it — check again',
+      variant: 'primary',
+      onClick: async () => {
+        try {
+          await app.refreshSession();
+          app.navigate('#/apply');
+          location.reload();
+        } catch {
+          gate.append(el('div', 'out bad', 'Still not verified. Check your inbox and try again.'));
+        }
+      },
+    });
+    gate.append(again);
+    container.append(gate);
+    return;
+  }
+
   // One salon per owner, so anyone who has already applied gets the state of
   // that application rather than a form that would only 409.
   if (session.salon) {
     const done = el('div', 'panel');
     if (session.salon.status === 'pending') {
       done.append(el('h2', null, 'Your application is under review'));
+      done.append(el('span', 'pill warn', 'Pending approval'));
       done.append(el('p', 'sub',
         `${session.salon.name} is with a Hasino admin. It is not visible to customers yet, and your `
         + 'salon dashboard unlocks the moment it is approved.'));
+      if (session.salon.submittedAt) {
+        done.append(el('div', 'meta', `Submitted ${dateLong(session.salon.submittedAt, undefined)}`));
+      }
     } else if (session.salon.status === 'rejected') {
       // Not a dead end: resubmitting sends it back to review, which is a way
       // to fix what was wrong rather than a way around approval.
@@ -34,6 +67,20 @@ export function renderApply(container, app) {
       done.append(el('p', 'sub',
         `${session.salon.name} was turned down. Update the details below and submit again — `
         + 'it goes back to a Hasino admin for review.'));
+
+      // Why, in the admin's own words. It was always recorded and never shown
+      // to the person who needed it, which left "not approved" and no way to
+      // work out what to fix.
+      if (session.salon.rejectionReason) {
+        const why = el('div', 'out bad');
+        why.style.whiteSpace = 'pre-line';
+        why.textContent = `Reason given: ${session.salon.rejectionReason}`;
+        done.append(why);
+      } else {
+        done.append(el('div', 'note',
+          'No reason was recorded. If it is not obvious what to change, contact Hasino support '
+          + 'before resubmitting.'));
+      }
       container.append(done);
       renderForm(container, app);
       return;

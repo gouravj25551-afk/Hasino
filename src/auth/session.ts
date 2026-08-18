@@ -78,6 +78,17 @@ export interface Session {
   phone: string | null;
   name: string | null;
   email: string | null;
+  /**
+   * Whether the identity provider vouches for `email`, carried from the token
+   * rather than from the users row.
+   *
+   * An unverified address is a string the person signing up chose, so anything
+   * that grants standing on the strength of an email must ask this first —
+   * admin elevation already did, and listing a salon now does too. It is not
+   * stored: verification is a property of the current token, and a row that
+   * was verified last year says nothing about the token in this request.
+   */
+  emailVerified: boolean;
   avatarUrl: string | null;
   blockedUntil: Date | null;
 }
@@ -157,6 +168,7 @@ async function claimByEmail(db: Queryable, token: VerifiedToken): Promise<Sessio
     phone: row.phone,
     name: row.name,
     email: row.email,
+    emailVerified: token.emailVerified === true,
     avatarUrl: row.avatar_url,
     blockedUntil: row.blocked_until,
   };
@@ -198,6 +210,7 @@ export async function resolveSession(
       userId: found.id,
       role: await applyAdminPolicy(db, found.id, found.role, token),
       phone: found.phone,
+      emailVerified: token.emailVerified === true,
       name: token.name ?? found.name,
       email: token.email ?? found.email,
       avatarUrl: token.picture ?? found.avatar_url,
@@ -239,6 +252,7 @@ export async function resolveSession(
     phone: row.phone,
     name: row.name,
     email: row.email,
+    emailVerified: token.emailVerified === true,
     avatarUrl: row.avatar_url,
     blockedUntil: row.blocked_until,
   };

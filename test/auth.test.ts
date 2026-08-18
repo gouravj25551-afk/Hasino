@@ -36,7 +36,7 @@ describe('bearer parsing', () => {
 
 describe('requireRole', () => {
   const s = (role: 'customer' | 'business' | 'admin') =>
-    ({ userId: 'u', role, phone: '+910000000000', name: null, email: null, avatarUrl: null, blockedUntil: null });
+    ({ userId: 'u', role, phone: '+910000000000', name: null, email: null, emailVerified: true, avatarUrl: null, blockedUntil: null });
 
   it('lets a business user into the panel', () => {
     assert.doesNotThrow(() => requireRole(s('business'), 'business'));

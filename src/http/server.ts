@@ -418,6 +418,23 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
   // shape: keyed to the user, not the IP.
   if (method === 'POST' && path === '/api/salons/apply') {
     const applicant = await session(db, req);
+
+    // A verified address, before anything else.
+    //
+    // An application is a claim to run a business on Hasino, reviewed by an
+    // admin who will read the email as the way to reach whoever sent it — and
+    // an unverified `email` claim is a string the person signing up chose.
+    // Checked here rather than only in the UI: the form is a courtesy, this is
+    // the control. Google sign-in returns a verified address, so in practice
+    // this only ever stops a provider configured to allow unverified sign-ups.
+    if (!applicant.emailVerified) {
+      throw new HttpError(
+        403,
+        'Verify your email address before listing a salon. Open the link your provider sent you, then try again.',
+        'EMAIL_NOT_VERIFIED',
+      );
+    }
+
     limits.booking.check(`apply:${applicant.userId}`);
     const body = await readJson(req);
     const result = await applyForSalon(
@@ -595,15 +612,51 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     // week — applying is what creates the salon, so a second attempt only 409s.
     // Not part of resolveSession: this is one query for one endpoint, not
     // something every authenticated request should pay for.
-    const application = await db.query<{ id: string; status: string; name: string }>(
-      `SELECT id, status, name FROM salons WHERE owner_id = $1`,
+    // The application, with the reason attached when it was turned down. The
+    // reason already existed — an admin types it when they reject — but it
+    // only ever reached other admins, so the owner saw "not approved" and no
+    // way to find out what to fix. Read from the status trail rather than
+    // copied onto the salon: salon_status_events is already the record of who
+    // did what and why.
+    const application = await db.query<{
+      id: string;
+      status: string;
+      name: string;
+      submitted_at: Date;
+      reviewed_at: Date | null;
+      rejection_reason: string | null;
+    }>(
+      `SELECT s.id, s.status, s.name, s.created_at AS submitted_at,
+              e.created_at AS reviewed_at,
+              CASE WHEN s.status = 'rejected' THEN e.reason END AS rejection_reason
+         FROM salons s
+         LEFT JOIN LATERAL (
+           SELECT reason, created_at
+             FROM salon_status_events
+            WHERE salon_id = s.id AND to_status = s.status
+            ORDER BY created_at DESC
+            LIMIT 1
+         ) e ON true
+        WHERE s.owner_id = $1`,
       [s.userId],
     );
     const salon = application.rows[0];
     return json(res, 200, {
       id: s.userId,
       role: s.role,
-      salon: salon ? { id: salon.id, name: salon.name, status: salon.status } : null,
+      // So the app can ask for verification before offering the form, instead
+      // of letting someone fill it in and be refused on submit.
+      emailVerified: s.emailVerified,
+      salon: salon
+        ? {
+            id: salon.id,
+            name: salon.name,
+            status: salon.status,
+            submittedAt: salon.submitted_at.toISOString(),
+            reviewedAt: salon.reviewed_at ? salon.reviewed_at.toISOString() : null,
+            rejectionReason: salon.rejection_reason,
+          }
+        : null,
       phone: s.phone,
       name: s.name,
       email: s.email,

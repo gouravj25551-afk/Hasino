@@ -223,7 +223,7 @@ describe('ADMIN_EMAILS elevation', () => {
 describe('admin and business do not overlap', () => {
   const session = (role: 'customer' | 'business' | 'admin') => ({
     userId: 'u', role, phone: '+910000000000', name: null, email: null,
-    avatarUrl: null, blockedUntil: null,
+    emailVerified: true, avatarUrl: null, blockedUntil: null,
   });
 
   it('a customer cannot reach an admin route', () => {
