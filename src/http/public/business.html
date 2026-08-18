@@ -8,30 +8,56 @@
 </head>
 <body>
 
-<div class="topbar">
-  <a class="lockup" href="#/today"><span class="wordmark">has<span class="i">i</span>no</span></a>
-  <span class="pill brand">salon panel</span>
-  <nav>
-    <a href="#/today"    data-nav="today">Today</a>
-    <a href="#/services" data-nav="services">Services</a>
-    <a href="#/timings"  data-nav="timings">Timings</a>
-    <a href="#/insights" data-nav="insights">Insights</a>
-    <a href="#/payouts"  data-nav="payouts">Money</a>
-    <a href="#/profile"  data-nav="profile">Profile</a>
-  </nav>
-  <span class="spacer"></span>
-  <div class="row" id="whoami" style="gap:10px"></div>
-  <!--
-    A link to the customer app used to sit here. For a salon account it was
-    half of an apparent choice — "salon panel or customer panel?" — when the
-    account is a salon and there is nothing to choose. business.js adds it back
-    only for someone who is signed out or has no salon, who genuinely does need
-    a way out of a panel that is not theirs. See initIdentity().
-  -->
-  <div class="row" id="exit" style="gap:10px"></div>
-</div>
+<!--
+  The panel is a dashboard, so it gets a dashboard's shape: navigation down the
+  side on a desktop, and the same links as a horizontal scroller pinned under
+  the header on a phone (both handled by .shell in brand.css).
 
-<div class="wrap" id="view"></div>
+  The routes, the hashes and the data-nav hooks are exactly what they were —
+  business.js's render() finds the active link by [data-nav] and sets
+  aria-current on it, and that still works unchanged. Only the frame moved.
+-->
+<div class="shell">
+  <aside class="shell-side">
+    <div class="side-brand">
+      <a class="lockup" href="#/today"><span class="wordmark">has<span class="i">i</span>no</span></a>
+      <div class="pill brand" style="margin-top:8px">salon panel</div>
+    </div>
+
+    <div class="side-group">Overview</div>
+    <a class="side-link" href="#/today"    data-nav="today"><span class="side-icon">▦</span>Today</a>
+    <a class="side-link" href="#/insights" data-nav="insights"><span class="side-icon">◐</span>Insights</a>
+    <a class="side-link" href="#/payouts"  data-nav="payouts"><span class="side-icon">₹</span>Money</a>
+
+    <div class="side-group">Manage</div>
+    <a class="side-link" href="#/services" data-nav="services"><span class="side-icon">✂</span>Services</a>
+    <a class="side-link" href="#/timings"  data-nav="timings"><span class="side-icon">◷</span>Timings</a>
+    <a class="side-link" href="#/profile"  data-nav="profile"><span class="side-icon">◈</span>Salon profile</a>
+
+    <!-- Pushed to the foot of the sidebar on a desktop; inline in the scroller
+         on a phone, where there is no "foot" to push anything to. -->
+    <div class="side-foot">
+      <div class="row" id="whoami" style="gap:8px"></div>
+      <!--
+        A link to the customer app used to sit in the header. For a salon
+        account it was half of an apparent choice — "salon panel or customer
+        panel?" — when the account is a salon and there is nothing to choose.
+        business.js adds it back only for someone who is signed out or has no
+        salon, who genuinely does need a way out of a panel that is not
+        theirs. See initIdentity().
+      -->
+      <div class="row" id="exit" style="gap:8px"></div>
+    </div>
+  </aside>
+
+  <main class="shell-main">
+    <!-- Its own slot, outside #view: render() clears #view on every route
+         change, and the banner has to outlive that. It used to hang off
+         .topbar, which this layout no longer has. -->
+    <div id="bannerSlot"></div>
+    <div id="view"></div>
+  </main>
+</div>
 
 <script type="module" src="/business.js"></script>
 </body>

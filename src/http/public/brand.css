@@ -1629,3 +1629,18 @@ td input, td select { min-width: 72px; }
 /* The review count rides inside the rating badge, dimmed — a 4.8 from three
    people and a 4.8 from three hundred are not the same claim. */
 .salon-card-rating .rating-count { font-weight: var(--weight-medium); opacity: .75; }
+
+/* Identity and the way out, at the foot of the sidebar on a desktop. On a
+   phone the sidebar is a horizontal scroller with no foot to push to, so it
+   simply rides along at the end of the row. */
+.shell-side .side-foot {
+  margin-top: auto;
+  padding-top: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+@media (max-width: 860px) {
+  .shell-side .side-foot { margin-top: 0; padding-top: 0; flex-direction: row; align-items: center; }
+}
+.shell-main .banner { margin-bottom: var(--space-6); }

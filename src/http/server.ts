@@ -114,6 +114,7 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'components/SearchBar.js',
   'components/ServiceCard.js',
   'components/Skeleton.js',
+  'components/Toast.js',
   'components/TopBar.js',
   'views/home.js',
   'views/explore.js',

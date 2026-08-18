@@ -10,6 +10,8 @@
 import { currentIdToken, watchAuthState, signOut } from './lib/auth.js';
 import { ask } from './lib/dialog.js';
 import { installBackHandler } from './lib/backbutton.js';
+import { EmptyState } from './components/EmptyState.js';
+import { toast as pushToast } from './components/Toast.js';
 
 const $  = (s, r = document) => r.querySelector(s);
 const el = (t, cls, txt) => { const n = document.createElement(t); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
@@ -188,10 +190,18 @@ function saveButton({ label = 'Save', className = 'btn primary', watch, snapshot
   return btn;
 }
 
-function toast(node, msg, bad) {
-  const box = el('div', 'out ' + (bad ? 'bad' : 'ok'), msg);
-  node.append(box);
-  setTimeout(() => box.remove(), 3200);
+/**
+ * Delegates to the shared toast region.
+ *
+ * This used to append a box into whatever node it was handed, which meant a
+ * confirmation could scroll off with the page it was attached to, or be wiped
+ * by the very re-render that followed the action — several callers here do
+ * `toast(view, ...)` and then immediately redraw `view`. The signature keeps
+ * its `node` argument so no call site changes; the argument is simply no
+ * longer where the message lives.
+ */
+function toast(_node, msg, bad) {
+  return pushToast(msg, { tone: bad ? 'bad' : 'ok' });
 }
 
 /**
@@ -277,6 +287,79 @@ const STATUS_PILL = {
 
 let currentDate = null;
 
+/**
+ * "Good morning" by the salon's clock, not the browser's.
+ *
+ * An owner in Bengaluru opening the panel on a laptop still set to London
+ * time would otherwise be greeted "good evening" at breakfast. tz is already
+ * the salon's zone — the panel uses it for every booking time on the screen —
+ * so the greeting uses the same one.
+ */
+function greeting(zone) {
+  const hour = Number(
+    new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', hourCycle: 'h23' }).format(new Date()),
+  );
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+/** The salon's own calendar date, for telling "today" from a date being browsed. */
+function localDay(zone) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: zone }).format(new Date());
+}
+function isToday(dateKey, zone) {
+  return dateKey === localDay(zone);
+}
+
+function dashSubtitle(overview, dateKey) {
+  const n = overview.todayCount ?? 0;
+  if (!isToday(dateKey, tz)) return `Viewing ${dateKey} · ${overview.salon.status}`;
+  if (n === 0) return 'Nothing booked yet today.';
+  return `${n} booking${n === 1 ? '' : 's'} on the book today.`;
+}
+
+/**
+ * The numbers that were already in /api/business/overview and never shown.
+ *
+ * salonStats() reports over a rolling 60 days, so the labels say so rather
+ * than letting an owner read a two-month revenue figure as today's takings —
+ * a KPI card that does not state its window is worse than no card.
+ */
+function kpiRow(overview) {
+  const st = overview.stats || {};
+  const grid = el('div', 'grid kpi');
+  grid.style.marginBottom = 'var(--space-8)';
+
+  const card = (k, v, hint) => {
+    const box = el('div', 'stat');
+    box.append(el('div', 'k', k));
+    box.append(el('div', 'v', v));
+    if (hint) box.append(el('div', 'meta', hint));
+    return box;
+  };
+
+  grid.append(card('Today', String(overview.todayCount ?? 0), 'bookings'));
+  grid.append(card('Revenue', rupees(st.revenue ?? 0), 'last 60 days'));
+  grid.append(card('Completed', String(st.completed ?? 0), 'last 60 days'));
+  grid.append(
+    card(
+      'Rating',
+      st.rating == null ? '—' : `★ ${Number(st.rating).toFixed(1)}`,
+      st.reviews ? `${st.reviews} review${st.reviews === 1 ? '' : 's'}` : 'no reviews yet',
+    ),
+  );
+
+  // Only when there is something to say. A permanent "0 flags" tile is a tile
+  // that never earns its space.
+  if (st.flags && st.flags.length) {
+    const warn = card('Needs attention', String(st.flags.length), st.flags.join(' · '));
+    warn.style.borderColor = 'var(--warn)';
+    grid.append(warn);
+  }
+  return grid;
+}
+
 async function todayView() {
   const view = $('#view');
   view.innerHTML = '';
@@ -285,16 +368,36 @@ async function todayView() {
   tz = overview.salon.timezone;
   if (!currentDate) currentDate = overview.today;
 
-  view.append(el('h1', null, overview.salon.name));
-  view.append(el('p', 'sub', `${overview.salon.status} · ${tz}`));
+  // ---- the greeting ----
+  // A dashboard opens with who you are and how the day looks, not with a
+  // heading and a status string. The hour comes from the salon's own timezone,
+  // which the panel already knows — greeting an owner in Bengaluru "good
+  // evening" off a laptop still on London time is the kind of small wrongness
+  // that makes software feel generic.
+  const head = el('div', 'dash-head');
+  head.append(el('h1', null, `${greeting(tz)}, ${overview.salon.name}`));
+  head.append(el('div', 'dash-sub', dashSubtitle(overview, currentDate)));
+  view.append(head);
+
+  // ---- today's numbers ----
+  // Everything here already came back with /api/business/overview; nothing new
+  // is fetched and no endpoint changed. It was simply never shown.
+  view.append(kpiRow(overview));
 
   const ctrl = el('div', 'row');
-  ctrl.style.marginBottom = '16px';
-  const date = el('input');
-  date.type = 'date';
-  date.value = currentDate;
-  date.style.maxWidth = '190px';
-  date.onchange = () => { currentDate = date.value; todayView(); };
+  ctrl.style.marginBottom = 'var(--space-6)';
+  // The date field carries a label above it, so centre-aligning the row would
+  // float the button half a line high against the input.
+  ctrl.style.alignItems = 'flex-end';
+  const date = el('label', 'field');
+  date.style.margin = '0';
+  date.append(el('span', null, 'Showing'));
+  const dateInput = el('input');
+  dateInput.type = 'date';
+  dateInput.value = currentDate;
+  dateInput.style.maxWidth = '190px';
+  dateInput.onchange = () => { currentDate = dateInput.value; todayView(); };
+  date.append(dateInput);
   ctrl.append(date);
 
   const close = el('button', 'btn danger', 'Close for this day');
@@ -324,7 +427,23 @@ async function todayView() {
   // the server's clock and a shop phone is often minutes out.
   const clockSkewMs = serverNow ? Date.parse(serverNow) - Date.now() : 0;
   const serverTime = () => Date.now() + clockSkewMs;
-  if (!bookings.length) { view.append(el('div', 'empty', 'No bookings on this day.')); return; }
+  const listHead = el('div', 'section-head');
+  listHead.append(el('h2', null, isToday(currentDate, tz) ? "Today's appointments" : 'Appointments'));
+  listHead.append(el('span', 'meta', `${bookings.length} booked`));
+  view.append(listHead);
+
+  if (!bookings.length) {
+    view.append(
+      EmptyState({
+        icon: '◷',
+        title: 'Nothing booked for this day',
+        body: 'Bookings appear here the moment a customer confirms one. Check your timings and services are set up so customers can find you.',
+        action: 'Check timings',
+        onAction: () => { location.hash = '#/timings'; },
+      }),
+    );
+    return;
+  }
 
   const list = el('div', 'list');
   for (const b of bookings) {
@@ -1178,8 +1297,8 @@ window.addEventListener('hashchange', render);
 async function renderPendingBanner() {
   try {
     const { salon } = await api('/api/business/overview');
-    const existing = document.getElementById('pendingBanner');
-    if (existing) existing.remove();
+    const slot = document.getElementById('bannerSlot');
+    if (slot) slot.replaceChildren();
     if (salon.status === 'active') return;
 
     const banner = el('div', 'banner');
@@ -1190,7 +1309,7 @@ async function renderPendingBanner() {
         : salon.status === 'suspended'
           ? 'This salon is suspended and is not taking bookings. Contact Hasino support.'
           : 'This salon has been removed from Hasino and cannot take bookings.';
-    document.querySelector('.topbar').after(banner);
+    document.getElementById('bannerSlot')?.replaceChildren(banner);
   } catch { /* the panel itself will surface the error */ }
 }
 
