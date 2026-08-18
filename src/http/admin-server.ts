@@ -111,6 +111,12 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'brand.css',
   'lib/auth.js',
   'lib/dialog.js',
+  // Shared components. admin.js keeps its own tiny `el` helper, but the empty
+  // and loading states are the same ones the customer app uses — a second
+  // implementation here is how two panels drift apart.
+  'lib/dom.js',
+  'components/EmptyState.js',
+  'components/Skeleton.js',
 ]);
 
 async function session(db: Pool, req: IncomingMessage): Promise<Session> {

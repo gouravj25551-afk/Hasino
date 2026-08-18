@@ -29,6 +29,8 @@ import {
  * Before any other import can touch Clerk.
  */
 import { ask, notify } from './lib/dialog.js';
+import { EmptyState } from './components/EmptyState.js';
+import { SkeletonList, SkeletonCard } from './components/Skeleton.js';
 
 configureAuthRoutes({ signIn: '/', home: '/#/overview' });
 
@@ -117,24 +119,52 @@ function errorBox(err) {
 async function overviewView() {
   const view = $('#view');
   view.innerHTML = '';
-  view.append(el('h1', null, 'Overview'));
 
   const o = await api('/api/admin/overview');
 
-  const grid = el('div', 'grid');
-  grid.style.gridTemplateColumns = 'repeat(auto-fit, minmax(180px, 1fr))';
+  // The console's whole job is the review queue, so the header states it
+  // rather than saying "Overview" and leaving the operator to find the number.
+  const head = el('div', 'dash-head');
+  head.append(el('h1', null, 'Overview'));
+  head.append(
+    el(
+      'div',
+      'dash-sub',
+      o.pending
+        ? `${o.pending} application${o.pending === 1 ? '' : 's'} waiting on you.`
+        : 'Nothing waiting for review.',
+    ),
+  );
+  view.append(head);
+
+  // The one card that is a job rather than a number gets to look like one, and
+  // to be clickable — it was previously a tile you read and then navigated to
+  // by hand.
+  const grid = el('div', 'grid kpi');
+  grid.style.marginBottom = 'var(--space-8)';
   const stat = (k, v, hint) => {
     const box = el('div', 'stat');
     box.append(el('div', 'k', k), el('div', 'v', String(v)));
     if (hint) box.append(el('div', 'meta', hint));
     return box;
   };
+
+  const pending = stat('Pending', o.pending, o.pending ? 'tap to review' : 'queue clear');
+  if (o.pending) {
+    pending.classList.add('stat-action');
+    pending.tabIndex = 0;
+    pending.setAttribute('role', 'link');
+    const go = () => { salonFilters.status = 'pending'; location.hash = '#/salons'; };
+    pending.onclick = go;
+    pending.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+  }
+
   grid.append(
-    stat('Pending applications', o.pending, o.pending ? 'waiting on you' : null),
-    stat('Active salons', o.active),
-    stat('Suspended', o.suspended),
-    stat('Bookings today', o.bookingsToday),
-    stat('GMV this month', rupees(o.gmvThisMonth)),
+    pending,
+    stat('Active salons', o.active, 'taking bookings'),
+    stat('Suspended', o.suspended, o.suspended ? 'not bookable' : 'none'),
+    stat('Bookings today', o.bookingsToday, 'across the platform'),
+    stat('GMV', rupees(o.gmvThisMonth), 'this month'),
   );
   view.append(grid);
 
@@ -142,6 +172,7 @@ async function overviewView() {
   // invisible to customers and looks like a platform bug from the outside.
   const chase = el('div', 'panel');
   chase.append(el('h2', null, 'Needs chasing'));
+  chase.append(el('p', 'sub', 'Live salons that customers cannot actually book, and owners who have never arrived.'));
   const list = el('div', 'list');
   const row = (label, n, hint) => {
     const item = el('div', 'item');
@@ -163,14 +194,25 @@ let salonFilters = { status: '', city: '', q: '' };
 async function salonsView() {
   const view = $('#view');
   view.innerHTML = '';
-  view.append(el('h1', null, 'Salons'));
+
+  const head = el('div', 'dash-head');
+  head.append(el('h1', null, 'Salons'));
+  head.append(el('div', 'dash-sub', 'Every salon on the platform, and the queue waiting to join it.'));
+  view.append(head);
 
   const controls = el('div', 'panel');
   const row = el('div', 'row');
 
-  const tabs = el('div', 'row');
+  // A segmented filter rather than six buttons where the selected one is a
+  // primary button: a filled primary reads as "the action to take", so the
+  // status you were already looking at looked like the thing to click next.
+  const tabs = el('div', 'segmented');
+  tabs.setAttribute('role', 'group');
+  tabs.setAttribute('aria-label', 'Filter by status');
   for (const [label, value] of [['Pending','pending'],['Active','active'],['Suspended','suspended'],['Rejected','rejected'],['Banned','banned'],['All','']]) {
-    const b = el('button', 'btn sm' + (salonFilters.status === value ? ' primary' : ''), label);
+    const b = el('button', 'segmented-btn', label);
+    b.type = 'button';
+    b.setAttribute('aria-pressed', String(salonFilters.status === value));
     b.onclick = () => { salonFilters.status = value; salonsView(); };
     tabs.append(b);
   }
@@ -205,7 +247,13 @@ async function salonsView() {
 
   async function drawList() {
     listWrap.innerHTML = '';
-    listWrap.append(el('div', 'empty', 'Loading…'));
+    // Skeleton rows in the shape of the list that is coming, rather than the
+    // word "Loading…" — the rows do not jump into place from nothing.
+    listWrap.append(SkeletonList(4, () => {
+      const row = document.createElement('div');
+      row.className = 'skeleton skeleton-row';
+      return row;
+    }));
     const params = new URLSearchParams();
     if (salonFilters.status) params.set('status', salonFilters.status);
     if (salonFilters.city) params.set('city', salonFilters.city);
@@ -214,7 +262,22 @@ async function salonsView() {
       const { salons } = await api('/api/admin/salons?' + params);
       listWrap.innerHTML = '';
       if (!salons.length) {
-        listWrap.append(el('div', 'empty', 'No salons match those filters.'));
+        const filtered = salonFilters.status || salonFilters.city || salonFilters.q;
+        listWrap.append(
+          EmptyState({
+            icon: '◈',
+            title: filtered ? 'Nothing matches those filters' : 'No salons yet',
+            body: filtered
+              ? 'Try a different status, city or search term — or clear the filters to see everything.'
+              : 'Salons appear here once someone applies, or once you onboard one directly.',
+            action: filtered ? 'Clear filters' : 'Onboard a salon',
+            onAction: () => {
+              if (!filtered) return void (location.hash = '#/onboard');
+              salonFilters = { status: '', city: '', q: '' };
+              salonsView();
+            },
+          }),
+        );
         return;
       }
       const list = el('div', 'list');
@@ -894,9 +957,12 @@ function render() {
 async function refreshPendingBadge() {
   try {
     const o = await api('/api/admin/overview');
+    // Lives in the sidebar link now, so the size of the queue is visible from
+    // every screen rather than only from Salons. .side-count is the sidebar's
+    // own count chip; an empty className leaves nothing rendered.
     const badge = $('#pendingBadge');
-    badge.textContent = o.pending ? ` ${o.pending}` : '';
-    badge.className = o.pending ? 'pill warn' : '';
+    badge.textContent = o.pending ? String(o.pending) : '';
+    badge.className = o.pending ? 'side-count' : '';
   } catch { /* the nav badge is not worth an error state */ }
 }
 

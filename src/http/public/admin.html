@@ -8,20 +8,38 @@
 </head>
 <body>
 
-<div class="topbar">
-  <a class="lockup" href="#/overview"><span class="wordmark">has<span class="i">i</span>no</span></a>
-  <span class="pill bad">admin</span>
-  <nav>
-    <a href="#/overview" data-nav="overview">Overview</a>
-    <a href="#/salons"   data-nav="salons">Salons <span id="pendingBadge"></span></a>
-    <a href="#/onboard"  data-nav="onboard">Onboard</a>
-    <a href="#/catalog"  data-nav="catalog">Catalogue</a>
-  </nav>
-  <span class="spacer"></span>
-  <div class="row" id="whoami" style="gap:10px"></div>
-</div>
+<!--
+  The operator console gets the same .shell as the salon panel: navigation down
+  the side on a desktop, a horizontal scroller under the header on a phone.
 
-<div class="wrap" id="view"></div>
+  The hashes and the data-nav hooks are unchanged — admin.js's render() finds
+  the active link by [data-nav] and maps #/salon/:id back onto "salons" — so
+  routing is untouched. #pendingBadge keeps its id and moves into the link as a
+  side-count, which is where a queue length belongs: the whole job of this
+  panel is the queue, and it was previously legible only on the Salons screen.
+-->
+<div class="shell">
+  <aside class="shell-side">
+    <div class="side-brand">
+      <a class="lockup" href="#/overview"><span class="wordmark">has<span class="i">i</span>no</span></a>
+      <div class="pill bad" style="margin-top:8px">admin</div>
+    </div>
+
+    <div class="side-group">Operate</div>
+    <a class="side-link" href="#/overview" data-nav="overview"><span class="side-icon">▦</span>Overview</a>
+    <a class="side-link" href="#/salons"   data-nav="salons"><span class="side-icon">◈</span>Salons<span id="pendingBadge"></span></a>
+
+    <div class="side-group">Set up</div>
+    <a class="side-link" href="#/onboard" data-nav="onboard"><span class="side-icon">＋</span>Onboard a salon</a>
+    <a class="side-link" href="#/catalog" data-nav="catalog"><span class="side-icon">☰</span>Catalogue</a>
+
+    <div class="side-foot">
+      <div class="row" id="whoami" style="gap:8px"></div>
+    </div>
+  </aside>
+
+  <main class="shell-main" id="view"></main>
+</div>
 
 <script type="module" src="/admin.js"></script>
 </body>
