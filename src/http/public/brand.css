@@ -36,9 +36,12 @@
   --bad:          #c33a3a;
   --bad-bg:       #fdeceb;
 
+  --radius-xs:    6px;
+  --radius-sm:    10px;
   --radius:       14px;
-  --radius-sm:    9px;
   --radius-lg:    20px;
+  --radius-xl:    26px;
+  --radius-pill:  999px;
   --shadow:       0 1px 2px rgba(16,14,35,.05), 0 8px 24px -12px rgba(16,14,35,.18);
 
   /* elevation — flat surfaces, resting cards, and things above the page (menus, modals) */
@@ -51,14 +54,36 @@
           Inter, Poppins, system-ui, -apple-system, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
 
-  /* type scale */
+  /* ---------- type scale ----------
+     A real ramp, not four sizes clustered around the body text. The old scale
+     topped out at 32px and used 12px uppercase for section headings, which is
+     a *label* doing a heading's job — the single biggest reason the app read
+     as functional rather than finished. Headings now step properly, and the
+     eyebrow survives as .eyebrow for the places that genuinely want one. */
   --text-xs:   12px;
   --text-sm:   13.5px;
   --text-base: 15px;
   --text-lg:   17px;
   --text-xl:   20px;
   --text-2xl:  24px;
-  --text-3xl:  32px;
+  --text-3xl:  30px;
+  --text-4xl:  38px;
+  --text-5xl:  48px;
+
+  /* Tracking tightens as type grows — the reason large headings on Linear and
+     Stripe look set rather than scaled up. */
+  --tracking-tight:  -0.03em;
+  --tracking-snug:   -0.02em;
+  --tracking-normal: -0.01em;
+  --tracking-wide:    0.08em;
+
+  --leading-tight: 1.15;
+  --leading-snug:  1.3;
+  --leading-base:  1.55;
+
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
 
   /* spacing scale */
   --space-1: 4px;
@@ -69,6 +94,27 @@
   --space-6: 24px;
   --space-8: 32px;
   --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+
+  /* Vertical rhythm between major sections of a page. One token so Home,
+     Explore and the salon page breathe identically instead of each picking a
+     margin. */
+  --section-gap: var(--space-10);
+
+  /* ---------- motion ----------
+     Every transition in this file used to be a bare `.12s`, which is why
+     hovers felt mechanical: linear-ish easing, one duration for a 2px nudge
+     and a full sheet. These are the two curves worth having — `out` for
+     things entering or responding to a pointer, `spring` for the one or two
+     places that should feel physical. Durations stay short on purpose: this
+     is a booking app, not a showreel. */
+  --ease-out:    cubic-bezier(.22, .68, .32, 1);
+  --ease-spring: cubic-bezier(.22, 1.2, .36, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
 
   /* ---------- what is covering the bottom of the page ----------
      Three fixed things can sit over the end of a scrolling view: the bottom
@@ -236,22 +282,31 @@ body {
      viewport-fit=cover, so without this the location chip sits under the
      clock. env() is 0px in a desktop browser, which is why this is one rule
      rather than a media query. */
-  padding: calc(13px + env(safe-area-inset-top)) 22px 13px;
-  background: var(--surface);
+  padding: calc(var(--space-3) + env(safe-area-inset-top)) clamp(var(--space-4), 4vw, var(--space-10)) var(--space-3);
+  /* Translucent and blurred rather than a flat panel: content scrolling under
+     the header reads as depth instead of as the header being a separate slab.
+     The colour-mix fallback keeps it opaque where backdrop-filter is not
+     supported, so it never becomes unreadable. */
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  backdrop-filter: saturate(180%) blur(16px);
   border-bottom: 1px solid var(--line);
   position: sticky;
   top: 0;
   z-index: 20;
   flex-wrap: wrap;
 }
+@supports not (backdrop-filter: blur(1px)) {
+  .topbar { background: var(--surface); }
+}
 .topbar nav { display: flex; gap: 4px; margin-left: 6px; }
 .topbar nav a {
-  padding: 7px 13px;
-  border-radius: 99px;
+  padding: 8px 14px;
+  border-radius: var(--radius-pill);
   text-decoration: none;
   color: var(--dim);
-  font-weight: 600;
-  font-size: 14px;
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 .topbar nav a:hover { background: var(--surface-2); color: var(--text); }
 .topbar nav a[aria-current="page"] { background: var(--brand-100); color: var(--brand-ink); }
@@ -345,30 +400,99 @@ body {
 .wrap {
   max-width: 1180px;
   margin: 0 auto;
-  padding: 22px;
-  padding-bottom: calc(22px + var(--bottom-nav-height) + var(--safe-bottom) + var(--cart-bar-height));
+  /* Gutters scale with the viewport instead of sitting at 22px from phone to
+     desktop — the main reason the desktop layout felt cramped against the
+     window edge. */
+  padding: var(--space-8) clamp(var(--space-4), 4vw, var(--space-10)) 0;
+  padding-bottom: calc(var(--space-12) + var(--bottom-nav-height) + var(--safe-bottom) + var(--cart-bar-height));
 }
 
-h1 { font-size: 24px; letter-spacing: -0.02em; margin: 0 0 4px; }
-h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .09em;
-     color: var(--dim); margin: 0 0 11px; font-weight: 700; }
-h3 { font-size: 16px; margin: 0 0 2px; letter-spacing: -0.01em; }
-.sub { color: var(--dim); margin: 0 0 20px; }
+/* ---------- typography ----------
+   h2 was a 12px uppercase label. Section headings now read as headings, and
+   the label role moves to .eyebrow, which is still the right thing above a
+   hero or inside a dense panel — just not the only thing. */
+h1 {
+  font-size: var(--text-3xl);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  font-weight: var(--weight-bold);
+  margin: 0 0 var(--space-2);
+}
+h2 {
+  font-size: var(--text-xl);
+  line-height: var(--leading-snug);
+  letter-spacing: var(--tracking-snug);
+  font-weight: var(--weight-bold);
+  color: var(--text);
+  margin: 0 0 var(--space-4);
+  text-transform: none;
+}
+h3 {
+  font-size: var(--text-lg);
+  line-height: var(--leading-snug);
+  letter-spacing: var(--tracking-normal);
+  font-weight: var(--weight-semibold);
+  margin: 0 0 var(--space-1);
+}
+
+/* The old h2, kept deliberately: an eyebrow above a title still earns its
+   place. It is now opt-in rather than what every section got by default. */
+.eyebrow {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--dim);
+  font-weight: var(--weight-bold);
+  margin: 0 0 var(--space-2);
+}
+
+.sub {
+  color: var(--dim);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+  margin: 0 0 var(--space-6);
+  max-width: 62ch;   /* measure — long paragraphs stop running the full width */
+}
+
+/* A section header row: title on the left, an optional action on the right.
+   The pattern every discovery section repeats, so it is one class rather than
+   a flex row rebuilt per view. */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin: 0 0 var(--space-4);
+}
+.section-head h2, .section-head h3 { margin: 0; }
+.section-head .link {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--brand-ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.section-head .link:hover { text-decoration: underline; }
+
+/* Space between the major bands of a page. */
+.section + .section { margin-top: var(--section-gap); }
 
 /* ---------- surfaces ---------- */
 
 .panel {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 18px;
-  box-shadow: var(--shadow);
-  margin-bottom: 16px;
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  box-shadow: var(--elevation-1);
+  margin-bottom: var(--space-5);
 }
+.panel > :last-child { margin-bottom: 0; }
 
-.grid { display: grid; gap: 14px; }
-.grid.two { grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
-.grid.cards { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.grid { display: grid; gap: var(--space-5); }
+.grid.two   { grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
+.grid.cards { grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); }
+.grid.kpi   { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--space-4); }
 
 .tile {
   display: block; width: 100%; text-align: left; font: inherit; color: inherit;
@@ -385,40 +509,141 @@ h3 { font-size: 16px; margin: 0 0 2px; letter-spacing: -0.01em; }
 
 /* ---------- controls ---------- */
 
+/* ---------- buttons ----------
+   Five intents x four states. The variants that existed (default, primary,
+   danger) keep their class names and their meaning, so no view has to change
+   to keep working; secondary, ghost, success and the loading state are new.
+
+   The press state is a real 1px translate rather than only a colour change —
+   it is what makes a tap feel like it landed on a touch device, where there
+   is no hover to confirm it. */
 .btn {
-  font: inherit; font-weight: 600; font-size: 14px;
-  padding: 9px 16px; border-radius: 10px; cursor: pointer;
-  border: 1px solid var(--line); background: var(--surface); color: var(--text);
-  transition: .12s;
+  font: inherit;
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 11px 18px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out);
 }
-.btn:hover { border-color: var(--brand); color: var(--brand-700); }
-.btn:disabled { opacity: .45; cursor: not-allowed; }
-.btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
-.btn.primary:hover { background: var(--brand-600); border-color: var(--brand-600); color: #fff; }
+.btn:hover { border-color: var(--brand); color: var(--brand-ink); background: var(--surface-2); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: .45; cursor: not-allowed; transform: none; }
+.btn:disabled:hover { border-color: var(--line); color: var(--text); background: var(--surface); }
+
+.btn.primary {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--on-brand);
+  box-shadow: 0 1px 2px rgba(16,14,35,.12);
+}
+.btn.primary:hover { background: var(--brand-600); border-color: var(--brand-600); color: var(--on-brand); }
+.btn.primary:disabled:hover { background: var(--brand); border-color: var(--brand); }
+
+/* Secondary: brand-tinted, for the second-most-wanted action in a group where
+   two outlined buttons would read as equal weight. */
+.btn.secondary {
+  background: var(--brand-100);
+  border-color: transparent;
+  color: var(--brand-ink);
+}
+.btn.secondary:hover { background: var(--brand-100); border-color: var(--brand); }
+
+/* Ghost: chrome and toolbars, where a border per button would be noise. */
+.btn.ghost { background: transparent; border-color: transparent; color: var(--dim); }
+.btn.ghost:hover { background: var(--surface-2); color: var(--text); border-color: transparent; }
+
 .btn.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
 .btn.danger:hover { background: var(--bad-bg); border-color: var(--bad); color: var(--bad); }
-.btn.sm { padding: 6px 11px; font-size: 13px; border-radius: 8px; }
 
-input, select {
-  font: inherit; font-size: 14px;
-  padding: 8px 11px; border-radius: 9px;
-  border: 1px solid var(--line); background: var(--surface); color: var(--text);
-  width: 100%;
+.btn.success { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
+.btn.success:hover { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+
+.btn.sm  { padding: 7px 12px; font-size: var(--text-xs); border-radius: var(--radius-xs); }
+.btn.lg  { padding: 15px 26px; font-size: var(--text-base); border-radius: var(--radius); }
+.btn.block { width: 100%; }
+
+/* Loading: the label stays (so the button keeps its width and nothing jumps)
+   and is dimmed under a spinner. aria-busy is the hook, so a caller sets one
+   attribute and gets both the visual and the announcement. */
+.btn[aria-busy="true"] { position: relative; color: transparent !important; pointer-events: none; }
+.btn[aria-busy="true"]::after {
+  content: "";
+  position: absolute;
+  width: 15px; height: 15px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  color: var(--text);
+  animation: btn-spin 620ms linear infinite;
 }
-input:focus, select:focus { border-color: var(--brand); outline: none; }
+.btn.primary[aria-busy="true"]::after { color: var(--on-brand); }
+@keyframes btn-spin { to { transform: rotate(360deg); } }
+
+input, select, textarea {
+  font: inherit; font-size: var(--text-sm);
+  padding: 11px 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  width: 100%;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out);
+}
+/* A focus ring rather than only a border colour change: on a dark surface a
+   1px recolour is close to invisible, and this is the state that has to be
+   unmistakable for anyone tabbing through a form. */
+input:focus, select:focus, textarea:focus {
+  border-color: var(--brand);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent);
+}
+input::placeholder, textarea::placeholder { color: var(--dim); opacity: .8; }
 input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--brand); }
-label.field { display: block; }
-label.field span { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; font-weight: 600; }
+input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--bad); }
+input[aria-invalid="true"]:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 22%, transparent); }
+
+label.field { display: block; margin-bottom: var(--space-4); }
+label.field span {
+  display: block; font-size: var(--text-xs); color: var(--text);
+  margin-bottom: var(--space-2); font-weight: var(--weight-semibold);
+}
+label.field .hint { color: var(--dim); font-weight: var(--weight-medium); margin-top: var(--space-1); }
 
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
 /* ---------- pills ---------- */
 
 .pill {
-  display: inline-block; padding: 3px 10px; border-radius: 99px;
-  font-size: 12px; font-weight: 700; letter-spacing: .01em;
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  padding: 4px 11px; border-radius: var(--radius-pill);
+  font-size: var(--text-xs); font-weight: var(--weight-semibold);
+  letter-spacing: .01em; line-height: 1.5;
   background: var(--surface-2); color: var(--dim);
+  border: 1px solid transparent;
 }
+/* A status dot, for the badges where colour alone carries the meaning —
+   colour alone is not something to rely on. */
+.pill.dot::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor; flex: 0 0 auto;
+}
+.pill.solid { background: var(--brand); color: var(--on-brand); }
+.pill.outline { background: transparent; border-color: var(--line); color: var(--dim); }
 .pill.ok   { background: var(--ok-bg);   color: var(--ok); }
 .pill.warn { background: var(--warn-bg); color: var(--warn); }
 .pill.bad  { background: var(--bad-bg);  color: var(--bad); }
@@ -534,10 +759,16 @@ label.field span { display: block; font-size: 12px; color: var(--dim); margin-bo
 .note { border-left: 3px solid var(--brand); padding: 2px 0 2px 13px;
         color: var(--dim); font-size: 13.5px; }
 
-.stat { padding: 14px 16px; border: 1px solid var(--line);
-        border-radius: var(--radius-sm); background: var(--surface); }
-.stat .k { font-size: 11.5px; color: var(--dim); text-transform: uppercase;
-           letter-spacing: .07em; font-weight: 700; }
+.stat {
+  padding: var(--space-5); border: 1px solid var(--line);
+  border-radius: var(--radius); background: var(--surface);
+  display: flex; flex-direction: column; gap: var(--space-1);
+  transition: border-color var(--dur-base) var(--ease-out),
+              box-shadow var(--dur-base) var(--ease-out);
+}
+.stat:hover { border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); box-shadow: var(--elevation-1); }
+.stat .k { font-size: var(--text-xs); color: var(--dim); text-transform: uppercase;
+           letter-spacing: var(--tracking-wide); font-weight: var(--weight-bold); }
 .stat .v { font-size: 24px; font-weight: 700; letter-spacing: -.02em;
            font-variant-numeric: tabular-nums; }
 
@@ -628,12 +859,16 @@ td input, td select { min-width: 72px; }
   /* Clears the gesture bar, for the same reason as the top bar above. */
   padding-bottom: env(safe-area-inset-bottom);
   box-sizing: content-box;
-  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: saturate(180%) blur(16px);
   border-top: 1px solid var(--line);
   z-index: 100;
   justify-content: space-around;
   align-items: center;
   box-shadow: 0 -4px 16px rgba(0,0,0,0.06);
+}
+@supports not (backdrop-filter: blur(1px)) {
+  .bottom-nav { background: var(--surface); }
 }
 @media (max-width: 768px) {
   .bottom-nav { display: flex; }
@@ -652,11 +887,24 @@ td input, td select { min-width: 72px; }
   text-decoration: none;
   color: var(--dim);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   gap: 3px;
   flex: 1;
   height: 100%;
-  transition: color 0.15s ease;
+  position: relative;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+/* The icon lifts a little on the active tab, which is what makes the bar feel
+   responsive on a phone where there is no hover to rely on. */
+.bottom-nav .nav-item svg { transition: transform var(--dur-base) var(--ease-spring); }
+.bottom-nav .nav-item.active svg { transform: translateY(-2px) scale(1.06); }
+.bottom-nav .nav-item.active::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 50%; transform: translateX(-50%);
+  width: 26px; height: 3px;
+  border-radius: 0 0 var(--radius-pill) var(--radius-pill);
+  background: var(--brand);
 }
 .bottom-nav .nav-item svg {
   width: 22px;
@@ -674,44 +922,73 @@ td input, td select { min-width: 72px; }
      rule — --hero-from/--hero-to are set in both dark palettes. */
   background: linear-gradient(135deg, var(--hero-from) 0%, var(--hero-to) 100%);
   border: 1px solid var(--hero-line);
-  border-radius: 20px;
-  padding: 32px 24px;
-  margin-bottom: 24px;
+  border-radius: var(--radius-xl);
+  padding: clamp(var(--space-8), 5vw, var(--space-16)) clamp(var(--space-6), 4vw, var(--space-12));
+  margin-bottom: var(--section-gap);
   position: relative;
   overflow: hidden;
 }
+/* A soft brand bloom behind the headline. Sits under the content, is purely
+   decorative, and is the one flourish on the page — enough to stop the hero
+   reading as a grey box, not enough to compete with the search bar. */
+.hero-box::after {
+  content: "";
+  position: absolute;
+  inset: auto -10% -60% auto;
+  width: 460px; height: 460px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--brand) 30%, transparent) 0%, transparent 68%);
+  pointer-events: none;
+  z-index: 0;
+}
+.hero-box > * { position: relative; z-index: 1; }
 .hero-box h1 {
-  font-size: 32px;
+  /* Fluid rather than fixed: 32px is a large heading on a phone and a small
+     one on a 27" display. clamp lets one rule read correctly on both. */
+  font-size: clamp(var(--text-2xl), 5vw, var(--text-4xl));
   font-weight: 800;
-  letter-spacing: -0.03em;
-  margin-bottom: 8px;
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  margin-bottom: var(--space-3);
   color: var(--text);
+  max-width: 18ch;   /* breaks the headline where it reads, not at the gutter */
 }
 .hero-box p {
-  font-size: 16px;
+  font-size: var(--text-lg);
+  line-height: var(--leading-base);
   color: var(--dim);
   margin-top: 0;
-  margin-bottom: 20px;
-  max-width: 500px;
+  margin-bottom: var(--space-6);
+  max-width: 46ch;
 }
 .search-bar-wrap {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2);
+  align-items: center;
   background: var(--surface);
-  padding: 6px;
-  border-radius: 14px;
+  padding: var(--space-2);
+  border-radius: var(--radius-pill);
   border: 1px solid var(--line);
-  box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+  box-shadow: var(--elevation-2);
   max-width: 640px;
+  transition: box-shadow var(--dur-base) var(--ease-out),
+              border-color var(--dur-base) var(--ease-out);
+}
+/* The ring moves to the wrapper, because the input inside is borderless —
+   focusing it used to give no visible feedback at all. */
+.search-bar-wrap:focus-within {
+  border-color: var(--brand);
+  box-shadow: var(--elevation-2), 0 0 0 4px color-mix(in srgb, var(--brand) 20%, transparent);
 }
 .search-bar-wrap input {
   border: none;
   outline: none;
   box-shadow: none;
-  font-size: 15px;
-  padding: 10px 14px;
+  background: transparent;
+  font-size: var(--text-base);
+  padding: var(--space-3) var(--space-4);
 }
-.search-bar-wrap input:focus { border: none; }
+.search-bar-wrap input:focus { border: none; box-shadow: none; }
+.search-bar-wrap .btn { border-radius: var(--radius-pill); padding-inline: var(--space-6); }
 
 /* Category Pills & Cards */
 .categories-header {
@@ -722,12 +999,14 @@ td input, td select { min-width: 72px; }
 }
 .category-strip {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   overflow-x: auto;
-  padding-bottom: 10px;
-  margin-bottom: 24px;
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--section-gap);
   scroll-behavior: smooth;
+  scrollbar-width: none;              /* the strip is a swipe affordance,      */
 }
+.category-strip::-webkit-scrollbar { display: none; }   /* not a scroll region */
 .category-card {
   flex: 0 0 auto;
   display: flex;
@@ -744,11 +1023,19 @@ td input, td select { min-width: 72px; }
   transition: all 0.15s ease;
   user-select: none;
 }
-.category-card:hover, .category-card.active {
-  background: var(--brand);
-  color: #fff;
+/* Hover and selected used to render identically, so on a pointer device every
+   chip looked active as the cursor crossed it. Hover is now a tint, selected
+   is the filled state. */
+.category-card:hover {
+  background: var(--surface-2);
   border-color: var(--brand);
-  box-shadow: 0 4px 12px rgba(155, 138, 232, 0.35);
+  color: var(--text);
+}
+.category-card.active {
+  background: var(--brand);
+  color: var(--on-brand);
+  border-color: var(--brand);
+  box-shadow: 0 4px 14px -4px color-mix(in srgb, var(--brand) 60%, transparent);
 }
 .category-icon {
   font-size: 18px;
@@ -760,54 +1047,70 @@ td input, td select { min-width: 72px; }
   flex-direction: column;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
   text-decoration: none;
   color: inherit;
-  box-shadow: var(--shadow);
-  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  box-shadow: var(--elevation-1);
+  transition: transform var(--dur-base) var(--ease-out),
+              box-shadow var(--dur-base) var(--ease-out),
+              border-color var(--dur-base) var(--ease-out);
   cursor: pointer;
   height: 100%;
 }
 .salon-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 12px 32px -8px rgba(16, 14, 35, 0.15);
-  border-color: var(--brand-600);
+  transform: translateY(-4px);
+  box-shadow: var(--elevation-3);
+  border-color: color-mix(in srgb, var(--brand) 55%, var(--line));
 }
+.salon-card:active { transform: translateY(-1px); }
 .salon-card-img-wrap {
   position: relative;
   width: 100%;
-  height: 170px;
+  /* A ratio, not a fixed 170px: the image keeps its proportions as the grid
+     column widens instead of getting letterboxed on a wide screen. */
+  aspect-ratio: var(--aspect-card);
   background: var(--surface-2);
   overflow: hidden;
+}
+/* A scrim under the top badges so white text on a light photograph stays
+   readable — the badges were legible only against dark images. */
+.salon-card-img-wrap::after {
+  content: "";
+  position: absolute; inset: 0 0 55% 0;
+  background: linear-gradient(to bottom, rgba(11,11,16,.38), transparent);
+  pointer-events: none;
 }
 .salon-card-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform 0.3s ease;
+  transition: transform var(--dur-slow) var(--ease-out);
 }
-.salon-card:hover .salon-card-img {
-  transform: scale(1.04);
-}
+.salon-card:hover .salon-card-img { transform: scale(1.05); }
+/* A positioning slot only. The status pill inside carries its own colour, so
+   the old dark chip was a second background wrapped around a badge that
+   already had one. */
 .salon-badge-top {
   position: absolute;
-  top: 12px;
-  left: 12px;
-  background: rgba(11, 11, 16, 0.75);
-  backdrop-filter: blur(8px);
-  color: #fff;
-  padding: 4px 10px;
-  border-radius: 99px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  z-index: 1;
+  top: var(--space-3);
+  left: var(--space-3);
+}
+/* Frosted, because this sits over a photograph of unknown brightness. */
+.salon-badge-top .pill {
+  backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  border-color: color-mix(in srgb, var(--line) 70%, transparent);
+  box-shadow: 0 2px 8px rgba(16,14,35,.18);
+  font-weight: var(--weight-bold);
 }
 .salon-card-body {
-  padding: 16px;
+  padding: var(--space-5);
   display: flex;
   flex-direction: column;
   flex: 1;
+  gap: var(--space-1);
 }
 .salon-card-title-row {
   display: flex;
@@ -817,39 +1120,59 @@ td input, td select { min-width: 72px; }
   margin-bottom: 4px;
 }
 .salon-card-title {
-  font-size: 17px;
-  font-weight: 700;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
   margin: 0;
-  letter-spacing: -0.015em;
+  letter-spacing: var(--tracking-snug);
   color: var(--text);
+  line-height: var(--leading-snug);
 }
 .salon-card-rating {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: var(--space-1);
   background: var(--ok-bg);
   color: var(--ok);
-  font-weight: 700;
-  font-size: 12px;
-  padding: 3px 8px;
-  border-radius: 6px;
+  font-weight: var(--weight-bold);
+  font-size: var(--text-xs);
+  padding: 4px 9px;
+  border-radius: var(--radius-xs);
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
 }
 .salon-card-address {
   color: var(--dim);
-  font-size: 13px;
-  margin-bottom: 12px;
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-3);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
+  line-height: var(--leading-snug);
 }
+/* The services a salon is actually known for, under the address. Chips rather
+   than a comma list, so the eye can pick one out at card size. */
+.salon-card-tags { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-bottom: var(--space-3); }
+.salon-card-tags .pill { font-size: 11px; padding: 2px 8px; }
+
 .salon-card-footer {
   margin-top: auto;
-  padding-top: 12px;
-  border-top: 1px dashed var(--line);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--space-3);
 }
+/* The card is one big link, so this reads as the call to action without being
+   a nested interactive element. */
+.salon-card-cta {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--brand-ink);
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  transition: gap var(--dur-fast) var(--ease-out);
+}
+.salon-card:hover .salon-card-cta { gap: var(--space-2); }
 .salon-card-price {
   font-size: 13px;
   color: var(--dim);
@@ -1091,3 +1414,218 @@ td input, td select { min-width: 72px; }
   box-shadow: 0 2px 6px rgba(0,0,0,0.06);
 }
 
+
+/* =====================================================================
+   v2 — polish layer
+   Components the redesign added or rebuilt. Everything here uses the tokens
+   at the top of the file; nothing hardcodes a colour, a duration or a step of
+   the spacing ramp, so a change to the palette still reaches every screen.
+   ===================================================================== */
+
+/* ---------- empty states ----------
+   Was a dashed box with one line of grey text. An empty screen is a moment
+   where the product either explains itself or looks broken, so it now gets an
+   icon, a title, a sentence of context and the action that resolves it. */
+.empty-state {
+  color: var(--dim);
+  padding: var(--space-12) var(--space-6);
+  text-align: center;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+}
+.empty-state .empty-icon {
+  width: 52px; height: 52px;
+  display: grid; place-items: center;
+  border-radius: var(--radius-pill);
+  background: var(--brand-100);
+  color: var(--brand-ink);
+  font-size: 24px;
+  margin-bottom: var(--space-1);
+}
+.empty-state .empty-title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--text);
+  letter-spacing: var(--tracking-normal);
+}
+.empty-state .empty-body { font-size: var(--text-sm); max-width: 42ch; line-height: var(--leading-base); }
+.empty-state .btn { margin-top: var(--space-2); }
+
+/* ---------- skeletons ----------
+   The shimmer already existed. What was missing is that a skeleton should be
+   the shape of the thing it is standing in for — a flat 260px block tells the
+   eye nothing about what is arriving, and makes the swap feel like a jump. */
+.skeleton-card {
+  height: auto;
+  border-radius: var(--radius-lg);
+  background: none;
+  animation: none;
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.skeleton-card::before {
+  content: "";
+  display: block;
+  aspect-ratio: var(--aspect-card);
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--line) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+.skeleton-card::after {
+  content: "";
+  display: block;
+  height: 76px;
+  margin: var(--space-5);
+  border-radius: var(--radius-xs);
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--line) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+.skeleton-row {
+  height: 78px;
+  border-radius: var(--radius);
+  margin-bottom: var(--space-3);
+}
+
+/* ---------- toasts ----------
+   One region, bottom centre on a phone and bottom right on a desktop, above
+   the bottom nav so it never lands under it. aria-live so the message is
+   announced rather than only drawn. */
+.toast-region {
+  position: fixed;
+  z-index: 60;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--space-5) + var(--bottom-nav-height) + var(--safe-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: min(420px, calc(100vw - var(--space-8)));
+  pointer-events: none;
+}
+@media (min-width: 900px) {
+  .toast-region { left: auto; right: var(--space-8); transform: none; }
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--elevation-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--text);
+  animation: toast-in var(--dur-slow) var(--ease-spring);
+}
+.toast.leaving { animation: toast-out var(--dur-base) var(--ease-out) forwards; }
+.toast .toast-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: 0 0 auto; background: var(--brand); }
+.toast.ok  .toast-dot { background: var(--ok); }
+.toast.bad .toast-dot { background: var(--bad); }
+.toast .toast-msg { flex: 1; white-space: pre-line; }
+.toast .toast-close {
+  background: none; border: none; cursor: pointer; color: var(--dim);
+  font-size: var(--text-lg); line-height: 1; padding: 0 2px;
+}
+.toast .toast-close:hover { color: var(--text); }
+@keyframes toast-in  { from { opacity: 0; transform: translateY(12px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes toast-out { to { opacity: 0; transform: translateY(6px); } }
+
+/* ---------- app shell: the SaaS panels ----------
+   The salon and admin panels are dashboards, so they get a shell: a fixed
+   sidebar on a desktop, and the same navigation as a horizontal scroller on a
+   phone. One set of classes serves both panels. */
+.shell { display: grid; grid-template-columns: 248px 1fr; min-height: 100dvh; }
+.shell-side {
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  padding: var(--space-6) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  overflow-y: auto;
+}
+.shell-side .side-brand { padding: 0 var(--space-3) var(--space-6); }
+.shell-side .side-group {
+  font-size: var(--text-xs); text-transform: uppercase; letter-spacing: var(--tracking-wide);
+  color: var(--dim); font-weight: var(--weight-bold);
+  padding: var(--space-5) var(--space-3) var(--space-2);
+}
+.side-link {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: 10px var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--dim);
+  text-decoration: none;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  border: none; background: none; cursor: pointer; width: 100%; text-align: left;
+  font-family: inherit;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.side-link:hover { background: var(--surface-2); color: var(--text); }
+.side-link .side-icon { width: 18px; text-align: center; flex: 0 0 auto; font-size: 15px; }
+.side-link[aria-current="page"] { background: var(--brand-100); color: var(--brand-ink); }
+.side-link .side-count {
+  margin-left: auto; font-size: 11px; font-weight: var(--weight-bold);
+  background: var(--brand); color: var(--on-brand);
+  border-radius: var(--radius-pill); padding: 1px 7px;
+}
+.shell-main { min-width: 0; padding: clamp(var(--space-5), 3vw, var(--space-8)); }
+
+/* Phone: the sidebar becomes a scrolling row pinned under the header. */
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; }
+  .shell-side {
+    position: sticky; top: 0; z-index: 15;
+    height: auto; flex-direction: row; gap: var(--space-2);
+    overflow-x: auto; scrollbar-width: none;
+    border-right: none; border-bottom: 1px solid var(--line);
+    padding: var(--space-3) var(--space-4);
+  }
+  .shell-side::-webkit-scrollbar { display: none; }
+  .shell-side .side-brand, .shell-side .side-group { display: none; }
+  .side-link { width: auto; white-space: nowrap; border-radius: var(--radius-pill); }
+}
+
+/* ---------- dashboard greeting ---------- */
+.dash-head { margin-bottom: var(--space-8); }
+.dash-head h1 { margin-bottom: var(--space-1); }
+.dash-head .dash-sub { color: var(--dim); font-size: var(--text-base); }
+
+/* ---------- page transition ----------
+   A short rise on the view root when a route renders. Fast enough to read as
+   the page settling rather than as an animation playing. */
+@keyframes view-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.view-enter { animation: view-in var(--dur-base) var(--ease-out); }
+
+/* ---------- reduced motion ----------
+   Everything above is decoration over a layout that already works. Anyone who
+   has asked their system to stop moving things gets the layout. The shimmer is
+   included: a looping gradient is exactly the kind of thing the setting is
+   for. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .salon-card:hover { transform: none; }
+  .salon-card:hover .salon-card-img { transform: none; }
+}
+
+/* The review count rides inside the rating badge, dimmed — a 4.8 from three
+   people and a 4.8 from three hundred are not the same claim. */
+.salon-card-rating .rating-count { font-weight: var(--weight-medium); opacity: .75; }
