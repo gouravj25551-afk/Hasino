@@ -6,6 +6,7 @@ import { Badge } from '../components/Badge.js';
 import { Button } from '../components/Button.js';
 import { Modal } from '../components/Modal.js';
 import { BottomSheet } from '../components/BottomSheet.js';
+import { Stepper } from '../components/Stepper.js';
 import { cartFor, cartSalonId, cartTotals, clearCart, saveCart } from '../lib/cart.js';
 
 export async function renderSalon(container, app, salonId) {
@@ -53,6 +54,12 @@ export async function renderSalon(container, app, salonId) {
     );
   }
 
+  // Where the customer is in the flow. The steps were always real — choose
+  // services, choose a slot, review — but nothing said which one you were on,
+  // so the flow had no shape and no end in sight.
+  const steps = Stepper(['Services', 'Date & time', 'Confirm'], 0);
+  container.append(steps);
+
   const services = servicesPanel(salon, cart, onCartChange);
   container.append(services);
 
@@ -74,11 +81,15 @@ export async function renderSalon(container, app, salonId) {
 
   function drawCartBar() {
     if (!cart.size) {
+      steps.update(0);
       stickyBar.style.display = 'none';
       reserveForCartBar(null);
       slotPanel.innerHTML = '';
       return;
     }
+    // Something is in the cart, so step one is behind us and the slot grid
+    // below is what the customer is being asked for next.
+    steps.update(1);
     const chosen = picked();
     const totals = cartTotals(chosen);
 
@@ -108,7 +119,7 @@ export async function renderSalon(container, app, salonId) {
     // what was being hidden.
     reserveForCartBar(stickyBar);
 
-    renderSlots(slotPanel, salon, cart, app);
+    renderSlots(slotPanel, salon, cart, app, steps);
   }
 
   /** The review step: everything picked, what it costs, and how to change it. */
@@ -338,7 +349,7 @@ function servicesPanel(salon, cart, onChange) {
   return panel;
 }
 
-async function renderSlots(slotPanel, salon, cart, app) {
+async function renderSlots(slotPanel, salon, cart, app, steps) {
   slotPanel.innerHTML = '';
   const picked = salon.services.filter((s) => cart.has(s.serviceId));
   const total = picked.reduce((sum, s) => sum + s.price, 0);
@@ -425,7 +436,7 @@ async function renderSlots(slotPanel, salon, cart, app) {
       for (const slot of day.slots) {
         wrap.append(
           slotButton(slot, day.capacity, avail.timezone, () =>
-            openConfirm({ iso: slot.at, salon, picked, total, timezone: avail.timezone, app }),
+            openConfirm({ iso: slot.at, salon, picked, total, timezone: avail.timezone, app, steps }),
           ),
         );
       }
@@ -490,21 +501,37 @@ function panelLoading(slotPanel) {
   slotPanel.append(el('div', 'empty', 'Loading availability…'));
 }
 
-function openConfirm({ iso, salon, picked, total, timezone, app }) {
+function openConfirm({ iso, salon, picked, total, timezone, app, steps }) {
+  // The last step, and the sheet says so. Picking a slot is what advances it;
+  // backing out of the sheet without booking returns the customer to step two,
+  // which is where they actually are again.
+  steps?.update(2);
+
   const body = el('div');
   body.style.padding = 'var(--space-6)';
-  body.append(el('h2', null, 'Confirm booking'));
-  body.append(el('p', 'sub', 'Review the details before confirming.'));
+  body.append(el('h2', null, 'Review & confirm'));
+  body.append(el('p', 'sub', `Step 3 of 3 · nothing is booked until you confirm.`));
 
   const details = el('div', 'panel');
   details.style.background = 'var(--surface-2)';
-  details.append(el('div', 'meta', `SALON: ${salon.name}`));
-  details.append(el('div', 'meta', `WHEN: ${dateLong(iso, timezone)} at ${time(iso, timezone)}`));
+
+  // Label above value, rather than "SALON: Fade Room" run together on one
+  // line. This is the last screen before a chair is held, so the two things a
+  // customer actually re-reads — where, and when — are the two things set
+  // largest.
+  const factRow = (label, value) => {
+    const row = el('div', 'review-fact');
+    row.append(el('div', 'review-label', label));
+    row.append(el('div', 'review-value', value));
+    return row;
+  };
+  details.append(factRow('Salon', salon.name));
+  details.append(factRow('When', `${dateLong(iso, timezone)} at ${time(iso, timezone)}`));
 
   // Every service, priced, rather than a comma-separated list of names. This
   // is the last screen before money moves and before a chair is held, so what
   // is being bought is itemised.
-  details.append(el('div', 'meta', 'SERVICES'));
+  details.append(el('div', 'review-label', 'Services'));
   const lines = el('div', 'cart-lines');
   for (const service of picked) {
     const line = el('div', 'cart-line');
@@ -544,7 +571,9 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
 
   const actions = el('div', 'row');
   actions.style.justifyContent = 'flex-end';
-  const cancelBtn = Button({ label: 'Cancel', onClick: () => close() });
+  // Backing out is not abandoning the booking — the cart and the slot grid are
+  // still there — so the stepper goes back to where the customer now is.
+  const cancelBtn = Button({ label: 'Back', onClick: () => { steps?.update(1); close(); } });
   const confirmBtn = Button({
     label: payments ? 'Continue to payment' : 'Confirm booking',
     variant: 'primary',
@@ -554,8 +583,11 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
         app.navigate('#/login');
         return;
       }
-      confirmBtn.disabled = true;
-      confirmBtn.textContent = 'Holding your slot…';
+      // The design system's loading state: the label stays, so the button
+      // keeps its width and the row does not reflow mid-tap. Swapping the text
+      // for "Holding your slot…" resized the button under the finger that had
+      // just pressed it.
+      confirmBtn.setLoading(true);
       try {
         // The chair is taken here, not on the payment screen. A booking that
         // reaches checkout is one nobody else can take out from under it.
@@ -588,8 +620,7 @@ function openConfirm({ iso, salon, picked, total, timezone, app }) {
               ? 'This deployment cannot take bookings yet — payments are not set up.'
               : err.message;
         body.append(el('div', 'out bad', message || 'Booking failed'));
-        confirmBtn.disabled = false;
-        confirmBtn.textContent = payments ? 'Continue to payment' : 'Confirm booking';
+        confirmBtn.setLoading(false);
       }
     },
   });
