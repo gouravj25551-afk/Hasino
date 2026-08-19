@@ -4,6 +4,7 @@ import { Button } from '../components/Button.js';
 import { Input } from '../components/Input.js';
 import { currentPosition } from '../lib/location.js';
 import { dateLong } from '../lib/format.js';
+import { Stepper } from '../components/Stepper.js';
 
 /**
  * "List your salon" — a signed-in customer applying to join.
@@ -106,9 +107,24 @@ export function renderApply(container, app) {
   renderForm(container, app);
 }
 
-/** The application itself, shared by a first submission and a resubmission. */
+/**
+ * The application itself, shared by a first submission and a resubmission.
+ *
+ * One form with every field on it asked for a salon's name, address, menu,
+ * hours, photos and description in a single scroll, which reads as work rather
+ * than as setup — and the first sign that anything was wrong was a 400 after
+ * you had filled in all of it.
+ *
+ * Six steps now, over exactly the same fields and exactly the same request.
+ * Nothing about ApplyInput changed: the payload assembled at the end is
+ * byte-for-byte the one this form always sent. What changed is that the two
+ * things the server actually rejects — a missing name, a missing address or
+ * city — are caught on the step that asks for them, and that there is a review
+ * screen before anything is sent.
+ */
 function renderForm(container, app) {
   const panel = el('div', 'panel');
+
   const name = Input({ label: 'Salon name', placeholder: 'Sharp & Co' });
   const address = Input({ label: 'Address', placeholder: '12 MG Road, Indiranagar' });
   const city = Input({ label: 'City', placeholder: 'Bengaluru' });
@@ -150,21 +166,12 @@ function renderForm(container, app) {
     },
   });
 
-  const grid = el('div', 'grid two');
-  grid.append(name, phone, address, city, area, openAt, closeAt);
-  panel.append(grid, locate, pinNote);
-
-  // ---- menu ----
+  // ---- the menu ----
   // Picked from the same catalogue every salon's menu is built from, so an
   // approved salon is immediately bookable instead of being live with nothing
   // to sell. The owner can change any of it later in their dashboard.
   const menu = el('div');
   const chosen = new Map();   // serviceId -> { price, durationMin }
-  panel.append(el('h2', null, 'Your services'));
-  panel.append(el('div', 'note',
-    'Tick what you offer and set your prices in rupees. You can change these any time '
-    + 'once your salon is live.'));
-  panel.append(menu);
   menu.append(el('div', 'note', 'Loading the service list…'));
 
   api('/api/services').then(({ services }) => {
@@ -215,21 +222,96 @@ function renderForm(container, app) {
       'Could not load the service list. You can submit without it and set your menu up after approval.'));
   });
 
-  panel.append(el('h2', null, 'Photos and description'));
-  panel.append(el('div', 'note',
-    'A Hasino admin reads this to decide whether to approve you, so a real storefront photo '
-    + 'and a couple of words about the salon make the difference. Paste image links for now — '
-    + 'direct uploads are coming.'));
-  panel.append(coverUrl, photos, description);
+  /** A step's body: a heading, a line of context, then its fields. */
+  const step = (title, hint, ...nodes) => {
+    const box = el('div');
+    box.append(el('h2', null, title));
+    if (hint) box.append(el('p', 'sub', hint));
+    for (const n of nodes) box.append(n);
+    return box;
+  };
+
+  const infoGrid = el('div', 'grid two');
+  infoGrid.append(name, phone);
+  const locGrid = el('div', 'grid two');
+  locGrid.append(address, city, area);
+  const hoursGrid = el('div', 'grid two');
+  hoursGrid.append(openAt, closeAt);
+
+  const reviewBox = el('div');
+
+  const steps = [
+    {
+      label: 'Salon',
+      node: step('About your salon', 'The name customers will see, and how to reach you.',
+        infoGrid, description),
+      // The server rejects a blank name with BAD_NAME. Catching it here means
+      // the applicant is told on the step that asked, not after five more.
+      validate: () => (name.input.value.trim() ? null : 'Your salon needs a name.'),
+    },
+    {
+      label: 'Location',
+      node: step('Where you are', 'Customers search by city and area, so this is how they find you.',
+        locGrid, locate, pinNote),
+      validate: () =>
+        !address.input.value.trim() ? 'An address is required.'
+          : !city.input.value.trim() ? 'A city is required.'
+            : null,
+    },
+    {
+      label: 'Services',
+      node: step('Your services',
+        'Tick what you offer and set your prices in rupees. You can change these any time once your salon is live.',
+        menu),
+    },
+    {
+      label: 'Timings',
+      node: step('Opening hours',
+        'Applied to all seven days for now — you can set different hours per day in your dashboard once approved.',
+        hoursGrid),
+    },
+    {
+      label: 'Photos',
+      node: step('Photos and description',
+        'A Hasino admin reads this to decide whether to approve you, so a real storefront photo makes the difference. '
+        + 'Paste image links for now — direct uploads are coming.',
+        coverUrl, photos),
+    },
+    {
+      label: 'Review',
+      node: step('Review & submit', 'Check this over. Nothing is sent until you submit.', reviewBox),
+    },
+  ];
+
+  const stepper = Stepper(steps.map((s) => s.label), 0);
+  panel.append(stepper);
+
+  const host = el('div');
+  panel.append(host);
 
   const out = el('div');
+  const nav = el('div', 'row');
+  nav.style.cssText = 'margin-top:var(--space-6); justify-content:space-between';
+
+  let index = 0;
+
+  const back = Button({ label: '← Back', onClick: () => go(index - 1) });
+  const next = Button({ label: 'Continue →', variant: 'primary', onClick: () => {
+    const problem = steps[index].validate?.();
+    if (problem) {
+      out.innerHTML = '';
+      out.append(el('div', 'out bad', problem));
+      return;
+    }
+    go(index + 1);
+  } });
+
   const submit = Button({
     label: 'Submit application',
     variant: 'primary',
     onClick: async () => {
       out.innerHTML = '';
-      submit.disabled = true;
-      submit.textContent = 'Submitting…';
+      submit.setLoading(true);
       try {
         await api('/api/salons/apply', {
           method: 'POST',
@@ -251,28 +333,96 @@ function renderForm(container, app) {
         });
         await app.refreshSession().catch(() => {});
         container.innerHTML = '';
-        const done = el('div', 'panel');
-        done.append(el('h1', null, 'Application received'));
-        done.append(el('p', 'sub',
-          'A Hasino admin will review it. Nothing is visible to customers until it is approved — '
-          + 'once it is, your salon dashboard unlocks and you can set up services and timings. '
-          + 'We will email you at the address you signed in with.'));
-        const go = el('a', 'btn primary', 'Back to Hasino');
-        go.href = '#/home';
-        done.append(go);
-        container.append(done);
+        container.append(submittedPanel());
       } catch (err) {
         const message =
           err instanceof ApiError && err.code === 'ALREADY_OWNS_SALON'
             ? 'You already have a salon on Hasino.'
             : err.message;
         out.append(el('div', 'out bad', message));
-        submit.disabled = false;
-        submit.textContent = 'Submit application';
+        submit.setLoading(false);
       }
     },
   });
-  submit.style.marginTop = 'var(--space-4)';
-  panel.append(submit, out);
+
+  nav.append(back, next, submit);
+  panel.append(out, nav);
+
+  /** What the applicant is about to send, in the words they typed. */
+  function drawReview() {
+    reviewBox.innerHTML = '';
+    const fact = (label, value) => {
+      const row = el('div', 'review-fact');
+      row.append(el('div', 'review-label', label));
+      row.append(el('div', 'review-value', value || '—'));
+      return row;
+    };
+    reviewBox.append(fact('Salon', name.input.value.trim()));
+    reviewBox.append(fact('Where', [address.input.value.trim(), area.input.value.trim(), city.input.value.trim()]
+      .filter(Boolean).join(', ')));
+    reviewBox.append(fact('Hours', `${openAt.input.value || '—'} to ${closeAt.input.value || '—'}, every day`));
+    reviewBox.append(fact('Services', chosen.size ? `${chosen.size} selected` : 'none yet — you can add them after approval'));
+    reviewBox.append(fact('Photos', [coverUrl.input.value.trim() ? 'storefront photo' : null,
+      photos.input.value.split('\n').filter((u) => u.trim()).length
+        ? `${photos.input.value.split('\n').filter((u) => u.trim()).length} more`
+        : null].filter(Boolean).join(', ') || 'none'));
+    reviewBox.append(
+      el('div', 'note',
+        'A Hasino admin reviews every application — usually a couple of days. Nothing is visible to '
+        + 'customers until it is approved.'),
+    );
+  }
+
+  function go(to) {
+    index = Math.max(0, Math.min(steps.length - 1, to));
+    const last = index === steps.length - 1;
+    if (last) drawReview();
+
+    stepper.update(index);
+    host.replaceChildren(steps[index].node);
+    out.innerHTML = '';
+
+    back.style.display = index === 0 ? 'none' : '';
+    next.style.display = last ? 'none' : '';
+    submit.style.display = last ? '' : 'none';
+
+    // The step's heading, not the top of the document: the applicant is
+    // partway down a form and the next question is what they want in view.
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  go(0);
   container.append(panel);
+}
+
+/** The "we have it, here is what happens next" screen. */
+function submittedPanel() {
+  const done = el('div', 'panel');
+  done.append(el('div', 'empty-icon', '✓'));
+  done.append(el('h1', null, 'Application received'));
+  done.append(el('p', 'sub',
+    'A Hasino admin will review it. Nothing is visible to customers until it is approved — '
+    + 'once it is, your salon dashboard unlocks and you can set up services and timings. '
+    + 'We will email you at the address you signed in with.'));
+
+  // What happens next, as steps rather than a paragraph: an applicant who has
+  // just finished six of them should be told where they are in the process,
+  // not left with "we will be in touch".
+  const nextUp = el('ol', 'next-steps');
+  for (const [title, detail] of [
+    ['Under review', 'A Hasino admin reads your application. Usually a couple of days.'],
+    ['You hear from us', 'We email you at the address you signed in with, either way.'],
+    ['Your dashboard unlocks', 'Set your menu, hours and photos, and start taking bookings.'],
+  ]) {
+    const li = el('li');
+    li.append(el('div', 'next-title', title));
+    li.append(el('div', 'meta', detail));
+    nextUp.append(li);
+  }
+  done.append(nextUp);
+
+  const go = el('a', 'btn primary', 'Back to Hasino');
+  go.href = '#/home';
+  done.append(go);
+  return done;
 }
