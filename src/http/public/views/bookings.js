@@ -177,10 +177,34 @@ export async function renderBookings(container, app) {
     const filtered = bookings.filter((b) => categoryOf(b) === tab.id);
     scheduleTick();
     if (!filtered.length) {
+      // Each tab is empty for a different reason, and saying which is the
+      // difference between "nothing here" and "here is what to do next".
+      const copy = {
+        upcoming: {
+          icon: '◷',
+          title: 'No upcoming bookings',
+          body: 'When you book a salon, it appears here with your verification code.',
+          action: 'Browse salons',
+        },
+        past: {
+          icon: '✓',
+          title: 'No past visits yet',
+          body: 'Bookings move here automatically once they are finished.',
+          action: 'Browse salons',
+        },
+        cancelled: {
+          icon: '○',
+          title: 'Nothing cancelled',
+          body: 'Bookings you or a salon cancel are kept here, so you always have the record.',
+          action: 'Browse salons',
+        },
+      }[tab.id];
       list.append(
         EmptyState({
-          title: `No ${tab.label.toLowerCase()} bookings.`,
-          action: 'Browse salons',
+          icon: copy.icon,
+          title: copy.title,
+          body: copy.body,
+          action: copy.action,
           onAction: () => app.navigate('#/explore'),
         }),
       );
@@ -189,6 +213,9 @@ export async function renderBookings(container, app) {
     for (const b of filtered) {
       list.append(
         BookingCard(b, {
+          // History is stepped back visually. Cancelled bookings get it too:
+          // like a past visit, it is a record rather than something upcoming.
+          variant: tab.id === 'upcoming' ? '' : 'past',
           onPay: (id) => app.navigate(`#/checkout/${id}`),
           onReschedule: (booking) => openReschedule(booking, app, refresh),
           onCancel:

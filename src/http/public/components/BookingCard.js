@@ -31,29 +31,46 @@ const CANCELLABLE = new Set(['booked', 'verified', 'pending_payment']);
  * `booking` matches listCustomerBookings()'s shape. `timezone` renders the slot
  * in the salon's own zone.
  *
- * Three states earn their own affordance rather than a generic status pill,
+ * Rebuilt around what a customer is actually scanning for. The old card was a
+ * flat row — time, salon, price, status, buttons, all at one weight — so an
+ * appointment tomorrow morning and a haircut from March looked identical, and
+ * the two facts anyone opens this screen for (when, and where) had to be
+ * hunted for among five other things.
+ *
+ * Now the date and time lead, the salon and its services sit beside them, and
+ * everything else is secondary. `variant: 'past'` steps the whole card back
+ * without hiding anything: history stays legible and stays actionable, it just
+ * stops competing with what is coming up.
+ *
+ * Three states keep their own affordance rather than a generic status pill,
  * because each one has something the customer can do about it: an unpaid hold
  * (finish paying, before it lapses), a refund in flight (know it is coming
  * without contacting anyone), and a movable booking (§4's 36-hour window).
  */
-export function BookingCard(booking, { timezone = 'Asia/Kolkata', onCancel, onPay, onReschedule } = {}) {
-  const item = el('div', 'item');
+export function BookingCard(
+  booking,
+  { timezone = 'Asia/Kolkata', variant = '', onCancel, onPay, onReschedule } = {},
+) {
+  const card = el('div', ['booking-card', variant === 'past' ? 'is-past' : ''].filter(Boolean).join(' '));
 
-  const when = el('div');
-  when.append(el('div', 'when', `${time(booking.startAt, timezone)} – ${time(booking.endAt, timezone)}`));
-  when.append(el('div', 'meta', dateLong(booking.startAt, timezone)));
-  item.append(when);
+  // ---- when: the reason this screen gets opened ----
+  const when = el('div', 'booking-when');
+  when.append(el('div', 'booking-time', `${time(booking.startAt, timezone)}`));
+  when.append(el('div', 'booking-date', dateLong(booking.startAt, timezone)));
+  when.append(el('div', 'booking-until', `until ${time(booking.endAt, timezone)}`));
+  card.append(when);
 
-  const grow = el('div', 'grow');
-  grow.append(el('div', null, booking.salonName));
-  grow.append(el('div', 'meta', booking.services.join(', ') || 'Service appointment'));
+  // ---- what and where ----
+  const main = el('div', 'booking-main');
+  main.append(el('div', 'booking-salon', booking.salonName));
+  main.append(el('div', 'booking-services', booking.services.join(', ') || 'Service appointment'));
 
   if (booking.status === 'pending_payment' && booking.holdExpiresAt) {
     const left = new Date(booking.holdExpiresAt).getTime() - Date.now();
-    grow.append(
+    main.append(
       el(
         'div',
-        'meta',
+        'booking-note',
         left > 0
           ? `Slot held for another ${Math.max(1, Math.round(left / 60000))} min — finish paying to confirm.`
           : 'The hold on this slot has lapsed.',
@@ -62,10 +79,19 @@ export function BookingCard(booking, { timezone = 'Asia/Kolkata', onCancel, onPa
   }
 
   if (booking.refundStatus && booking.refundStatus !== 'none') {
-    grow.append(el('div', 'meta', REFUND_LABEL[booking.refundStatus] ?? booking.refundStatus));
+    main.append(el('div', 'booking-note', REFUND_LABEL[booking.refundStatus] ?? booking.refundStatus));
   }
+  card.append(main);
 
-  item.append(grow);
+  // ---- status, price, and the code ----
+  const side = el('div', 'booking-side');
+  side.append(
+    Badge({
+      text: STATUS_LABEL[booking.status] ?? statusLabel(booking.status),
+      tone: STATUS_TONE[booking.status] ?? 'brand',
+    }),
+  );
+  side.append(el('strong', 'booking-amount', rupees(booking.amount)));
 
   // This booking's own code, from this booking's own row. Withheld by the API
   // until 15 minutes before the slot (§4), which used to render as nothing at
@@ -73,25 +99,21 @@ export function BookingCard(booking, { timezone = 'Asia/Kolkata', onCancel, onPa
   // a customer holding several bookings at once. So the card says which of the
   // two it is, per booking.
   if (booking.verifyCode) {
-    item.append(el('span', 'pill ok mono', 'CODE ' + booking.verifyCode));
+    side.append(el('span', 'pill ok mono', 'CODE ' + booking.verifyCode));
   } else if (booking.verifyCodeAt) {
-    const at = el('span', 'pill', `code at ${time(booking.verifyCodeAt, timezone)}`);
+    const at = el('span', 'pill outline', `code at ${time(booking.verifyCodeAt, timezone)}`);
     at.title = 'Your code appears 15 minutes before this booking, so a screenshot taken today is not a key to it.';
-    item.append(at);
+    side.append(at);
   }
+  card.append(side);
 
-  item.append(el('strong', null, rupees(booking.amount)));
-  item.append(
-    Badge({
-      text: STATUS_LABEL[booking.status] ?? statusLabel(booking.status),
-      tone: STATUS_TONE[booking.status] ?? 'brand',
-    }),
-  );
+  // ---- actions ----
+  const actions = el('div', 'booking-actions');
 
   if (onPay && booking.status === 'pending_payment') {
     const payBtn = el('button', 'btn sm primary', 'Complete payment');
     payBtn.onclick = () => onPay(booking.id);
-    item.append(payBtn);
+    actions.append(payBtn);
   }
 
   // canReschedule is computed server-side from the §4 deadline and the §10 cap,
@@ -99,14 +121,16 @@ export function BookingCard(booking, { timezone = 'Asia/Kolkata', onCancel, onPa
   if (onReschedule && booking.canReschedule) {
     const rescheduleBtn = el('button', 'btn sm', 'Reschedule');
     rescheduleBtn.onclick = () => onReschedule(booking);
-    item.append(rescheduleBtn);
+    actions.append(rescheduleBtn);
   }
 
   if (onCancel && CANCELLABLE.has(booking.status)) {
     const cancelBtn = el('button', 'btn sm danger', 'Cancel');
     cancelBtn.onclick = () => onCancel(booking.id);
-    item.append(cancelBtn);
+    actions.append(cancelBtn);
   }
 
-  return item;
+  if (actions.children.length) card.append(actions);
+
+  return card;
 }

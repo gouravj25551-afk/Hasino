@@ -271,21 +271,30 @@ function heroPanel(salon, app, getFavorite, setFavorite) {
   const titleRow = el('div', 'row');
   titleRow.style.justifyContent = 'space-between';
   titleRow.append(el('h1', null, salon.name));
+  // "New" is not a score. Rendering it in the same green badge as ★4.8 made a
+  // salon nobody had reviewed look like a well-rated one — the same fix the
+  // discovery cards got.
   titleRow.append(
-    Badge({
-      text: salon.rating == null ? 'New' : `★ ${salon.rating.toFixed(1)} (${salon.reviewCount})`,
-      tone: 'ok',
-    }),
+    salon.rating == null
+      ? el('span', 'pill outline', 'New')
+      : Badge({ text: `★ ${salon.rating.toFixed(1)} (${salon.reviewCount})`, tone: 'ok' }),
   );
   info.append(titleRow);
 
-  info.append(el('div', 'meta', `📍 ${salon.address}`));
-  info.append(
-    Badge({
-      text: salon.openNow ? (salon.closesAt ? `Open · closes ${salon.closesAt}` : 'Open') : 'Closed now',
-      tone: salon.openNow ? 'ok' : 'bad',
-    }),
+  // The facts under the name, on one line and at one weight, rather than an
+  // address in grey with a status badge floating below it.
+  const facts = el('div', 'row');
+  facts.style.marginTop = 'var(--space-2)';
+  facts.append(
+    el(
+      'span',
+      'pill dot ' + (salon.openNow ? 'ok' : 'bad'),
+      salon.openNow ? (salon.closesAt ? `Open till ${salon.closesAt}` : 'Open now') : 'Closed now',
+    ),
   );
+  facts.append(el('span', 'meta', `📍 ${salon.address}`));
+  if (salon.fromPrice != null) facts.append(el('span', 'meta', `from ${rupees(salon.fromPrice)}`));
+  info.append(facts);
 
   const actions = el('div', 'row');
   actions.style.marginTop = 'var(--space-4)';

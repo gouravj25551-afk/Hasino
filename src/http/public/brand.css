@@ -1388,30 +1388,39 @@ td input, td select { min-width: 72px; }
 
 /* Tabs */
 .tab-strip {
-  display: flex;
-  gap: 6px;
+  display: inline-flex;   /* content width — three tabs stretched across a
+                             1180px page read as a nav bar, not as a filter */
+  gap: 4px;
   background: var(--surface-2);
+  border: 1px solid var(--line);
   padding: 4px;
-  border-radius: 12px;
-  margin-bottom: 18px;
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-6);
+  max-width: 100%;
 }
 .tab-btn {
-  flex: 1;
+  flex: 0 1 auto;
+  min-width: 104px;
   text-align: center;
   padding: 8px 12px;
-  border-radius: 9px;
-  font-weight: 700;
-  font-size: 13px;
+  border-radius: var(--radius-xs);
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
   border: none;
   background: transparent;
   color: var(--dim);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
+.tab-btn:hover { color: var(--text); }
 .tab-btn.active {
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+  box-shadow: var(--elevation-1);
+}
+@media (max-width: 520px) {
+  .tab-strip { display: flex; }
+  .tab-btn { flex: 1; min-width: 0; }
 }
 
 
@@ -1814,4 +1823,88 @@ td input, td select { min-width: 72px; }
 .next-steps .next-title {
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-normal);
+}
+
+/* ---------- booking card ----------
+   A grid rather than a flex row, so the "when" column stays a fixed width and
+   the salon names line up down the list — the old row let every card start its
+   text at a different x depending on how long the time string was. */
+.booking-card {
+  display: grid;
+  grid-template-columns: 108px 1fr auto;
+  grid-template-areas:
+    "when main    side"
+    "when actions side";
+  gap: var(--space-2) var(--space-5);
+  align-items: start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  transition: border-color var(--dur-base) var(--ease-out),
+              box-shadow var(--dur-base) var(--ease-out);
+}
+.booking-card:hover { border-color: color-mix(in srgb, var(--brand) 40%, var(--line)); }
+
+.booking-when { grid-area: when; }
+.booking-time {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-snug);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.booking-date { font-size: var(--text-sm); color: var(--dim); margin-top: 2px; }
+.booking-until { font-size: var(--text-xs); color: var(--dim); opacity: .8; }
+
+.booking-main { grid-area: main; min-width: 0; }
+.booking-salon {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-normal);
+}
+.booking-services { color: var(--dim); font-size: var(--text-sm); margin-top: 2px; }
+.booking-note { color: var(--dim); font-size: var(--text-sm); margin-top: var(--space-2); }
+
+.booking-side {
+  grid-area: side;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+.booking-amount { font-size: var(--text-lg); letter-spacing: var(--tracking-snug); }
+
+.booking-actions {
+  grid-area: actions;
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+}
+
+/* History, stepped back rather than hidden. A past booking is still readable
+   and its buttons still work; it simply stops competing with what is coming
+   up. Restored on hover and on focus so nothing is unreachable. */
+.booking-card.is-past { background: var(--surface-2); box-shadow: none; }
+.booking-card.is-past .booking-when,
+.booking-card.is-past .booking-main { opacity: .72; }
+.booking-card.is-past:hover .booking-when,
+.booking-card.is-past:hover .booking-main,
+.booking-card.is-past:focus-within .booking-when,
+.booking-card.is-past:focus-within .booking-main { opacity: 1; }
+
+/* On a phone the three columns become two: the time keeps its own column
+   because it is what the list is scanned by, and the status drops under the
+   salon rather than being squeezed into a third column. */
+@media (max-width: 620px) {
+  .booking-card {
+    grid-template-columns: 84px 1fr;
+    grid-template-areas:
+      "when main"
+      "when side"
+      "actions actions";
+  }
+  .booking-side { align-items: flex-start; flex-direction: row; flex-wrap: wrap; }
+  .booking-time { font-size: var(--text-lg); }
 }
