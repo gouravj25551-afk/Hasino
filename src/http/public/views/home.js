@@ -2,9 +2,9 @@ import { el } from '../lib/dom.js';
 import { api } from '../lib/api.js';
 import { SearchBar } from '../components/SearchBar.js';
 import { SalonCard } from '../components/SalonCard.js';
-import { EmptyState } from '../components/EmptyState.js';
+import { EmptyState, NoSalonsState } from '../components/EmptyState.js';
 import { SkeletonList } from '../components/Skeleton.js';
-import { locationParams } from '../lib/location.js';
+import { getCity, locationParams } from '../lib/location.js';
 
 const CATEGORIES = [
   { id: '', name: 'All', icon: '✨' },
@@ -23,8 +23,13 @@ export async function renderHome(container, app) {
   // fired at whoever opens the home page. Asking unprompted on every load is
   // what the selector exists to replace, and a refusal there used to leave no
   // way to say where you are.
-  const coords = locationParams();
-  const hasLocation = coords.lat !== undefined;
+  const params = locationParams();
+  const hasLocation = params.lat !== undefined;
+  // The city the whole list is filtered to, server-side. Read here rather
+  // than per-draw because the view is re-rendered from scratch when the
+  // location changes — see the sheet's onPick in app.js — so this is always
+  // the city the results on screen belong to.
+  const city = getCity();
 
   const hero = el('div', 'hero-box');
   hero.append(el('h1', null, 'Find your next haircut & grooming'));
@@ -52,7 +57,10 @@ export async function renderHome(container, app) {
   container.append(catStrip);
 
   const salonsHeader = el('div', 'categories-header');
-  salonsHeader.append(el('h2', null, hasLocation ? 'Nearby salons & barbers' : 'Salons & barbers'));
+  // Naming the city in the header is what makes an empty list legible: the
+  // customer can see the list is scoped before they wonder why it is short.
+  salonsHeader.append(el('h2', null,
+    city ? `Salons & barbers in ${city}` : hasLocation ? 'Nearby salons & barbers' : 'Salons & barbers'));
   container.append(salonsHeader);
 
   const grid = el('div', 'grid cards');
@@ -68,12 +76,24 @@ export async function renderHome(container, app) {
           new URLSearchParams({
             ...(q ? { q } : {}),
             ...(activeCategory ? { category: activeCategory } : {}),
-            ...coords,
+            // Carries `city`: the server returns this city's salons and no
+            // others, so nothing has to be filtered out again here.
+            ...params,
           }),
       );
       grid.innerHTML = '';
       if (!salons.length) {
-        grid.append(EmptyState({ title: 'No salons found. Try a different search.' }));
+        grid.append(NoSalonsState({
+          city,
+          filtered: Boolean(q) || Boolean(activeCategory),
+          onClear: () => {
+            search.input.value = '';
+            activeCategory = '';
+            for (const c of catStrip.children) c.classList.remove('active');
+            catStrip.firstElementChild?.classList.add('active');
+            draw('');
+          },
+        }));
         return;
       }
       for (const s of salons) grid.append(SalonCard(s, { onOpen: (id) => app.navigate(`#/salon/${id}`) }));

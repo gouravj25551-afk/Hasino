@@ -49,15 +49,42 @@ export function clearLocation() {
 }
 
 /**
- * The coordinates to hand to /api/salons, or null when none is chosen.
+ * The city salon discovery filters by, or null when there isn't one.
+ *
+ * There is one stored location, whichever way it was chosen, so "the city the
+ * customer selected" and "the city we detected for them" are never both in
+ * play — picking a city in the sheet replaces a detected one and vice versa,
+ * and this returns whichever is current. That is what keeps a manual choice
+ * from being quietly overridden by GPS: the last explicit act wins because it
+ * is the only thing stored.
+ *
+ * Null in two cases, and the caller must tell them apart: no location chosen
+ * at all, or a location whose city the geocoder could not name (a GPS fix
+ * that reverse-geocoded to nothing). `getLocation()` distinguishes them.
+ */
+export function getCity() {
+  const city = getLocation()?.city;
+  return typeof city === 'string' && city.trim() !== '' ? city.trim() : null;
+}
+
+/**
+ * What to hand /api/salons, or `{}` when no location is chosen.
  *
  * Callers spread this into a query string, so it is `{}` rather than nulls —
  * an absent lat is different from a lat of zero, which is a real place in the
  * Gulf of Guinea.
+ *
+ * `city` is the discovery filter and `lat`/`lng` only order what survives it.
+ * Both are sent because they answer different questions: which salons a
+ * customer in Jind can book, and which of those is nearest. The server does
+ * the filtering — this parameter is how it is told the city, not where the
+ * rule lives.
  */
 export function locationParams() {
   const loc = getLocation();
-  return loc ? { lat: String(loc.lat), lng: String(loc.lng) } : {};
+  if (!loc) return {};
+  const city = getCity();
+  return { lat: String(loc.lat), lng: String(loc.lng), ...(city ? { city } : {}) };
 }
 
 /**

@@ -23,3 +23,34 @@ export function EmptyState({ title, body, icon = '✨', action, onAction } = {})
   }
   return box;
 }
+
+/**
+ * The salon grid with nothing in it.
+ *
+ * Discovery is filtered to one city and there is no fallback behind it, so
+ * "no salons" is a normal, permanent-feeling state for a city Hasino has not
+ * reached yet — not an error and not a blank screen. It names the city,
+ * because "no salons found" next to a header reading Jind leaves the customer
+ * wondering whether the app is broken or the town is empty.
+ *
+ * `filtered` separates the two ways a city comes back empty: a search or
+ * category that matched nothing here, which a different search fixes, and a
+ * city with no salons at all, which nothing the customer does will fix. The
+ * second is the one that gets the "we're working on it" line; offering it for
+ * a misspelled search would be a non-sequitur.
+ */
+export function NoSalonsState({ city, filtered = false, onClear } = {}) {
+  if (filtered) {
+    return EmptyState({
+      icon: '🔍',
+      title: city ? `Nothing matches that search in ${city}.` : 'Nothing matches that search.',
+      body: city ? `Try another service or salon name — you're browsing ${city}.` : undefined,
+      ...(onClear ? { action: 'Clear search', onAction: onClear } : {}),
+    });
+  }
+  return EmptyState({
+    icon: '📍',
+    title: city ? `No salons available in ${city} yet.` : 'No salons available yet.',
+    body: "We're working on bringing more salons to your area.",
+  });
+}

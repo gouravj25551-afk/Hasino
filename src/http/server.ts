@@ -539,7 +539,18 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       throw new HttpError(400, 'lat and lng must be numbers');
     }
     const category = url.searchParams.get('category') ?? undefined;
-    return json(res, 200, { salons: await listSalons(db, q, { lat, lng, category }) });
+    // The customer's current city, and a hard filter rather than a hint: with
+    // one set the response carries the salons in that city and nothing else.
+    // Filtering here and not in the browser is what makes that true — a
+    // client that drops the parameter gets a smaller list, never a wider one,
+    // and no salon a customer cannot reach ever crosses the wire.
+    //
+    // Absent, every city is listed. That is the visitor who has not chosen a
+    // location yet, not a fallback for a city that turned out to be empty:
+    // an empty city answers with an empty list, which the app renders as
+    // "no salons here yet".
+    const city = url.searchParams.get('city') ?? undefined;
+    return json(res, 200, { salons: await listSalons(db, q, { lat, lng, city, category }) });
   }
 
   if (method === 'GET' && seg[0] === 'api' && seg[1] === 'salons' && seg.length === 3) {

@@ -193,8 +193,11 @@ function renderChrome() {
         onPick: (loc) => {
           app.location = loc;
           renderChrome();
-          // The list on screen was sorted for the old location, so it is now
-          // wrong rather than merely stale.
+          // The list on screen belongs to the old city — discovery is
+          // filtered to the customer's current city, not merely sorted by
+          // distance from it — so every card on it is now wrong rather than
+          // stale. Re-running the route refetches with the new city, which is
+          // what makes switching Jind -> Sonipat swap the list immediately.
           reload();
         },
       }),

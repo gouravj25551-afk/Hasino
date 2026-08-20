@@ -7,6 +7,9 @@ export interface SalonSummary {
   id: string;
   name: string;
   address: string;
+  /** The salon's own city, as onboarded. Null only on rows predating the column. */
+  city: string | null;
+  area: string | null;
   lat: number;
   lng: number;
   rating: number | null;
@@ -77,23 +80,54 @@ function openStatus(
 }
 
 /**
+ * One spelling of a city name, for comparing two of them.
+ *
+ * Case and stray whitespace are typing accidents, not different places:
+ * "Jind", "jind", "JIND" and " Jind " are one city. Nothing beyond that is
+ * folded — this is an equality key, not a fuzzy match. "Jind" must never
+ * equal "Sonipat", and a prefix or substring rule is exactly how that starts
+ * happening, so there is deliberately no LIKE anywhere near it.
+ *
+ * Returns null for a name that normalises to nothing, so callers can treat
+ * "no city" and "a city of spaces" the same way.
+ */
+export function normalizeCity(city: string | null | undefined): string | null {
+  if (typeof city !== 'string') return null;
+  const norm = city.trim().replace(/\s+/g, ' ').toLowerCase();
+  return norm === '' ? null : norm;
+}
+
+/**
  * Browse. Postgres full-text + pg_trgm per spec §7 — no Elasticsearch.
  *
  * `lat`/`lng` are optional: when given, distance is computed in SQL
  * (haversine, no PostGIS) and results sort by it; otherwise the original
  * name ordering is unchanged.
+ *
+ * `city` is a hard filter, not a ranking hint. Given one, this returns the
+ * salons in that city and nothing else — no nearest-city fallback, no
+ * widening to everything when the city comes back empty. A customer in Jind
+ * being shown a salon in Sonipat cannot book it, so an empty list is the
+ * honest answer and the caller renders it as one. Comparison is on
+ * normalizeCity() of both sides: case-insensitive equality, never a prefix.
+ *
+ * Omitting `city` is the "no location chosen yet" case and still lists
+ * everywhere — the filter is the customer's chosen city, and there isn't one.
  */
 export async function listSalons(
   db: Queryable,
   q?: string,
-  opts: { lat?: number; lng?: number; category?: string; limit?: number; now?: Date } = {},
+  opts: { lat?: number; lng?: number; city?: string; category?: string; limit?: number; now?: Date } = {},
 ): Promise<SalonSummary[]> {
   const { lat, lng, category, limit = 50, now = new Date() } = opts;
+  const city = normalizeCity(opts.city);
 
   const res = await db.query<{
     id: string;
     name: string;
     address: string;
+    city: string | null;
+    area: string | null;
     lat: number;
     lng: number;
     timezone: string;
@@ -103,7 +137,7 @@ export async function listSalons(
     from_price: number | null;
     distance_km: number | null;
   }>(
-    `SELECT s.id, s.name, s.address, s.lat, s.lng, s.timezone, s.cover_url,
+    `SELECT s.id, s.name, s.address, s.city, s.area, s.lat, s.lng, s.timezone, s.cover_url,
             round(avg(r.rating)::numeric, 1) AS rating,
             count(r.id)::int8               AS review_count,
             min(ss.price) FILTER (WHERE ss.active) AS from_price,
@@ -119,6 +153,7 @@ export async function listSalons(
        LEFT JOIN salon_services ss ON ss.salon_id = s.id
       WHERE s.status = 'active'
         AND ($1::text IS NULL OR s.name ILIKE '%' || $1 || '%' OR s.address ILIKE '%' || $1 || '%')
+        AND ($6::text IS NULL OR lower(regexp_replace(btrim(s.city), '\\s+', ' ', 'g')) = $6)
         AND ($5::text IS NULL OR EXISTS (
               SELECT 1 FROM salon_services ss2
                 JOIN services sv2 ON sv2.id = ss2.service_id
@@ -127,7 +162,7 @@ export async function listSalons(
       GROUP BY s.id
       ORDER BY distance_km ASC NULLS LAST, s.name
       LIMIT $2`,
-    [q ?? null, limit, lat ?? null, lng ?? null, category ?? null],
+    [q ?? null, limit, lat ?? null, lng ?? null, category ?? null, city],
   );
 
   const salonIds = res.rows.map((r) => r.id);
@@ -140,6 +175,8 @@ export async function listSalons(
       id: r.id,
       name: r.name,
       address: r.address,
+      city: r.city,
+      area: r.area,
       lat: r.lat,
       lng: r.lng,
       rating: r.rating === null ? null : Number(r.rating),
@@ -224,12 +261,14 @@ export async function getSalon(db: Queryable, salonId: string, now: Date = new D
     id: string;
     name: string;
     address: string;
+    city: string | null;
+    area: string | null;
     lat: number;
     lng: number;
     timezone: string;
     cover_url: string | null;
   }>(
-    `SELECT id, name, address, lat, lng, timezone, cover_url
+    `SELECT id, name, address, city, area, lat, lng, timezone, cover_url
        FROM salons WHERE id = $1 AND status = 'active'`,
     [salonId],
   );
@@ -285,6 +324,8 @@ export async function getSalon(db: Queryable, salonId: string, now: Date = new D
     id: s.id,
     name: s.name,
     address: s.address,
+    city: s.city,
+    area: s.area,
     lat: s.lat,
     lng: s.lng,
     timezone: s.timezone,

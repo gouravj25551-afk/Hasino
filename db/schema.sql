@@ -113,6 +113,16 @@ CREATE INDEX IF NOT EXISTS salons_geo_idx ON salons (lat, lng) WHERE status = 'a
 --   "every salon ever in Bengaluru", so the index carries status.
 CREATE INDEX IF NOT EXISTS salons_city_idx ON salons (city, status);
 
+-- [DEVIATION 10] customer discovery filters on the salon's city, and the two
+--   sides of that comparison are typed by different people — an owner's
+--   onboarding form and a geocoder. "Jind" and "jind" are one town, so the
+--   predicate is lower(trim(city)) and needs its own expression index; the
+--   raw-column index above cannot serve it. Equality, never a prefix: a LIKE
+--   would start matching a neighbouring town's name, which is precisely the
+--   result the filter exists to prevent. See db/migrations/010.
+CREATE INDEX IF NOT EXISTS salons_city_norm_idx
+  ON salons (lower(regexp_replace(btrim(city), '\s+', ' ', 'g')), status);
+
 -- [DEVIATION 10] one owner, one salon — enforced here rather than only in the
 --   route, because salonForOwner() does `WHERE owner_id = $1` and takes
 --   rows[0]. A second salon under one owner would not error, it would silently
