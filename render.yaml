@@ -37,6 +37,12 @@ services:
     # follows a renamed default is the kind of thing nobody looks at until the
     # wrong tree is live.
     branch: main
+    # The deploy is gated by .github/workflows/deploy.yml, which runs
+    # the typecheck and the full test suite first and then triggers a
+    # deploy hook. Render's own auto-deploy would fire on the raw push,
+    # ahead of that gate, which is the ungated build the workflow
+    # exists to prevent — so it is turned off here.
+    autoDeploy: false
     dockerfilePath: ./Dockerfile
     # No database call, so a Neon blip does not get the service restarted in a
     # loop. /readyz is the one that checks the DB.
@@ -125,6 +131,12 @@ services:
     # database and a schema, so a panel running an older tree than the app it
     # administers is a migration mismatch waiting to happen.
     branch: main
+    # The deploy is gated by .github/workflows/deploy.yml, which runs
+    # the typecheck and the full test suite first and then triggers a
+    # deploy hook. Render's own auto-deploy would fire on the raw push,
+    # ahead of that gate, which is the ungated build the workflow
+    # exists to prevent — so it is turned off here.
+    autoDeploy: false
     dockerfilePath: ./Dockerfile
     # The one line that makes this the admin panel instead of a second copy of
     # the customer app.
