@@ -31,6 +31,7 @@ import {
 import { ask, notify } from './lib/dialog.js';
 import { EmptyState } from './components/EmptyState.js';
 import { SkeletonList, SkeletonCard } from './components/Skeleton.js';
+import { CARD_ASPECT, canCropImages, cropImage } from './lib/imagecrop.js';
 
 configureAuthRoutes({ signIn: '/', home: '/#/overview' });
 
@@ -81,6 +82,23 @@ async function uploadAdminSalonImage(salonId, file) {
     body: file,
     headers: { 'content-type': file.type },
   });
+}
+
+/**
+ * The resize step, before anything is uploaded.
+ *
+ * Same dialog the owner's own panel uses (lib/imagecrop.js), for the same
+ * reason: a photo taken on the admin's phone while standing in the salon is
+ * several megabytes and portrait, the route caps uploads at 2 MB, and the
+ * card it lands in is 16:10. Returns the file to send, or null if the admin
+ * backed out of the dialog.
+ */
+async function frameSalonPhoto(file, title = 'Resize the storefront photo') {
+  if (!canCropImages()) return file;
+  if (!ADMIN_IMAGE_TYPES.includes(file.type)) {
+    throw new Error('the file must be a JPEG, PNG or WebP image');
+  }
+  return cropImage(file, { aspect: CARD_ASPECT, title });
 }
 
 const STATUS_TONE = { pending: 'warn', active: 'ok', suspended: 'bad', banned: 'bad', rejected: 'bad' };
@@ -415,20 +433,24 @@ async function salonView(salonId) {
     pick.onclick = () => file.click();
     file.onchange = async () => {
       const chosen = file.files?.[0];
+      // Cleared first, so picking the same file again after a cancel or a
+      // failure still fires this.
+      file.value = '';
       if (!chosen) return;
       outcome.innerHTML = '';
-      pick.disabled = true;
       const was = pick.textContent;
-      pick.textContent = 'Uploading…';
       try {
-        await uploadAdminSalonImage(s.id, chosen);
+        const framed = await frameSalonPhoto(chosen);
+        if (!framed) return;               // backed out of the resize dialog
+        pick.disabled = true;
+        pick.textContent = 'Uploading…';
+        await uploadAdminSalonImage(s.id, framed);
         outcome.append(el('div', 'out ok', 'Saved.'));
         salonView(s.id);
       } catch (err) {
         outcome.append(el('div', 'out bad', err.message || 'Upload failed'));
         pick.disabled = false;
         pick.textContent = was;
-        file.value = '';
       }
     };
     pickRow.append(pick, file);
@@ -830,8 +852,17 @@ function onboardView() {
       const chosen = photo.files?.[0];
       if (chosen) {
         try {
-          await uploadAdminSalonImage(created.salonId, chosen);
-          photoNote = '\nThe photo is saved — the owner and customers see it now.';
+          // Framed after the salon exists, like the upload itself: the dialog
+          // is the admin's last chance to say which part of the shot is the
+          // salon. Cancelling it leaves the salon created and photoless,
+          // which the note below says plainly.
+          const framed = await frameSalonPhoto(chosen);
+          if (framed) {
+            await uploadAdminSalonImage(created.salonId, framed);
+            photoNote = '\nThe photo is saved — the owner and customers see it now.';
+          } else {
+            photoNote = '\nThe salon was created without a photo — the owner can add one from their panel.';
+          }
         } catch (err) {
           photoNote = `\nThe salon was created but the photo did not upload: ${err.message}`;
         }

@@ -127,6 +127,9 @@
      measures the bar it actually rendered and writes the real number here,
      because that bar's height depends on the text in it and on the font size
      the customer's phone is set to; a hardcoded guess is right on one device. */
+  /* The sticky app header's real height, written by app.js. The salon menu
+     sticks under it rather than behind it. */
+  --app-header-height: 0px;
   --bottom-nav-height: 0px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --cart-bar-height: 0px;
@@ -1657,6 +1660,10 @@ td input, td select { min-width: 72px; }
   flex-direction: column;
   gap: var(--space-2);
 }
+/* For a salon account the foot holds nothing — the account moved to the
+   header and there is no second panel to offer — so it must not reserve a
+   band of space at the end of the sidebar. */
+.shell-side .side-foot:not(:has(a, button)) { padding-top: 0; }
 @media (max-width: 860px) {
   .shell-side .side-foot { margin-top: 0; padding-top: 0; flex-direction: row; align-items: center; }
 }
@@ -1907,4 +1914,295 @@ td input, td select { min-width: 72px; }
   }
   .booking-side { align-items: flex-start; flex-direction: row; flex-wrap: wrap; }
   .booking-time { font-size: var(--text-lg); }
+}
+
+/* =====================================================================
+   SALON PAGE v3 — the photos, the heart, and the menu
+   ===================================================================== */
+
+/* ---------- the photo carousel ----------
+   The frame is the same .aspect box the page always used, so a carousel and
+   a single photo occupy identical space and nothing reflows between them.
+   touch-action: pan-y lets a vertical scroll through while the horizontal
+   gesture belongs to the carousel. */
+.carousel {
+  position: relative;
+  touch-action: pan-y;
+  user-select: none;
+  background: var(--surface-2);
+}
+.carousel:focus-visible { outline: 2px solid var(--brand-600); outline-offset: -2px; }
+
+.carousel-track {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  transition: transform var(--dur-slow) var(--ease-out);
+  will-change: transform;
+}
+/* While a finger is on it the track follows the finger exactly — a transition
+   here would make the drag lag behind the touch. */
+.carousel-track.dragging { transition: none; }
+
+.carousel-slide { flex: 0 0 100%; width: 100%; height: 100%; }
+.carousel-slide > img {
+  width: 100%;
+  height: 100%;
+  /* Never stretched: a portrait phone shot is cropped to the frame, not
+     squashed into it. */
+  object-fit: cover;
+  display: block;
+  -webkit-user-drag: none;
+}
+
+/* Arrows: on the photo, dimmed until the pointer is over it. On a touch
+   screen there is no hover, so they stay visible — the dots and the swipe are
+   the primary controls there anyway. */
+.carousel-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  backdrop-filter: blur(8px);
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+  box-shadow: var(--elevation-1);
+}
+.carousel-nav.prev { left: 10px; }
+.carousel-nav.next { right: 10px; }
+.carousel:hover .carousel-nav,
+.carousel:focus-within .carousel-nav { opacity: 1; }
+.carousel-nav:hover { background: var(--surface); }
+@media (hover: none) {
+  .carousel-nav { opacity: .85; }
+}
+
+.carousel-dots {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 10px;
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+.carousel-dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, #fff 55%, transparent);
+  box-shadow: 0 1px 3px rgba(0,0,0,.35);
+  cursor: pointer;
+  transition: width var(--dur-base) var(--ease-out), background var(--dur-base) var(--ease-out);
+}
+/* The active dot lengthens rather than only brightening: a shape difference
+   survives a bright photograph behind it, a brightness difference may not. */
+.carousel-dot.active { width: 20px; background: #fff; }
+
+/* ---------- the heart ---------- */
+.heart-btn {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  box-shadow: var(--elevation-1);
+  transition: transform var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.heart-btn.lg { width: 44px; height: 44px; }
+.heart-btn:hover { transform: scale(1.06); }
+.heart-btn:active { transform: scale(.94); }
+.heart-btn[disabled] { cursor: progress; }
+
+.heart-btn svg { width: 20px; height: 20px; display: block; }
+.heart-btn.lg svg { width: 23px; height: 23px; }
+/* Unsaved is an outline; saved is filled red. The shape is the same one, so
+   the toggle reads as a state change rather than as two different icons. */
+.heart-btn svg path {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.7;
+  stroke-linejoin: round;
+  transition: fill var(--dur-base) var(--ease-out), stroke var(--dur-base) var(--ease-out);
+}
+.heart-btn.is-saved svg path { fill: #e2364d; stroke: #e2364d; }
+.heart-btn.is-saved { border-color: color-mix(in srgb, #e2364d 35%, var(--line)); }
+
+/* The pop on save. Deliberately small and fast — a save is a confirmation,
+   not an event. */
+.heart-btn.pop svg { animation: heart-pop 340ms var(--ease-spring); }
+@keyframes heart-pop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.32); }
+  70%  { transform: scale(.94); }
+  100% { transform: scale(1); }
+}
+
+/* Its slot on a card: over the photo, opposite the status pill, and clear of
+   the card's own click target. */
+.salon-card-heart { position: absolute; top: 10px; right: 10px; z-index: 2; }
+.salon-hero-media { position: relative; }
+.salon-hero-heart { position: absolute; top: 12px; right: 12px; z-index: 2; }
+.salon-hero-info { padding: var(--space-5); }
+/* The named twin of the heart, for anyone who does not read an icon as a
+   control. Same button underneath. */
+.salon-save-text[aria-pressed="true"] {
+  border-color: color-mix(in srgb, #e2364d 40%, var(--line));
+  color: #e2364d;
+}
+
+/* ---------- the salon's menu ----------
+   Sticky under the app header while the services scroll past it, which is
+   what makes the highlight worth having. */
+.menu-nav {
+  position: sticky;
+  /* Under the app header, not behind it. --app-header-height is written by
+     app.js from the header it actually rendered — the bar wraps on a narrow
+     phone and grows again for the notch, so a constant here is right on one
+     device. */
+  top: var(--app-header-height, 0px);
+  z-index: 15;
+  margin: 0 calc(var(--space-6) * -1) var(--space-4);
+  padding: var(--space-3) var(--space-6) 0;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: saturate(180%) blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+@supports not (backdrop-filter: blur(1px)) {
+  .menu-nav { background: var(--surface); }
+}
+.menu-strip { margin-bottom: 0; padding-bottom: var(--space-3); }
+.menu-chip { padding: 8px 14px; font-size: var(--text-sm); gap: 8px; }
+.menu-chip-count {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--dim);
+}
+.menu-chip.active .menu-chip-count {
+  background: color-mix(in srgb, #fff 26%, transparent);
+  color: var(--on-brand);
+}
+
+.service-section { margin-bottom: var(--space-8); }
+.service-section:last-child { margin-bottom: 0; }
+.service-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+.service-section-head h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+  letter-spacing: var(--tracking-snug);
+  text-transform: capitalize;
+}
+
+/* ---------- the crop & resize dialog ---------- */
+.cropper-card { max-width: 560px; width: min(560px, 94vw); }
+.cropper-stage {
+  position: relative;
+  width: 100%;
+  margin: var(--space-4) 0 var(--space-3);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface-2);
+  cursor: grab;
+  touch-action: none;          /* the drag is the pan; the page must not move */
+  user-select: none;
+}
+.cropper-stage.dragging { cursor: grabbing; }
+.cropper-canvas { width: 100%; height: 100%; display: block; }
+/* The frame is the whole stage — a rule of thirds grid over it, so what is
+   being framed is obvious without a second darkened region to explain. */
+.cropper-frame {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 2px solid color-mix(in srgb, #fff 80%, transparent);
+  border-radius: var(--radius);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.25);
+  background:
+    linear-gradient(to right, transparent 33.33%, color-mix(in srgb, #fff 22%, transparent) 33.33%,
+      color-mix(in srgb, #fff 22%, transparent) calc(33.33% + 1px), transparent calc(33.33% + 1px),
+      transparent 66.66%, color-mix(in srgb, #fff 22%, transparent) 66.66%,
+      color-mix(in srgb, #fff 22%, transparent) calc(66.66% + 1px), transparent calc(66.66% + 1px)),
+    linear-gradient(to bottom, transparent 33.33%, color-mix(in srgb, #fff 22%, transparent) 33.33%,
+      color-mix(in srgb, #fff 22%, transparent) calc(33.33% + 1px), transparent calc(33.33% + 1px),
+      transparent 66.66%, color-mix(in srgb, #fff 22%, transparent) 66.66%,
+      color-mix(in srgb, #fff 22%, transparent) calc(66.66% + 1px), transparent calc(66.66% + 1px));
+}
+.cropper-zoom { margin: 0; }
+.cropper-zoom input[type="range"] { width: 100%; accent-color: var(--brand-600); }
+.cropper-hint { margin-top: var(--space-2); }
+
+/* ---------- the salon panel's dashboard header ---------- */
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+.panel-header-titles { min-width: 0; }
+.panel-header-eyebrow {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.panel-header-title {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-snug);
+  line-height: var(--leading-tight);
+}
+/* Pinned right even when the header wraps on a narrow phone — the same rule
+   the customer app's account control uses. */
+.panel-header-actions { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); }
+
+/* The login page's way back, above the card rather than inside it. */
+.login-back { display: inline-block; margin: 0 0 var(--space-2); }
+
+/* ---------- reduced motion ----------
+   Nothing here is information — the carousel still advances on a press, the
+   heart still fills — so all of it stops when the device asks for stillness. */
+@media (prefers-reduced-motion: reduce) {
+  .carousel-track { transition: none; }
+  .heart-btn.pop svg { animation: none; }
+  .heart-btn:hover, .heart-btn:active { transform: none; }
+  .menu-strip { scroll-behavior: auto; }
+}
+
+@media (max-width: 640px) {
+  .menu-nav { margin: 0 calc(var(--space-5) * -1) var(--space-4); padding: var(--space-2) var(--space-5) 0; }
+  .carousel-nav { width: 32px; height: 32px; font-size: 18px; }
+  .salon-hero-info { padding: var(--space-4); }
+  .panel-header { margin-bottom: var(--space-5); }
+  .panel-header-title { font-size: var(--text-xl); }
 }

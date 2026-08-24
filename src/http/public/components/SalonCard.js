@@ -1,11 +1,16 @@
 import { el } from '../lib/dom.js';
 import { distance, rupees } from '../lib/format.js';
 import { Rating } from './Rating.js';
+import { HeartButton } from './HeartButton.js';
 
 /**
- * `salon` is a SalonSummary from GET /api/salons. `onOpen(id)` navigates;
- * `onToggleFavorite(id)` is omitted entirely when favoriting isn't wired up
- * for this list (no fake heart icon dangling with no effect).
+ * `salon` is a SalonSummary from GET /api/salons. `onOpen(id)` navigates.
+ *
+ * The heart sits on the photo rather than in the footer, and it is the same
+ * HeartButton the salon's own page uses over the same lib/favorites.js — so a
+ * salon saved from a card is saved on its page, and the other way round,
+ * without this component knowing anything about the endpoints. It stops its
+ * own events, so saving never opens the salon by accident.
  *
  * The card is the most repeated element in the product, so it carries the
  * design system rather than its own styling: the open/closed state is a status
@@ -16,7 +21,7 @@ import { Rating } from './Rating.js';
  * meant the entire discovery experience — the only way into a salon — could
  * not be operated without a mouse.
  */
-export function SalonCard(salon, { onOpen, onToggleFavorite, isFavorite = false } = {}) {
+export function SalonCard(salon, { onOpen, savable = false, signedIn = false, onRequireSignIn } = {}) {
   const card = el('div', 'salon-card');
   const open = () => onOpen?.(salon.id);
   card.onclick = open;
@@ -54,6 +59,12 @@ export function SalonCard(salon, { onOpen, onToggleFavorite, isFavorite = false 
   const badgeSlot = el('div', 'salon-badge-top');
   badgeSlot.append(status);
   imgWrap.append(badgeSlot);
+
+  if (savable) {
+    const heartSlot = el('div', 'salon-card-heart');
+    heartSlot.append(HeartButton(salon.id, { signedIn, label: salon.name, onRequireSignIn }));
+    imgWrap.append(heartSlot);
+  }
   card.append(imgWrap);
 
   const body = el('div', 'salon-card-body');
@@ -76,17 +87,7 @@ export function SalonCard(salon, { onOpen, onToggleFavorite, isFavorite = false 
   }
   footer.append(price);
 
-  if (onToggleFavorite) {
-    const favBtn = el('button', 'btn sm' + (isFavorite ? ' secondary' : ' ghost'), isFavorite ? '♥ Saved' : '♡ Save');
-    favBtn.setAttribute('aria-pressed', String(!!isFavorite));
-    favBtn.onclick = (e) => {
-      e.stopPropagation();   // the card underneath is a link
-      onToggleFavorite(salon.id);
-    };
-    footer.append(favBtn);
-  } else {
-    footer.append(el('span', 'salon-card-cta', 'Book →'));
-  }
+  footer.append(el('span', 'salon-card-cta', 'Book →'));
   body.append(footer);
 
   card.append(body);

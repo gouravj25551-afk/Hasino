@@ -281,12 +281,23 @@ export async function businessRoutes(
   if (method === 'POST' && tail[0] === 'bookings' && tail.length === 3) {
     const bookingId = uuid(tail[1]!, 'bookingId');
     const action = tail[2]!;
+    /**
+     * What a salon may do to one of its own bookings.
+     *
+     * There is deliberately no 'cancel' here. A salon cancelling a single
+     * confirmed customer is not an action the panel offers any more: a
+     * customer who does not arrive is a no-show, gated on the grace period,
+     * and a day the salon cannot work is POST /api/business/close-today,
+     * which cancels the whole day and queues every refund together. The
+     * customer's own cancellation (POST /api/me/bookings/:id/cancel) and the
+     * admin's are untouched — both still write 'cancelled_by_salon' where
+     * that is what happened.
+     */
     const map: Record<string, BookingStatus> = {
       verify: 'verified',
       start: 'in_progress',
       complete: 'completed',
       'no-show': 'no_show',
-      cancel: 'cancelled_by_salon',
     };
     const to = map[action];
     if (!to) throw new HttpError(404, `Unknown action ${action}`);

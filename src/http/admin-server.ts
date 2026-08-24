@@ -115,6 +115,10 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   // and loading states are the same ones the customer app uses — a second
   // implementation here is how two panels drift apart.
   'lib/dom.js',
+  // The crop-and-resize dialog the owner's panel uses. The admin uploads the
+  // same picture to the same table, so it goes through the same step rather
+  // than a second one written here.
+  'lib/imagecrop.js',
   'components/EmptyState.js',
   'components/Skeleton.js',
 ]);

@@ -71,6 +71,15 @@ export function installBackHandler({ isRoot, homeHash, dismissOverlay = dismissT
     depth++;
   });
 
+  // A redirect that replaced the current entry rather than adding one — the
+  // router's replace(), used when a protected route sends someone to sign in
+  // and when the login page sends them on afterwards. The hashchange it
+  // causes is not a step forward, and counting it as one would leave a press
+  // going back to an entry the browser no longer has.
+  window.addEventListener('hasino:replace', () => {
+    expected++;
+  });
+
   window.hasinoBack = () => {
     // A dialog on screen is what back closes first. Navigating out from under
     // an open confirmation would look like the app ignored the press.

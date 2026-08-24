@@ -7,7 +7,11 @@ import { Button } from '../components/Button.js';
 import { Modal } from '../components/Modal.js';
 import { BottomSheet } from '../components/BottomSheet.js';
 import { Stepper } from '../components/Stepper.js';
+import { ImageCarousel } from '../components/ImageCarousel.js';
+import { HeartButton } from '../components/HeartButton.js';
+import { CategoryNav, scrollToSection } from '../components/CategoryNav.js';
 import { cartFor, cartSalonId, cartTotals, clearCart, saveCart } from '../lib/cart.js';
+import { loadFavorites } from '../lib/favorites.js';
 
 export async function renderSalon(container, app, salonId) {
   container.innerHTML = '';
@@ -29,14 +33,12 @@ export async function renderSalon(container, app, salonId) {
   }
   const persist = () => saveCart(salonId, [...cart]);
   persist();
-  let isFavorite = false;
-  if (app.session) {
-    try {
-      const { salonIds } = await api('/api/me/favorites');
-      isFavorite = salonIds.includes(salonId);
-    } catch {
-      // favorites are a nice-to-have on this page; a failed fetch shouldn't block the page
-    }
+  // The saved list, from the one cache the cards share — so the heart here
+  // and the heart on the card this page was opened from are the same fact.
+  try {
+    await loadFavorites({ signedIn: Boolean(app.session) });
+  } catch {
+    // favorites are a nice-to-have on this page; a failed fetch shouldn't block the page
   }
 
   const backBtn = el('a', 'btn sm', '← Back');
@@ -45,7 +47,7 @@ export async function renderSalon(container, app, salonId) {
   backBtn.style.display = 'inline-block';
   container.append(backBtn);
 
-  container.append(heroPanel(salon, app, () => isFavorite, (v) => (isFavorite = v)));
+  container.append(heroPanel(salon, app));
 
   if (replacedCart) {
     container.append(
@@ -249,24 +251,42 @@ function syncServiceButtons(servicesPanelNode, cart) {
   }
 }
 
-function heroPanel(salon, app, getFavorite, setFavorite) {
-  const panel = el('div', 'panel');
+/**
+ * The salon's photos, its name, and the two things you can do from the top of
+ * the page: save it, or find it.
+ *
+ * The photo used to be a single static shot even when the salon had six. It is
+ * a carousel now — automatic, swipeable, and only when there is more than one
+ * picture to show. Nothing is stretched: every image is object-fit: cover
+ * inside the same 21:9 box the page always used.
+ */
+function heroPanel(salon, app) {
+  const panel = el('div', 'panel salon-hero');
   panel.style.padding = '0';
   panel.style.overflow = 'hidden';
 
-  const imgWrap = el('div', 'aspect cover' + (salon.coverImage ? '' : ' placeholder'));
-  if (salon.coverImage) {
-    const img = el('img');
-    img.src = salon.coverImage;
-    img.alt = salon.name;
-    imgWrap.append(img);
-  } else {
-    imgWrap.append(document.createTextNode(salon.name.slice(0, 1).toUpperCase()));
-  }
-  panel.append(imgWrap);
+  const media = el('div', 'salon-hero-media');
+  // cover_url first, then the gallery, with duplicates dropped — the API
+  // already falls back to photos[0] for the cover, so without this a salon
+  // with one gallery photo and no upload would show it twice.
+  const shots = [...new Set([salon.coverImage, ...(salon.photos ?? [])].filter(Boolean))];
+  media.append(ImageCarousel(shots, { alt: salon.name, aspect: 'cover', placeholder: salon.name }));
 
-  const info = el('div');
-  info.style.padding = 'var(--space-5)';
+  // The heart rides on the photo, top right, where a save lives on every
+  // other app people use. It is a button over a carousel: its own handlers
+  // stop the press from reaching the swipe underneath.
+  const heart = HeartButton(salon.id, {
+    signedIn: Boolean(app.session),
+    label: salon.name,
+    size: 'lg',
+    onRequireSignIn: () => app.signIn(),
+  });
+  const heartSlot = el('div', 'salon-hero-heart');
+  heartSlot.append(heart);
+  media.append(heartSlot);
+  panel.append(media);
+
+  const info = el('div', 'salon-hero-info');
 
   const titleRow = el('div', 'row');
   titleRow.style.justifyContent = 'space-between';
@@ -298,42 +318,48 @@ function heroPanel(salon, app, getFavorite, setFavorite) {
 
   const actions = el('div', 'row');
   actions.style.marginTop = 'var(--space-4)';
-  const dirBtn = Button({
+  actions.append(Button({
     label: '📍 Directions',
     size: 'sm',
     onClick: () => window.open(`https://maps.google.com/?q=${salon.lat},${salon.lng}`, '_blank', 'noopener'),
-  });
-  actions.append(dirBtn);
-
-  if (app.session) {
-    const favBtn = Button({
-      label: getFavorite() ? '♥ Saved' : '♡ Save',
-      size: 'sm',
-      onClick: async () => {
-        const next = !getFavorite();
-        favBtn.disabled = true;
-        try {
-          if (next) await api('/api/me/favorites', { method: 'POST', body: JSON.stringify({ salonId: salon.id }) });
-          else await api(`/api/me/favorites/${salon.id}`, { method: 'DELETE' });
-          setFavorite(next);
-          favBtn.textContent = next ? '♥ Saved' : '♡ Save';
-        } finally {
-          favBtn.disabled = false;
-        }
-      },
-    });
-    actions.append(favBtn);
-  } else {
-    actions.append(Button({ label: '♡ Save', size: 'sm', onClick: () => app.navigate('#/login') }));
-  }
+  }));
+  // The heart above is the save. This is the same action named, for anyone who
+  // does not read an icon as a control — it drives the very same button, so
+  // there is one state and one request behind both.
+  const saveText = el('button', 'btn sm salon-save-text');
+  saveText.type = 'button';
+  const paintSaveText = () => {
+    const saved = heart.getAttribute('aria-pressed') === 'true';
+    saveText.textContent = saved ? 'Saved' : 'Save';
+    saveText.setAttribute('aria-pressed', String(saved));
+  };
+  paintSaveText();
+  saveText.onclick = () => heart.click();
+  // The heart repaints on its own — from this click, or from a card elsewhere
+  // — so the label follows it rather than guessing.
+  new MutationObserver(paintSaveText).observe(heart, { attributes: true, attributeFilter: ['aria-pressed'] });
+  actions.append(saveText);
   info.append(actions);
+
   panel.append(info);
   return panel;
 }
 
+/**
+ * The salon's menu: a sticky category bar, then one section per category.
+ *
+ * The categories are the salon's own — whatever `category` its active services
+ * carry, in the order the API returns them (it orders by category, then name).
+ * Nothing is hardcoded here, so a salon that only does facials gets one chip
+ * and a category added to the catalogue needs no change in this file.
+ */
 function servicesPanel(salon, cart, onChange) {
-  const panel = el('div', 'panel');
-  panel.append(el('h2', null, 'Select services'));
+  const panel = el('div', 'panel services-panel');
+
+  const head = el('div', 'section-head');
+  head.append(el('h2', null, 'Select services'));
+  head.append(el('span', 'meta', `${salon.services.length} on the menu`));
+  panel.append(head);
 
   const byCategory = new Map();
   for (const s of salon.services) {
@@ -341,21 +367,111 @@ function servicesPanel(salon, cart, onChange) {
     byCategory.get(s.category).push(s);
   }
 
-  const list = el('div', 'list');
-  for (const [, services] of byCategory) {
+  const categories = [...byCategory.keys()];
+  const idFor = (category) => `svc-${slug(category)}`;
+
+  // One category is not a menu: a single chip that scrolls to the only
+  // section on the page is decoration.
+  let nav = null;
+  if (categories.length > 1) {
+    nav = CategoryNav(
+      [
+        { id: 'all', label: 'Services', count: salon.services.length },
+        ...categories.map((c) => ({ id: idFor(c), label: labelFor(c), count: byCategory.get(c).length })),
+      ],
+      {
+        onSelect: (id) => {
+          // Clicking is a statement about where you want to be, so the
+          // highlight moves immediately rather than waiting for the scroll to
+          // arrive — and the observer below is muted while it travels.
+          nav.setActive(id);
+          suppressSpy();
+          const target = id === 'all' ? panel : panel.querySelector(`#${id}`);
+          if (target) scrollToSection(target, stickyOffset(nav));
+        },
+      },
+    );
+    panel.append(nav);
+  }
+
+  const sections = [];
+  for (const [category, services] of byCategory) {
+    const section = el('section', 'service-section');
+    section.id = idFor(category);
+    // Room for the sticky bar when the browser scrolls to this on its own
+    // (an in-page link, a find-in-page hit).
+    section.style.scrollMarginTop = 'calc(var(--app-header-height, 0px) + 88px)';
+    const title = el('div', 'service-section-head');
+    title.append(el('h3', null, labelFor(category)));
+    title.append(el('span', 'meta', `${services.length} service${services.length > 1 ? 's' : ''}`));
+    section.append(title);
+
+    const list = el('div', 'list');
     for (const service of services) {
-      const row = ServiceCard(service, {
+      list.append(ServiceCard(service, {
         selected: cart.has(service.serviceId),
         onToggle: (id, checked) => {
           checked ? cart.add(id) : cart.delete(id);
           onChange();
         },
-      });
-      list.append(row);
+      }));
     }
+    section.append(list);
+    panel.append(section);
+    sections.push(section);
   }
-  panel.append(list);
+
+  // ---- which section am I looking at ----
+  let spySuppressedUntil = 0;
+  const suppressSpy = () => { spySuppressedUntil = Date.now() + 900; };
+
+  if (nav && typeof IntersectionObserver === 'function') {
+    const visible = new Set();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) visible.add(entry.target.id);
+          else visible.delete(entry.target.id);
+        }
+        if (Date.now() < spySuppressedUntil) return;
+        if (!nav.isConnected) {
+          observer.disconnect();
+          return;
+        }
+        // The topmost section still on screen, in menu order.
+        const current = sections.map((s) => s.id).find((id) => visible.has(id));
+        nav.setActive(current ?? 'all');
+      },
+      // A band just under the sticky bar: a section counts as "the one you are
+      // reading" while its top is in the upper part of the viewport.
+      { rootMargin: '-150px 0px -55% 0px', threshold: 0 },
+    );
+    for (const section of sections) observer.observe(section);
+    nav.setActive('all');
+  }
+
   return panel;
+}
+
+/** A category name as a chip label: 'hair' -> 'Hair', 'hair_color' -> 'Hair color'. */
+function labelFor(category) {
+  const words = String(category).replace(/[_-]+/g, ' ').trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : 'Other';
+}
+
+/** A category name as an element id. Never interpolated into HTML. */
+function slug(category) {
+  return String(category).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'other';
+}
+
+/**
+ * How much is covering the top of the page: the app header, which is sticky
+ * and wraps, plus the menu bar itself. Measured rather than assumed — the
+ * header is taller on a phone with a notch and taller again when it wraps.
+ */
+function stickyOffset(nav) {
+  const header = document.querySelector('.topbar');
+  return (header?.offsetHeight ?? 0) + (nav?.offsetHeight ?? 0) + 12;
 }
 
 async function renderSlots(slotPanel, salon, cart, app, steps) {

@@ -12,6 +12,7 @@ import { ask } from './lib/dialog.js';
 import { installBackHandler } from './lib/backbutton.js';
 import { EmptyState } from './components/EmptyState.js';
 import { toast as pushToast } from './components/Toast.js';
+import { CARD_ASPECT, canCropImages, cropImage } from './lib/imagecrop.js';
 
 const $  = (s, r = document) => r.querySelector(s);
 const el = (t, cls, txt) => { const n = document.createElement(t); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
@@ -43,14 +44,107 @@ async function api(path, opts = {}) {
 }
 
 /**
+ * The account control in the top-right corner of the panel.
+ *
+ * A dashboard says who is signed in where dashboards say it, and the customer
+ * app already does exactly this — so this is the same shape as
+ * components/TopBar.js's AccountMenu (avatar trigger, .account-menu panel,
+ * closes on Escape or a click anywhere) rather than a second idea of what an
+ * account control looks like. What is inside it is the owner's, not a
+ * customer's: their salon profile, the timings and services screens, the way
+ * back to the customer app when this panel is not theirs, and sign out.
+ *
+ * `me` is GET /api/me — which already carries the salon's name, so the menu
+ * needs no second request and the header does not hold the panel up.
+ * `showExit` adds the way back to the customer app, for the accounts that
+ * genuinely need one; see initIdentity().
+ */
+function accountMenu(me, { showExit }) {
+  const root = el('div', 'account');
+
+  const initial = (me.name || me.email || '?').trim().charAt(0).toUpperCase();
+  const avatar = me.avatarUrl
+    ? Object.assign(el('img', 'avatar'), { src: me.avatarUrl, alt: '' })
+    : el('div', 'avatar', initial);
+
+  const trigger = el('button', 'account-trigger');
+  trigger.type = 'button';
+  trigger.setAttribute('aria-haspopup', 'menu');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.setAttribute('aria-label', `Account: ${me.name || me.email || 'signed in'}`);
+  const triggerName = el('span', 'account-name', me.name || me.email || 'Account');
+  trigger.append(avatar, triggerName, el('span', null, '▾'));
+  root.append(trigger);
+
+  let menu = null;
+  const close = () => {
+    menu?.remove();
+    menu = null;
+    trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('click', onDocumentClick, true);
+    document.removeEventListener('keydown', onKey);
+  };
+  // Capture phase: the menu closes on a click anywhere, including on one of
+  // its own links, which is about to navigate.
+  const onDocumentClick = (e) => { if (!root.contains(e.target)) close(); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+
+  const open = () => {
+    menu = el('div', 'account-menu');
+    menu.setAttribute('role', 'menu');
+
+    const who = el('div', 'who');
+    who.append(el('div', 'name', me.name || 'Signed in'));
+    if (me.email) who.append(el('div', 'sub', me.email));
+    if (me.salon?.name) who.append(el('div', 'sub', me.salon.name));
+    menu.append(who);
+
+    const link = (href, label) => {
+      const a = el('a', null, label);
+      a.href = href;
+      a.setAttribute('role', 'menuitem');
+      a.onclick = close;
+      menu.append(a);
+    };
+    link('#/profile', 'Salon profile');
+    link('#/timings', 'Timings');
+    link('#/services', 'Services & prices');
+    if (showExit) link('/', 'Customer app');
+
+    const out = el('button', 'danger', 'Sign out');
+    out.type = 'button';
+    out.setAttribute('role', 'menuitem');
+    out.onclick = async () => {
+      close();
+      await signOut();
+      location.reload();
+    };
+    menu.append(out);
+
+    root.append(menu);
+    trigger.setAttribute('aria-expanded', 'true');
+    document.addEventListener('click', onDocumentClick, true);
+    document.addEventListener('keydown', onKey);
+  };
+
+  trigger.onclick = (e) => {
+    e.stopPropagation();
+    menu ? close() : open();
+  };
+
+  return root;
+}
+
+/**
  * Gate the panel on a signed-in owner. /api/me tells us who they are; the
  * role check is the server's, not ours — every /api/business/* route runs
  * requireRole(s, 'business') before it does anything.
  */
 async function initIdentity() {
-  const who = $('#whoami');
+  const slot = $('#panelAccount');
   const exit = $('#exit');
   exit.innerHTML = '';
+  slot.innerHTML = '';
 
   /**
    * The way out of this panel, for people it does not belong to.
@@ -70,22 +164,27 @@ async function initIdentity() {
 
   try {
     const me = await api('/api/me');
-    who.innerHTML = '';
-    who.append(el('span', 'meta', me.name || me.email || me.phone));
-    const out = el('button', 'btn sm', 'Sign out');
-    out.onclick = async () => { await signOut(); location.reload(); };
-    who.append(out);
+    slot.append(accountMenu(me, { showExit: me.role !== 'business' }));
     if (me.role !== 'business') showExit();
     return me;
-  } catch (err) {
-    who.innerHTML = '';
+  } catch {
     const link = el('a', 'btn sm primary', 'Sign in');
     link.href = '/#/login';
-    who.append(link);
+    slot.append(link);
     showExit();
     return null;
   }
 }
+
+/** The page name in the dashboard header, so the header says where you are. */
+const PANEL_TITLES = {
+  '#/today': 'Today',
+  '#/services': 'Services & prices',
+  '#/timings': 'Timings',
+  '#/insights': 'Insights',
+  '#/payouts': 'Money',
+  '#/profile': 'Salon profile',
+};
 
 /** Shown instead of the panel when the caller is not a salon owner. */
 function renderNotAnOwner(err) {
@@ -130,6 +229,8 @@ function render() {
   const hash = location.hash || '#/today';
   for (const a of document.querySelectorAll('[data-nav]')) a.removeAttribute('aria-current');
   $(`[data-nav="${hash.slice(2)}"]`)?.setAttribute('aria-current', 'page');
+  const title = $('#panelTitle');
+  if (title) title.textContent = PANEL_TITLES[hash] || 'Today';
   (routes[hash] || todayView)().catch(showError);
 }
 
@@ -496,20 +597,13 @@ async function todayView() {
       done.onclick = () => send('complete');
       act.append(done);
     }
-    if (['booked', 'verified', 'in_progress'].includes(b.status)) {
-      const cancel = el('button', 'btn sm', 'Cancel');
-      cancel.onclick = async () => {
-        const ok = await ask({
-          title: 'Cancel this booking?',
-          message: 'A refund is queued for the customer.',
-          confirmLabel: 'Cancel booking',
-          cancelLabel: 'Keep it',
-          danger: true,
-        });
-        if (ok) send('cancel');
-      };
-      act.append(cancel);
-    }
+    // No per-booking Cancel here. A salon cancelling one confirmed customer
+    // out of its own day is not an action this panel offers any more: a
+    // customer who does not turn up is a No-show (which the server gates on
+    // the grace period), and a day the salon genuinely cannot work is "Close
+    // for this day", which cancels the whole day and queues every refund at
+    // once. The customer's own cancellation is untouched — that lives in the
+    // customer app, on POST /api/me/bookings/:id/cancel.
     item.append(act);
     list.append(item);
   }
@@ -586,12 +680,40 @@ function salonImagePanel(salon) {
 
   file.onchange = async () => {
     const chosen = file.files?.[0];
+    // So choosing the same file again — after a failure, or after backing out
+    // of the resize step — still fires onchange.
+    file.value = '';
     if (!chosen) return;
     status.innerHTML = '';
+
+    /**
+     * Frame it before it is uploaded.
+     *
+     * This is the step that was missing. Straight-from-the-phone shots are
+     *3-8 MB and portrait; the route caps uploads at 2 MB and the card is
+     * 16:10, so the old flow refused most photos outright and centre-cropped
+     * the ones it took without showing the owner what survived. The dialog
+     * re-encodes what is inside the frame, which is both the resize and the
+     * crop.
+     *
+     * Backing out of the dialog is a cancel, not a failure: nothing is
+     * uploaded and the panel is exactly as it was.
+     */
+    let toUpload = chosen;
+    if (canCropImages()) {
+      if (!IMAGE_TYPES.includes(chosen.type)) {
+        status.append(el('div', 'out bad', 'Please choose a JPEG, PNG or WebP image.'));
+        return;
+      }
+      const framed = await cropImage(chosen, { aspect: CARD_ASPECT, title: 'Resize your salon photo' });
+      if (!framed) return;
+      toUpload = framed;
+    }
+
     pick.disabled = true;
     pick.textContent = 'Uploading…';
     try {
-      const { coverImage } = await uploadSalonImage(chosen);
+      const { coverImage } = await uploadSalonImage(toUpload);
       // The URL carries a hash of the bytes, so this never shows a cached
       // copy of the photo it just replaced.
       show(coverImage);
@@ -603,15 +725,13 @@ function salonImagePanel(salon) {
       status.append(el('div', 'out bad', err.message || 'Upload failed'));
     } finally {
       pick.disabled = false;
-      // So choosing the same file again after a failure still fires onchange.
-      file.value = '';
     }
   };
 
   side.append(pick, file, status);
   side.append(el('div', 'note',
-    `JPEG, PNG or WebP, up to ${MAX_IMAGE_MB} MB. A wide shot of the storefront or the chairs works best — `
-    + 'it is cropped to a card, so keep the important part in the middle.'));
+    `JPEG, PNG or WebP, up to ${MAX_IMAGE_MB} MB. Whatever you choose, you get to move and zoom it `
+    + 'inside the card frame before it is saved — a wide shot of the storefront or the chairs works best.'));
 
   row.append(frame, side);
   panel.append(row);
@@ -1333,4 +1453,12 @@ watchAuthState(async (user) => {
   if (me.role !== 'business') return renderNotAnOwner({ status: 403 });
   await renderPendingBanner();
   render();
-}).catch(() => renderNotAnOwner({ status: 401 }));
+}).catch(async () => {
+  // Clerk itself could not load — an unconfigured deployment, or a blocked
+  // CDN. The panel is unusable either way, but the header must not be a blank
+  // strip: initIdentity's own failure path puts a Sign in control there and
+  // the door back to the customer app, which is the whole of what someone can
+  // do from here.
+  await initIdentity().catch(() => {});
+  renderNotAnOwner({ status: 401 });
+});

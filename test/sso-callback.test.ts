@@ -246,8 +246,13 @@ describe('sign-in lands you where your role belongs', () => {
   it('navigates a real path as a document load, not a hash route', () => {
     // '/business' is business.html, a separate document. go() only moves the
     // hash, so routing an owner there with it would change the URL and render
-    // nothing.
-    assert.match(app, /function navigateTo\(dest\) \{\s*if \(dest\.startsWith\('#'\)\) go\(dest\);/);
+    // nothing. Both forms — pushing an entry and replacing the current one —
+    // have to be a document load for a real path.
+    const fn = /function navigateTo\(dest[\s\S]*?\n\}/.exec(app)?.[0] ?? '';
+    assert.notEqual(fn, '', 'navigateTo() not found');
+    assert.match(fn, /if \(dest\.startsWith\('#'\)\)/, 'hash routes stay in the router');
+    assert.match(fn, /window\.location\.assign\(dest\)/);
+    assert.match(fn, /window\.location\.replace\(dest\)/);
   });
 
   it('routes on app open, not only on the sign-in that created the session', () => {

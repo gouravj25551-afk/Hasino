@@ -216,7 +216,10 @@ for (const [action, expect] of [['verify', 'verified'], ['start', 'in_progress']
 // ---------- ownership ----------
 console.log('\nownership');
 const otherOwner = ids.owners.find((o: any) => o.dev_token !== owner.dev_token);
-const cross = await call(`/api/business/bookings/${bookingId}/cancel`, {
+// 'complete' rather than a cancel: the panel has no per-booking cancel any
+// more (see routes-business.ts), and an action the router does not know would
+// 404 for the wrong reason and stop testing ownership at all.
+const cross = await call(`/api/business/bookings/${bookingId}/complete`, {
   method: 'POST', as: { 'x-dev-user': otherOwner.dev_token },
 });
 check('another salon cannot touch this booking',

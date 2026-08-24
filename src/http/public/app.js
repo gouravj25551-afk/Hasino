@@ -7,7 +7,7 @@
  * code out is the right trade; the alternative weakens CSP for every page
  * to save one file.
  */
-import { register, start, go, reload, currentHash, activeSection } from './lib/router.js';
+import { register, start, go, replace, reload, currentHash, activeSection } from './lib/router.js';
 import { api } from './lib/api.js';
 import {
   watchAuthState,
@@ -27,6 +27,7 @@ import { BottomNav } from './components/BottomNav.js';
 import { installBackHandler } from './lib/backbutton.js';
 import { initTheme } from './lib/theme.js';
 import { el } from './lib/dom.js';
+import { forgetFavorites, loadFavorites } from './lib/favorites.js';
 
 import { renderHome } from './views/home.js';
 import { renderExplore } from './views/explore.js';
@@ -57,6 +58,7 @@ const app = {
   refreshSession,
   requireSession,
   afterSignIn,
+  signIn: goToSignIn,
   signOut: doSignOut,
 };
 
@@ -71,20 +73,73 @@ async function refreshSession() {
   return session;
 }
 
-/** Views call this when a route needs a signed-in user. Redirects to login if there isn't one. */
+/**
+ * Where a visitor was going when they were asked to sign in.
+ *
+ * sessionStorage rather than the URL: the sign-in leaves for Google and comes
+ * back on a different document, and the hash router matches its routes
+ * exactly — a `?next=` on '#/login' would match no route at all and bounce to
+ * '#/home'. Cleared as soon as it is used, so yesterday's interrupted trip to
+ * checkout does not hijack tomorrow's sign-in.
+ */
+const RETURN_TO = 'returnTo';
+
+function rememberReturnTo(hash) {
+  // '#/login' is not a destination, and neither is a route that only exists
+  // to bounce. Anything else is where the person was actually headed.
+  if (!hash || hash === '#/login' || !hash.startsWith('#/')) return;
+  sessionStorage.setItem(RETURN_TO, hash);
+}
+
+function takeReturnTo() {
+  const hash = sessionStorage.getItem(RETURN_TO);
+  sessionStorage.removeItem(RETURN_TO);
+  return hash && hash !== '#/login' ? hash : null;
+}
+
+/**
+ * Views call this when a route needs a signed-in user.
+ *
+ * Two things beyond "go to login". The route that bounced them is *replaced*
+ * rather than pushed past, because it is not a place they can come back to
+ * while signed out — leaving it in history is what made Back from the login
+ * page land on it and be bounced straight forward again. And where they were
+ * going is remembered, so signing in finishes the trip instead of dropping
+ * them on the home page.
+ */
 function requireSession() {
   if (!app.session) {
-    go('#/login');
+    rememberReturnTo(currentHash());
+    replace('#/login');
     return null;
   }
   return app.session;
 }
 
+/**
+ * Send someone to sign in from a page they chose to be on — the Sign in
+ * button, or a heart tapped by a signed-out visitor.
+ *
+ * Pushed rather than replaced, because the page behind it is a real place to
+ * come back to; what makes that safe is that the login page replaces *itself*
+ * on the way out. Where they were is remembered, so a save that needed an
+ * account finishes on the salon they were looking at.
+ */
+function goToSignIn() {
+  rememberReturnTo(currentHash());
+  go('#/login');
+}
+
 async function doSignOut() {
   await signOut();
   app.session = null;
+  // The next account's saved salons are not this one's.
+  forgetFavorites();
+  sessionStorage.removeItem(RETURN_TO);
   renderChrome();
-  go('#/home');
+  // Replaced, not pushed: the page they signed out of is usually one that
+  // needs a session, and leaving it behind means Back bounces them to login.
+  replace('#/home');
 }
 
 /**
@@ -136,7 +191,12 @@ function panelForRole() {
 function afterSignInDestination() {
   const intent = sessionStorage.getItem('postSignIn');
   sessionStorage.removeItem('postSignIn');
-  return panelForRole() ?? (intent === 'salon' ? '#/apply' : '#/home');
+  const returnTo = takeReturnTo();
+  // An owner's panel wins over everything: it is not a preference, it is
+  // where /api/me says this account belongs. Then the page the visitor was
+  // trying to reach when they were asked to sign in, then the intent from the
+  // two sign-in buttons.
+  return panelForRole() ?? returnTo ?? (intent === 'salon' ? '#/apply' : '#/home');
 }
 
 /**
@@ -166,12 +226,19 @@ function routeOnOpen() {
   if (openRouted) return;
   openRouted = true;
   const panel = panelForRole();
-  if (panel && LANDING_ROUTES.has(currentHash())) navigateTo(panel);
+  if (panel && LANDING_ROUTES.has(currentHash())) navigateTo(panel, { swap: true });
 }
 
-/** Hash routes stay in the router; anything else is a document load. */
-function navigateTo(dest) {
-  if (dest.startsWith('#')) go(dest);
+/**
+ * Hash routes stay in the router; anything else is a document load.
+ *
+ * `swap` replaces the current history entry instead of stacking one on top —
+ * used when leaving the login page, which nobody should be able to press Back
+ * into once they are signed in.
+ */
+function navigateTo(dest, { swap = false } = {}) {
+  if (dest.startsWith('#')) swap ? replace(dest) : go(dest);
+  else if (swap) window.location.replace(dest);
   else window.location.assign(dest);
 }
 
@@ -180,7 +247,11 @@ function navigateTo(dest) {
  * completed, and by the login view when someone already signed in opens it.
  */
 function afterSignIn() {
-  navigateTo(afterSignInDestination());
+  // Leaving the login page replaces it. Pushing over it left a signed-in
+  // person one Back press away from a sign-in screen that would immediately
+  // send them forward again, which is the loop the customer sees as "the back
+  // button does nothing".
+  navigateTo(afterSignInDestination(), { swap: currentHash() === '#/login' });
 }
 
 function renderChrome() {
@@ -201,14 +272,37 @@ function renderChrome() {
           reload();
         },
       }),
-    onSignIn: () => go('#/login'),
+    onSignIn: goToSignIn,
     onSignOut: doSignOut,
   });
   topbarRoot.append(bar);
   highlightTopBarNav(bar, activeSection());
+  measureHeader(bar);
 
   bottomNavRoot.innerHTML = '';
   bottomNavRoot.append(BottomNav(activeSection()));
+}
+
+/**
+ * Publish the header's real height, so anything that sticks under it knows
+ * where "under it" is — the salon page's category menu, today.
+ *
+ * Measured rather than assumed: the bar wraps at a narrow width, and it grows
+ * by the status-bar inset on Android, which resolves after the first paint.
+ */
+let headerObserver = null;
+
+function measureHeader(bar) {
+  headerObserver?.disconnect();
+  headerObserver = null;
+  const write = () => {
+    document.documentElement.style.setProperty('--app-header-height', `${bar.offsetHeight}px`);
+  };
+  write();
+  if (typeof ResizeObserver === 'function') {
+    headerObserver = new ResizeObserver(write);
+    headerObserver.observe(bar);
+  }
 }
 
 function showRouteError(err) {
@@ -391,6 +485,12 @@ async function boot() {
         }
         try {
           await refreshSession();
+          // The saved list, now that there is somebody to have saved things.
+          // Clerk restores asynchronously, so a screen full of salon cards is
+          // usually already drawn by this point — lib/favorites.js tells each
+          // heart on it what it should be, rather than leaving them all
+          // outlines until the next navigation.
+          loadFavorites({ signedIn: true, force: true }).catch(() => {});
           // The session can land after the login view has already painted —
           // Clerk restores asynchronously. Leaving the user on a sign-in page
           // they no longer need is the same dead end as the original loop,

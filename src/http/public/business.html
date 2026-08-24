@@ -34,23 +34,39 @@
     <a class="side-link" href="#/timings"  data-nav="timings"><span class="side-icon">◷</span>Timings</a>
     <a class="side-link" href="#/profile"  data-nav="profile"><span class="side-icon">◈</span>Salon profile</a>
 
-    <!-- Pushed to the foot of the sidebar on a desktop; inline in the scroller
-         on a phone, where there is no "foot" to push anything to. -->
+    <!--
+      The door out of this panel. It is deliberately empty markup: for a salon
+      account there is nothing to put in it — the account *is* a salon, and
+      offering a second panel beside the dashboard presents a choice that was
+      never theirs to make. business.js fills it only for someone signed out
+      or without a salon, who is looking at a panel that is not theirs. See
+      initIdentity().
+
+      Who is signed in used to sit here too, at the foot of the sidebar —
+      which on a phone meant scrolling the nav strip sideways to find your own
+      account. It lives in the header now, top right, where a dashboard puts
+      it.
+    -->
     <div class="side-foot">
-      <div class="row" id="whoami" style="gap:8px"></div>
-      <!--
-        A link to the customer app used to sit in the header. For a salon
-        account it was half of an apparent choice — "salon panel or customer
-        panel?" — when the account is a salon and there is nothing to choose.
-        business.js adds it back only for someone who is signed out or has no
-        salon, who genuinely does need a way out of a panel that is not
-        theirs. See initIdentity().
-      -->
       <div class="row" id="exit" style="gap:8px"></div>
     </div>
   </aside>
 
   <main class="shell-main">
+    <!--
+      The dashboard header: what you are looking at on the left, who you are
+      on the right. #panelAccount is filled by business.js — an avatar that
+      opens the owner's account menu (salon profile, the customer app when it
+      applies, and sign out).
+    -->
+    <header class="panel-header">
+      <div class="panel-header-titles">
+        <div class="panel-header-eyebrow">Salon panel</div>
+        <div class="panel-header-title" id="panelTitle">Today</div>
+      </div>
+      <div class="panel-header-actions" id="panelAccount"></div>
+    </header>
+
     <!-- Its own slot, outside #view: render() clears #view on every route
          change, and the banner has to outlive that. It used to hang off
          .topbar, which this layout no longer has. -->

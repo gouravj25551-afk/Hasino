@@ -1,5 +1,6 @@
 import { el } from '../lib/dom.js';
 import { awaitClerk, currentUser, signInWithGoogle } from '../lib/auth.js';
+import { replace } from '../lib/router.js';
 
 function card(...children) {
   const box = el('div', 'panel');
@@ -65,6 +66,29 @@ export async function renderLogin(container, app) {
 
 function renderGoogleStep(container, app, ssoError) {
   container.innerHTML = '';
+
+  /**
+   * The way out of a sign-in nobody has to complete.
+   *
+   * Back is the gesture people reach for, and this is the same movement: one
+   * step back through this document's own history, or home when the app was
+   * opened straight onto this page and there is nothing behind it. The login
+   * page never leaves itself in history once a sign-in succeeds — see
+   * afterSignIn() in app.js — so pressing this cannot land on a screen that
+   * bounces straight back here.
+   */
+  const back = el('button', 'btn sm login-back');
+  back.type = 'button';
+  back.textContent = '← Back';
+  back.onclick = () => {
+    // One step back through this document's own history when there is one.
+    // With nothing behind it — the app opened straight onto this page — home
+    // *replaces* the login entry rather than stacking on top of it, so the
+    // next Back press does not come straight back here.
+    if (window.history.length > 1) window.history.back();
+    else replace('#/home');
+  };
+  container.append(back);
 
   const status = el('div', 'note');
   status.style.marginTop = '18px';

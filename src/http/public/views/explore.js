@@ -5,6 +5,7 @@ import { SalonCard } from '../components/SalonCard.js';
 import { EmptyState, NoSalonsState } from '../components/EmptyState.js';
 import { SkeletonList } from '../components/Skeleton.js';
 import { getCity, locationParams } from '../lib/location.js';
+import { loadFavorites } from '../lib/favorites.js';
 
 const CATEGORIES = [
   { id: '', name: 'All' },
@@ -74,7 +75,23 @@ export async function renderExplore(container, app) {
         }));
         return;
       }
-      for (const s of salons) grid.append(SalonCard(s, { onOpen: (id) => app.navigate(`#/salon/${id}`) }));
+      // The saved list before the hearts are drawn, so a saved salon is red on
+      // the first paint rather than filling in a moment later. It is fetched
+      // once per session and cached in lib/favorites.js, not per card.
+      try {
+        await loadFavorites({ signedIn: Boolean(app.session) });
+      } catch {
+        // saving is not what this screen is for; an unreachable list leaves
+        // every heart an outline rather than taking the salons down with it.
+      }
+      for (const s of salons) {
+        grid.append(SalonCard(s, {
+          onOpen: (id) => app.navigate(`#/salon/${id}`),
+          savable: true,
+          signedIn: Boolean(app.session),
+          onRequireSignIn: () => app.signIn(),
+        }));
+      }
     } catch (err) {
       grid.innerHTML = '';
       grid.append(EmptyState({ title: err.message || 'Could not load salons', action: 'Retry', onAction: () => draw(q) }));
