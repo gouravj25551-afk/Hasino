@@ -1,6 +1,6 @@
 import { el } from '../lib/dom.js';
 import { awaitClerk, currentUser, signInWithGoogle } from '../lib/auth.js';
-import { replace } from '../lib/router.js';
+import { back as goBack } from '../lib/router.js';
 
 function card(...children) {
   const box = el('div', 'panel');
@@ -81,12 +81,12 @@ function renderGoogleStep(container, app, ssoError) {
   back.type = 'button';
   back.textContent = '← Back';
   back.onclick = () => {
-    // One step back through this document's own history when there is one.
-    // With nothing behind it — the app opened straight onto this page — home
-    // *replaces* the login entry rather than stacking on top of it, so the
-    // next Back press does not come straight back here.
-    if (window.history.length > 1) window.history.back();
-    else replace('#/home');
+    // One step back through this document's own history when there is one, and
+    // home when there is not — the app was opened straight onto this page.
+    // Through the router rather than history.back() directly: Android's back
+    // handler counts the entries this document pushed, and a bare
+    // history.back() reads to it as another step forward. See router.back().
+    goBack('#/home');
   };
   container.append(back);
 

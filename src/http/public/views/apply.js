@@ -1,10 +1,11 @@
 import { el } from '../lib/dom.js';
-import { api, ApiError } from '../lib/api.js';
+import { api, ApiError, apiImageDataUrl } from '../lib/api.js';
 import { Button } from '../components/Button.js';
 import { Input } from '../components/Input.js';
 import { currentPosition } from '../lib/location.js';
 import { dateLong } from '../lib/format.js';
 import { Stepper } from '../components/Stepper.js';
+import { CARD_ASPECT, canCropImages, cropImage } from '../lib/imagecrop.js';
 
 /**
  * "List your salon" — a signed-in customer applying to join.
@@ -184,8 +185,123 @@ function renderForm(container, app, session) {
   const closeAt = Input({ label: 'Closes at', type: 'time' });
   openAt.input.value = '10:00';
   closeAt.input.value = '20:00';
-  const coverUrl = Input({ label: 'Storefront photo URL', placeholder: 'https://…' });
   const photos = Input({ label: 'More photo URLs (one per line)' });
+
+  /**
+   * The storefront photo, uploaded rather than linked.
+   *
+   * This step used to say "paste image links for now — direct uploads are
+   * coming", which asked a barber to find an image host before they could
+   * apply and made the photo an admin is judging depend on a third party
+   * staying up. The bytes now go to Hasino before the salon exists:
+   * PUT /api/salons/apply/image stages them against the applicant, and the
+   * submission moves them onto the salon it creates.
+   *
+   * Framed through the same dialog the salon panel and the admin use, so what
+   * is uploaded is already the card's 16:10 and already under the size cap —
+   * which is what a straight-from-the-phone photo usually is not.
+   *
+   * The preview is the image fetched back from the server, not the local file:
+   * a preview drawn from what was picked looks identical whether or not the
+   * upload landed, and the one failure worth seeing is the one where it did
+   * not.
+   */
+  const coverPanel = el('div');
+  const coverFrame = el('div', 'apply-cover-frame');
+  const coverImg = el('img');
+  coverImg.alt = 'Your storefront photo';
+  coverImg.style.display = 'none';
+  const coverEmpty = el('div', 'meta', 'No photo yet');
+  coverFrame.append(coverImg, coverEmpty);
+
+  const coverFile = el('input');
+  coverFile.type = 'file';
+  coverFile.accept = 'image/jpeg,image/png,image/webp';
+  coverFile.style.display = 'none';
+
+  const coverStatus = el('div');
+  /** True once the server has a photo staged for this applicant. */
+  let coverStaged = false;
+
+  const paintCover = (dataUrl) => {
+    coverStaged = Boolean(dataUrl);
+    if (dataUrl) {
+      coverImg.src = dataUrl;
+      coverImg.style.display = 'block';
+      coverEmpty.style.display = 'none';
+    } else {
+      coverImg.removeAttribute('src');
+      coverImg.style.display = 'none';
+      coverEmpty.style.display = 'block';
+    }
+    coverPick.textContent = dataUrl ? 'Replace photo' : 'Upload a photo';
+    coverRemove.style.display = dataUrl ? 'inline-flex' : 'none';
+  };
+
+  const coverPick = Button({ label: 'Upload a photo', variant: 'primary', size: 'sm' });
+  const coverRemove = Button({ label: 'Remove', size: 'sm' });
+  coverRemove.style.display = 'none';
+
+  coverPick.onclick = () => coverFile.click();
+  coverFile.onchange = async () => {
+    const chosen = coverFile.files?.[0];
+    // Cleared first, so choosing the same file again after a cancel or a
+    // failure still fires this.
+    coverFile.value = '';
+    if (!chosen) return;
+    coverStatus.innerHTML = '';
+
+    let toUpload = chosen;
+    if (canCropImages()) {
+      const framed = await cropImage(chosen, { aspect: CARD_ASPECT, title: 'Frame your storefront photo' });
+      if (!framed) return;                 // backed out of the resize dialog
+      toUpload = framed;
+    }
+
+    coverPick.setLoading(true);
+    try {
+      await api('/api/salons/apply/image', {
+        method: 'PUT',
+        body: toUpload,
+        headers: { 'content-type': toUpload.type },
+      });
+      // Back from the server, so the preview is proof the upload landed.
+      paintCover(await apiImageDataUrl('/api/salons/apply/image'));
+      coverStatus.append(el('div', 'out ok', 'Photo uploaded. It is sent with your request.'));
+    } catch (err) {
+      coverStatus.append(el('div', 'out bad', err.message || 'Could not upload that photo'));
+    } finally {
+      coverPick.setLoading(false);
+    }
+  };
+
+  coverRemove.onclick = async () => {
+    coverStatus.innerHTML = '';
+    coverRemove.setLoading(true);
+    try {
+      await api('/api/salons/apply/image', { method: 'DELETE' });
+      paintCover(null);
+    } catch (err) {
+      coverStatus.append(el('div', 'out bad', err.message || 'Could not remove that photo'));
+    } finally {
+      coverRemove.setLoading(false);
+    }
+  };
+
+  const coverActions = el('div', 'row');
+  coverActions.append(coverPick, coverRemove);
+  coverPanel.append(coverFrame, coverActions, coverFile, coverStatus);
+  coverPanel.append(el('div', 'note',
+    'JPEG, PNG or WebP, up to 2 MB. You can move and zoom it inside the card frame before it is '
+    + 'saved. A wide shot of the storefront or the chairs works best — it is what a Hasino admin '
+    + 'looks at first.'));
+
+  paintCover(null);
+  // A photo staged on an earlier visit is still there; show it rather than
+  // asking for it twice.
+  apiImageDataUrl('/api/salons/apply/image')
+    .then((url) => { if (url) paintCover(url); })
+    .catch(() => { /* nothing staged, or not reachable — the empty state is right */ });
   const description = Input({ label: 'About your salon', placeholder: 'Two chairs, open since 2019…' });
 
   const pinNote = el('div', 'note',
@@ -327,9 +443,9 @@ function renderForm(container, app, session) {
     {
       label: 'Photos',
       node: step('Photos and description',
-        'A Hasino admin reads this to decide whether to approve you, so a real storefront photo makes the difference. '
-        + 'Paste image links for now — direct uploads are coming.',
-        coverUrl, photos),
+        'A Hasino admin reads this to decide whether to approve you, so a real storefront photo '
+        + 'makes the difference.',
+        coverPanel, photos),
     },
     {
       label: 'Review',
@@ -384,7 +500,8 @@ function renderForm(container, app, session) {
             openAt: openAt.input.value || null,
             closeAt: closeAt.input.value || null,
             description: description.input.value.trim() || null,
-            coverUrl: coverUrl.input.value.trim() || null,
+            // No coverUrl: the storefront photo was uploaded before this was
+            // submitted and applyForSalon claims it onto the salon it creates.
             photoUrls: photos.input.value.split('\n').map((u) => u.trim()).filter(Boolean),
             services: [...chosen.entries()].map(([serviceId, v]) => ({ serviceId, ...v })),
           }),
@@ -423,9 +540,9 @@ function renderForm(container, app, session) {
       .filter(Boolean).join(', ')));
     reviewBox.append(fact('Hours', `${openAt.input.value || '—'} to ${closeAt.input.value || '—'}, every day`));
     reviewBox.append(fact('Services', chosen.size ? `${chosen.size} selected` : 'none yet — you can add them after approval'));
-    reviewBox.append(fact('Photos', [coverUrl.input.value.trim() ? 'storefront photo' : null,
+    reviewBox.append(fact('Photos', [coverStaged ? 'storefront photo uploaded' : null,
       photos.input.value.split('\n').filter((u) => u.trim()).length
-        ? `${photos.input.value.split('\n').filter((u) => u.trim()).length} more`
+        ? `${photos.input.value.split('\n').filter((u) => u.trim()).length} more linked`
         : null].filter(Boolean).join(', ') || 'none'));
     reviewBox.append(
       el('div', 'note',

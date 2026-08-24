@@ -11,7 +11,15 @@ import { rescheduleBooking } from '../booking/reschedule.ts';
 import { BookingError, SlotUnavailableError } from '../booking/errors.ts';
 import { ForbiddenError, listCustomerBookings } from '../business/repo.ts';
 import { addFavorite, getBooking, getSalon, listFavorites, listSalons, removeFavorite } from '../salons/repo.ts';
-import { ImageUploadError, serveSalonImage } from '../salons/images.ts';
+import {
+  ImageUploadError,
+  deleteStagedImage,
+  readImageBody,
+  saveStagedImage,
+  serveSalonImage,
+  serveStagedImage,
+  stagedImageFor,
+} from '../salons/images.ts';
 import { businessRoutes } from './routes-business.ts';
 import { AdminError, applyForSalon, listCatalogue } from '../admin/repo.ts';
 import { reverseGeocode, searchPlaces } from '../geo/geocode.ts';
@@ -418,6 +426,62 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       return json(res, 200, { paid: false, paymentId: failed.id, error: failed.error_code });
     }
     return json(res, 200, { paid: true, ...payments.client.pay(orderId, String(body['method'] ?? 'upi')) });
+  }
+
+  // ---------- self-serve: the storefront photo, before there is a salon ----------
+  //
+  // salon_images is keyed by salon_id and an application has none yet — the
+  // salons row is created by the submission itself. So the bytes wait here,
+  // keyed to the applicant, and applyForSalon moves them onto the salon in the
+  // same transaction that creates it.
+  //
+  // There is no id anywhere in these three routes. The photo is always the
+  // caller's own, resolved from the session, exactly like PUT
+  // /api/business/image — nothing in the request says whose it is, so there is
+  // nothing to tamper with.
+  if (seg[0] === 'api' && seg[1] === 'salons' && seg[2] === 'apply' && seg[3] === 'image' && seg.length === 4) {
+    const applicant = await session(db, req);
+
+    // The same gate the application itself is behind. An unverified address is
+    // a string the person signing up chose, and this stores bytes for them; a
+    // route that is cheaper to reach than the form it feeds is a route that
+    // gets used on its own.
+    if (!applicant.emailVerified) {
+      throw new HttpError(
+        403,
+        'Verify your email address before listing a salon. Open the link your provider sent you, then try again.',
+        'EMAIL_NOT_VERIFIED',
+      );
+    }
+
+    if (method === 'PUT') {
+      // Keyed to the user, like the application: uploads are per-person work,
+      // not per-address traffic.
+      limits.booking.check(`apply-image:${applicant.userId}`);
+      const bytes = await readImageBody(req);
+      const staged = await saveStagedImage(db, applicant.userId, bytes);
+      return json(res, 200, {
+        url: staged.url,
+        byteSize: staged.byteSize,
+        contentType: staged.contentType,
+      });
+    }
+
+    if (method === 'GET') {
+      // The applicant's own preview, and how the form knows a photo is already
+      // staged after a reload. `?v=` is ignored — the row is whichever one is
+      // current, and there is only ever one.
+      const served = await serveStagedImage(db, applicant.userId, req, res);
+      if (served) return;
+      throw new HttpError(404, 'No photo staged', 'NO_STAGED_IMAGE');
+    }
+
+    if (method === 'DELETE') {
+      const removed = await deleteStagedImage(db, applicant.userId);
+      return json(res, 200, { removed });
+    }
+
+    throw new HttpError(405, 'Method not allowed');
   }
 
   // ---------- self-serve: list your salon ----------

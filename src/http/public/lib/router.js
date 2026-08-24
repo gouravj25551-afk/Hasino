@@ -69,3 +69,33 @@ export function replace(hash) {
 
 /** Dispatched just before a history-replacing navigation. */
 export const REPLACED_EVENT = 'hasino:replace';
+
+/** Dispatched just before the app walks its own history backwards. */
+export const RETREAT_EVENT = 'hasino:back';
+
+/**
+ * Go back one entry, the way the app's own Back controls do.
+ *
+ * `history.back()` on its own is not enough. lib/backbutton.js counts the
+ * entries this document has pushed so it can tell Android's system back button
+ * how far it may retrace, and it learns about movement from `hashchange` — in
+ * which a retreat and an advance look identical. So a Back button that called
+ * history.back() directly was counted as a step *forward*, and the system back
+ * button then believed there were more app screens behind it than there were,
+ * walking past the app's own first entry.
+ *
+ * The event is what tells it otherwise. In a desktop browser nothing listens
+ * and this is exactly history.back().
+ *
+ * `fallbackHash` is where to go when there is no history to walk — the app was
+ * opened straight onto this screen. Replaced rather than pushed, so the next
+ * press does not come back here.
+ */
+export function back(fallbackHash) {
+  if (window.history.length > 1) {
+    window.dispatchEvent(new Event(RETREAT_EVENT));
+    window.history.back();
+    return;
+  }
+  if (fallbackHash) replace(fallbackHash);
+}

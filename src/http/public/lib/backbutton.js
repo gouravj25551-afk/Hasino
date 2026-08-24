@@ -80,6 +80,16 @@ export function installBackHandler({ isRoot, homeHash, dismissOverlay = dismissT
     expected++;
   });
 
+  // The app walking its own history backwards — the login page's Back
+  // control, through router.back(). The hashchange it causes looks exactly
+  // like a forward move from here, and counting it as one is how the system
+  // back button ends up believing there are more screens behind it than there
+  // are, and walks out past this document's first entry.
+  window.addEventListener('hasino:back', () => {
+    if (depth > 0) depth--;
+    expected++;
+  });
+
   window.hasinoBack = () => {
     // A dialog on screen is what back closes first. Navigating out from under
     // an open confirmation would look like the app ignored the press.

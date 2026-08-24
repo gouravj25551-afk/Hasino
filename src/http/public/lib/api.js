@@ -48,3 +48,30 @@ export async function api(path, opts = {}) {
   return body;
 }
 
+/**
+ * Fetch an image this session is allowed to see, as a `data:` URL.
+ *
+ * An <img src="/api/…"> cannot be used for anything behind the bearer token:
+ * the browser issues that request with no Authorization header, gets a 401 and
+ * renders a broken image. And the object URL that would normally solve it is
+ * refused by the CSP, which allows `data:` and not `blob:`.
+ *
+ * So the bytes are fetched like any other authenticated request and turned
+ * into a data: URL. Used for the storefront photo an applicant has staged,
+ * which belongs to an application nobody else can see.
+ *
+ * Returns null when there is nothing there (404), so callers can treat "no
+ * photo yet" as an ordinary state rather than an error.
+ */
+export async function apiImageDataUrl(path) {
+  const res = await fetch(path, { headers: { ...(await authHeader(false)) } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new ApiError(res.statusText, res.status);
+  const blob = await res.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Could not read the image'));
+    reader.readAsDataURL(blob);
+  });
+}

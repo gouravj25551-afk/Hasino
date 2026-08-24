@@ -13,6 +13,7 @@
  */
 import type { Pool, PoolClient } from '../db/pool.ts';
 import { withTransaction } from '../db/pool.ts';
+import { claimStagedImage } from '../salons/images.ts';
 import { queueRefundForBooking } from '../payments/service.ts';
 import { geocodeAddress } from '../geo/geocode.ts';
 import { cancelPending, enqueueNotification } from '../notify/outbox.ts';
@@ -955,7 +956,14 @@ export async function applyForSalon(
               SET owner_id = $1, name = $2, address = $3, city = $4, area = $5,
                   lat = $6, lng = $7, timezone = $8, status = 'pending',
                   commission_bps = $9, phone = $10, email = $11,
-                  description = $12, cover_url = $13, submitted_at = now()
+                  description = $12,
+                  -- coalesce, not assignment: a resubmission that supplies no
+                  -- photo means "I did not change it", not "delete it". The
+                  -- straight assignment orphaned an uploaded image — the row
+                  -- stayed in salon_images and cover_url stopped pointing at
+                  -- it. A staged upload overwrites this a few lines below.
+                  cover_url = coalesce($13, cover_url),
+                  submitted_at = now()
             WHERE id = $14
             RETURNING id`,
           [...fields, existing.id],
@@ -1010,6 +1018,15 @@ export async function applyForSalon(
         [salonId, svc.serviceId, svc.price, svc.durationMin ?? 30],
       );
     }
+
+    // The storefront photo, if one was uploaded before this was submitted.
+    //
+    // In this transaction on purpose: an application that was accepted and
+    // whose photo silently stayed in staging is the half-state worth designing
+    // out. It runs after the row is written because it needs the salon id, and
+    // it overwrites cover_url — an uploaded photo beats a pasted link, which
+    // is the more deliberate of the two acts and the one Hasino hosts itself.
+    await claimStagedImage(tx, applicant.userId, salonId);
 
     // The applicant is deliberately NOT promoted here. Signing in with Google
     // proves who they are; it proves nothing about the salon. Granting

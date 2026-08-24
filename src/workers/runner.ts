@@ -3,6 +3,7 @@ import type { SnapshotCache } from '../availability/cache.ts';
 import { sweepExpiredHolds } from '../booking/sweep.ts';
 import { processDueRefunds } from '../payments/service.ts';
 import { dispatchDue, type Channel } from '../notify/dispatch.ts';
+import { sweepStagedImages } from '../salons/images.ts';
 import type { RazorpayClient } from '../payments/razorpay.ts';
 import { log, reportError, withRequestContext } from '../obs/logger.ts';
 import { randomUUID } from 'node:crypto';
@@ -65,6 +66,16 @@ export const JOBS: JobDefinition[] = [
     intervalMs: 15_000,
     lockKey: 811_003,
     run: async ({ db, channel }) => ({ ...(await dispatchDue(db, channel)) }),
+  },
+  {
+    // Storefront photos uploaded during onboarding and never submitted. One
+    // row per applicant, capped at 2 MB, so this is housekeeping rather than
+    // a growth problem — but "temporary" bytes with nothing deleting them are
+    // permanent bytes. Hourly: the TTL is measured in days.
+    name: 'sweep-staged-images',
+    intervalMs: 3_600_000,
+    lockKey: 811_004,
+    run: async ({ db }) => ({ ...(await sweepStagedImages(db)) }),
   },
 ];
 

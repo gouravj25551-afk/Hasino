@@ -181,6 +181,24 @@ CREATE TABLE IF NOT EXISTS salon_images (
   updated_at   timestamptz NOT NULL DEFAULT now()
 );
 
+
+-- The storefront photo an applicant uploads *before* their salon exists.
+--   salon_images is keyed by salon_id and onboarding has no salon id yet, so
+--   the bytes wait here, one row per applicant, and applyForSalon moves them
+--   into salon_images in the same transaction that creates the salon. Rows
+--   nobody submits are swept. See db/migrations/012_salon_image_uploads.sql.
+CREATE TABLE IF NOT EXISTS salon_image_uploads (
+  user_id      uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  content_type text NOT NULL
+               CHECK (content_type IN ('image/jpeg','image/png','image/webp')),
+  bytes        bytea NOT NULL,
+  byte_size    integer NOT NULL CHECK (byte_size > 0),
+  checksum     text NOT NULL,
+  updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS salon_image_uploads_stale_idx
+    ON salon_image_uploads (updated_at);
+
 CREATE TABLE IF NOT EXISTS favorites (
   user_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   salon_id   uuid NOT NULL REFERENCES salons(id) ON DELETE CASCADE,

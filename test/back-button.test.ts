@@ -35,11 +35,38 @@ function fakeBrowser(startHash = '#/home') {
       for (const fn of listeners) fn();
     },
     exited: false,
+    /**
+     * The app walking its own history back — router.back(), which the login
+     * page's Back control uses. The event first, then the movement, exactly
+     * as the router does it.
+     */
+    appBack() {
+      const w = (globalThis as unknown as { window: { dispatchEvent(e: { type: string }): boolean } }).window;
+      w.dispatchEvent({ type: 'hasino:back' });
+      if (stack.length > 1) stack.pop();
+      for (const fn of listeners) fn();
+    },
   };
 
+  /** Listeners for the events the app dispatches at lib/backbutton.js. */
+  const appEvents = new Map<string, Array<() => void>>();
   (globalThis as Record<string, unknown>)['window'] = {
     addEventListener: (type: string, fn: () => void) => {
       if (type === 'hashchange') listeners.push(fn);
+      else {
+        if (!appEvents.has(type)) appEvents.set(type, []);
+        appEvents.get(type)!.push(fn);
+      }
+    },
+    /** What router.back() and router.replace() do before they move. */
+    dispatchEvent: (event: { type: string }) => {
+      for (const fn of appEvents.get(event.type) ?? []) fn();
+      return true;
+    },
+    history: {
+      get length() {
+        return stack.length;
+      },
     },
   };
   (globalThis as Record<string, unknown>)['history'] = {
@@ -137,6 +164,27 @@ describe('back button — what the page tells the shell', () => {
     assert.equal(deep.hash, '#/home');
     // Home was reached by replacing the entry, not stacking one, so the next
     // press is the last one.
+    assert.equal(win().hasinoBack(), 'exit');
+  });
+
+  it('the app\u2019s own Back control is a retreat, not another step forward', () => {
+    // The login page has a Back button, and it moves through router.back().
+    // A bare history.back() would fire a hashchange that looks identical to a
+    // forward move from in here — so the count would go up, and the system
+    // back button would then believe there were more app screens behind it
+    // than there are and walk out past this document's first entry.
+    browser.navigate('#/login');
+    browser.appBack();
+    assert.equal(browser.hash, '#/home', 'it went back');
+    assert.equal(win().hasinoBack(), 'exit', 'and nothing is left to walk back through');
+  });
+
+  it('several of them in a row still leave the count honest', () => {
+    browser.navigate('#/explore');
+    browser.navigate('#/bookings');
+    browser.appBack();
+    browser.appBack();
+    assert.equal(browser.hash, '#/home');
     assert.equal(win().hasinoBack(), 'exit');
   });
 

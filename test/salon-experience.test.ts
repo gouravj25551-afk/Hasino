@@ -326,8 +326,20 @@ describe('the login page does not trap the back button', () => {
   it('the login page offers its own way back', () => {
     const login = read('src/http/public/views/login.js');
     assert.match(login, /login-back/);
-    assert.match(login, /window\.history\.back\(\)/);
-    assert.match(login, /replace\('#\/home'\)/, 'and home replaces it when there is no history');
+    // Through the router, never history.back() directly: lib/backbutton.js
+    // counts the entries this document pushed so Android's system back button
+    // knows how far it may retrace, and a bare history.back() fires a
+    // hashchange that reads to it as another step *forward*. router.back()
+    // announces the retreat first. See the regression cases in
+    // test/back-button.test.ts.
+    assert.match(login, /goBack\('#\/home'\)/);
+    assert.doesNotMatch(login, /window\.history\.back\(\)/);
+    const router = read('src/http/public/lib/router.js');
+    assert.match(router, /export function back\(fallbackHash\)/);
+    assert.match(router, /dispatchEvent\(new Event\(RETREAT_EVENT\)\)/);
+    assert.match(router, /if \(fallbackHash\) replace\(fallbackHash\)/,
+      'and home replaces it when there is no history');
+    assert.match(read('src/http/public/lib/backbutton.js'), /addEventListener\('hasino:back'/);
   });
 
   it('signing out does not leave a page that bounces to login behind it', () => {
