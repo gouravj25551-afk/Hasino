@@ -471,6 +471,14 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
           : [],
         openAt: typeof body['openAt'] === 'string' ? body['openAt'] : null,
         closeAt: typeof body['closeAt'] === 'string' ? body['closeAt'] : null,
+        // The applicant's own name and number. Contact details, not identity:
+        // who is applying is applicant.userId from the session above, and
+        // applyForSalon writes these onto that row and no other. There is
+        // deliberately no ownerEmail here — the address an admin will reply to
+        // is the verified one on the session, and accepting one from the body
+        // would let an application name somebody else's inbox.
+        ownerName: typeof body['ownerName'] === 'string' ? body['ownerName'] : null,
+        ownerPhone: typeof body['ownerPhone'] === 'string' ? body['ownerPhone'] : null,
         services: Array.isArray(body['services'])
           ? body['services'].flatMap((raw) => {
               if (typeof raw !== 'object' || raw === null) return [];
@@ -644,7 +652,7 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       reviewed_at: Date | null;
       rejection_reason: string | null;
     }>(
-      `SELECT s.id, s.status, s.name, s.created_at AS submitted_at,
+      `SELECT s.id, s.status, s.name, s.submitted_at,
               e.created_at AS reviewed_at,
               CASE WHEN s.status = 'rejected' THEN e.reason END AS rejection_reason
          FROM salons s

@@ -16,9 +16,19 @@ import { Stepper } from '../components/Stepper.js';
 export function renderApply(container, app) {
   const session = app.requireSession();
   if (!session) return;
-  container.innerHTML = '';
 
-  container.append(el('h1', null, 'Apply as a Salon'));
+  // An approved owner does not get a form, or a card offering a link to one.
+  // They asked for "list your salon" and they already have one listed, so the
+  // answer is the panel itself. Replaced rather than pushed: this route is a
+  // junction, not a place, and Back should return to wherever they came from
+  // instead of bouncing through here again.
+  if (session.role === 'business' && session.salon && session.salon.status === 'active') {
+    window.location.replace('/business');
+    return;
+  }
+
+  container.innerHTML = '';
+  container.append(el('h1', null, 'List your salon'));
 
   // Step one, before the form: a verified address. The server refuses an
   // application from an unverified one (403 EMAIL_NOT_VERIFIED), so offering
@@ -58,6 +68,10 @@ export function renderApply(container, app) {
       done.append(el('p', 'sub',
         `${session.salon.name} is with a Hasino admin. It is not visible to customers yet, and your `
         + 'salon dashboard unlocks the moment it is approved.'));
+      done.append(el('div', 'note',
+        'Submitting a request does not make you a salon owner — this account is still an ordinary '
+        + 'customer account, and stays one until an admin approves the request. There is nothing '
+        + 'further to do here; you cannot submit a second request while this one is open.'));
       if (session.salon.submittedAt) {
         done.append(el('div', 'meta', `Submitted ${dateLong(session.salon.submittedAt, undefined)}`));
       }
@@ -83,10 +97,15 @@ export function renderApply(container, app) {
           + 'before resubmitting.'));
       }
       container.append(done);
-      renderForm(container, app);
+      renderForm(container, app, session);
       return;
     } else if (session.role === 'business') {
+      // An owner whose salon is not active — suspended, say. The redirect at
+      // the top of this view only covers the live case, and this one still
+      // needs its panel: that is where they read their bookings and fix
+      // whatever put them here.
       done.append(el('h2', null, 'You already have a salon'));
+      done.append(el('p', 'sub', `${session.salon.name} is ${session.salon.status}.`));
       const go = el('a', 'btn primary', 'Open your salon panel');
       go.href = '/business';
       done.append(go);
@@ -104,7 +123,7 @@ export function renderApply(container, app) {
       + 'usually a couple of days.'),
   );
 
-  renderForm(container, app);
+  renderForm(container, app, session);
 }
 
 /**
@@ -122,10 +141,37 @@ export function renderApply(container, app) {
  * city — are caught on the step that asks for them, and that there is a review
  * screen before anything is sent.
  */
-function renderForm(container, app) {
+function renderForm(container, app, session) {
   const panel = el('div', 'panel');
 
   const name = Input({ label: 'Salon name', placeholder: 'Sharp & Co' });
+
+  /**
+   * Who is applying — pre-filled from the account they signed in with.
+   *
+   * The email is shown and cannot be typed. It is the address the admin will
+   * reply to and the one this request is tied to, and it comes from the
+   * verified session: asking for it again would be a second answer to a
+   * question already answered, and a field where somebody could name an inbox
+   * that is not theirs. The server ignores any email in the body for exactly
+   * that reason.
+   *
+   * The name and number are editable because they are contact details rather
+   * than identity — Google supplies a name and no number at all, and the admin
+   * reviewing this needs a person to ring, not just a shop.
+   */
+  const ownerName = Input({ label: 'Your name', placeholder: 'Priya Sharma' });
+  ownerName.input.value = session?.name ?? '';
+  const ownerPhone = Input({ label: 'Your phone number', type: 'tel', placeholder: '+919876543210' });
+  ownerPhone.input.value = session?.phone ?? '';
+
+  const ownerEmail = el('label', 'field');
+  ownerEmail.append(el('span', null, 'Your email'));
+  const emailShown = el('div', 'review-value');
+  emailShown.style.cssText = 'padding:10px 0; font-weight:var(--weight-semibold)';
+  emailShown.textContent = session?.email ?? 'the address you signed in with';
+  ownerEmail.append(emailShown);
+  ownerEmail.append(el('div', 'meta', 'From the account you signed in with. This is where a Hasino admin will reply.'));
   const address = Input({ label: 'Address', placeholder: '12 MG Road, Indiranagar' });
   const city = Input({ label: 'City', placeholder: 'Bengaluru' });
   const area = Input({ label: 'Area (optional)', placeholder: 'Indiranagar' });
@@ -233,6 +279,8 @@ function renderForm(container, app) {
 
   const infoGrid = el('div', 'grid two');
   infoGrid.append(name, phone);
+  const ownerGrid = el('div', 'grid two');
+  ownerGrid.append(ownerName, ownerPhone);
   const locGrid = el('div', 'grid two');
   locGrid.append(address, city, area);
   const hoursGrid = el('div', 'grid two');
@@ -244,10 +292,16 @@ function renderForm(container, app) {
     {
       label: 'Salon',
       node: step('About your salon', 'The name customers will see, and how to reach you.',
-        infoGrid, description),
-      // The server rejects a blank name with BAD_NAME. Catching it here means
-      // the applicant is told on the step that asked, not after five more.
-      validate: () => (name.input.value.trim() ? null : 'Your salon needs a name.'),
+        infoGrid, description,
+        el('h3', null, 'About you'), ownerGrid, ownerEmail),
+      // The server rejects a blank name with BAD_NAME, and a malformed number
+      // with BAD_PHONE. Catching both here means the applicant is told on the
+      // step that asked, not after five more.
+      validate: () =>
+        !name.input.value.trim() ? 'Your salon needs a name.'
+          : ownerPhone.input.value.trim() && !/^\+[1-9]\d{7,14}$/.test(ownerPhone.input.value.trim())
+            ? 'Your phone number needs the country code, like +919876543210.'
+            : null,
     },
     {
       label: 'Location',
@@ -323,6 +377,10 @@ function renderForm(container, app) {
             // Omitted when there is no pin — the server geocodes the address.
             ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
             phone: phone.input.value.trim() || null,
+            // The applicant's own contact details. No email: the server takes
+            // that from the verified session and ignores anything sent here.
+            ownerName: ownerName.input.value.trim() || null,
+            ownerPhone: ownerPhone.input.value.trim() || null,
             openAt: openAt.input.value || null,
             closeAt: closeAt.input.value || null,
             description: description.input.value.trim() || null,
@@ -358,6 +416,9 @@ function renderForm(container, app) {
       return row;
     };
     reviewBox.append(fact('Salon', name.input.value.trim()));
+    // Who the admin will be replying to, so it is checkable before sending.
+    reviewBox.append(fact('You', [ownerName.input.value.trim(), session?.email, ownerPhone.input.value.trim()]
+      .filter(Boolean).join(' · ')));
     reviewBox.append(fact('Where', [address.input.value.trim(), area.input.value.trim(), city.input.value.trim()]
       .filter(Boolean).join(', ')));
     reviewBox.append(fact('Hours', `${openAt.input.value || '—'} to ${closeAt.input.value || '—'}, every day`));
@@ -368,8 +429,9 @@ function renderForm(container, app) {
         : null].filter(Boolean).join(', ') || 'none'));
     reviewBox.append(
       el('div', 'note',
-        'A Hasino admin reviews every application — usually a couple of days. Nothing is visible to '
-        + 'customers until it is approved.'),
+        'A Hasino admin reviews every request — usually a couple of days. Nothing is visible to '
+        + 'customers until it is approved, and your account stays an ordinary customer account '
+        + 'until then: submitting this grants no salon access by itself.'),
     );
   }
 

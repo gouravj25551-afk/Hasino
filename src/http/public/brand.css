@@ -2206,3 +2206,15 @@ td input, td select { min-width: 72px; }
   .panel-header { margin-bottom: var(--space-5); }
   .panel-header-title { font-size: var(--text-xl); }
 }
+
+/* ---------- the admin's salon-request queue ----------
+   An .item row carrying more than an .item usually does: the salon, who is
+   asking, how to reach them, what they intend to sell, and how long they have
+   waited. On a phone that cannot be one line, so it becomes a stack with the
+   review action full width at the foot — the queue is worked on a laptop, but
+   an operator checking it on a phone must still be able to open a request. */
+.request-row { gap: var(--space-3); }
+@media (max-width: 720px) {
+  .request-row { flex-wrap: wrap; align-items: flex-start; }
+  .request-row > .btn { width: 100%; margin-top: var(--space-2); }
+}

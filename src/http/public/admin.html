@@ -27,7 +27,14 @@
 
     <div class="side-group">Operate</div>
     <a class="side-link" href="#/overview" data-nav="overview"><span class="side-icon">▦</span>Overview</a>
-    <a class="side-link" href="#/salons"   data-nav="salons"><span class="side-icon">◈</span>Salons<span id="pendingBadge"></span></a>
+    <!--
+      The queue of listing requests, on its own entry. It was reachable only
+      by opening Salons and remembering to filter to Pending — an inbox filed
+      inside an archive. The badge moves here with it: the count it shows is
+      the number of requests waiting, which is what it always meant.
+    -->
+    <a class="side-link" href="#/requests" data-nav="requests"><span class="side-icon">✎</span>Salon requests<span id="pendingBadge"></span></a>
+    <a class="side-link" href="#/salons"   data-nav="salons"><span class="side-icon">◈</span>Salons</a>
 
     <div class="side-group">Set up</div>
     <a class="side-link" href="#/onboard" data-nav="onboard"><span class="side-icon">＋</span>Onboard a salon</a>

@@ -130,9 +130,20 @@ function renderGoogleStep(container, app, ssoError) {
   };
 
   const customerBtn = bigBtn('btn primary', 'Sign up as Customer');
-  // "Apply", not "List" — a salon is not listed by signing up. The button
-  // opens an application that a Hasino admin reviews.
-  const salonBtn = bigBtn('btn', 'Apply as a Salon');
+  /**
+   * The one entry point into listing a salon.
+   *
+   * It lives here, on the sign-in screen, and nowhere inside the customer app:
+   * a signed-in customer is a customer, and their profile page no longer
+   * carries an invitation to become something else. This is the door for
+   * someone who came to Hasino to list a business rather than to book one.
+   *
+   * It is the same Google sign-in as the button above — there is no separate
+   * salon-owner sign-up, and pressing this grants nothing. What differs is
+   * only where the person lands afterwards: #/apply, which reads the account
+   * and shows the panel, the review state, or the form.
+   */
+  const salonBtn = bigBtn('btn', 'List your salon');
   salonBtn.style.marginTop = '12px';
 
   customerBtn.onclick = () => start(customerBtn, 'customer');
@@ -150,8 +161,9 @@ function renderGoogleStep(container, app, ssoError) {
       status,
       Object.assign(
         el('div', 'note',
-          '🔒 Both use the same Google sign-in. Applying as a salon opens an application — '
-          + 'a Hasino admin reviews it before your salon goes live.'),
+          '🔒 Both use the same Google sign-in. Listing a salon opens a request — '
+          + 'a Hasino admin reviews it, and only an approval turns your account into a '
+          + 'salon owner. Until then it stays an ordinary customer account.'),
         { style: 'margin-top:24px; text-align:left' },
       ),
     ),

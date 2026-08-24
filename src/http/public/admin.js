@@ -167,12 +167,12 @@ async function overviewView() {
     return box;
   };
 
-  const pending = stat('Pending', o.pending, o.pending ? 'tap to review' : 'queue clear');
+  const pending = stat('Salon requests', o.pending, o.pending ? 'tap to review' : 'queue clear');
   if (o.pending) {
     pending.classList.add('stat-action');
     pending.tabIndex = 0;
     pending.setAttribute('role', 'link');
-    const go = () => { salonFilters.status = 'pending'; location.hash = '#/salons'; };
+    const go = () => { location.hash = '#/requests'; };
     pending.onclick = go;
     pending.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
   }
@@ -205,6 +205,111 @@ async function overviewView() {
   view.append(chase);
 }
 
+/* ---------------- salon requests ---------------- */
+
+/**
+ * The queue of people asking to list a salon.
+ *
+ * The same rows the Salons screen can show under its "Pending" filter, given
+ * their own screen and their own nav entry — because this is the one list on
+ * the panel that is *work*, and it was reachable only by remembering to filter
+ * an archive of every salon on the platform.
+ *
+ * Nothing here is a second source of truth: it calls GET /api/admin/salons
+ * with status=pending, and every row opens the same salon detail with the same
+ * Approve and Reject actions. What it adds is what a reviewer needs to triage
+ * without opening anything — who is asking, from where, how to reach them,
+ * what they intend to sell, and how long they have been waiting.
+ */
+async function requestsView() {
+  const view = $('#view');
+  view.innerHTML = '';
+  sessionStorage.setItem('adminLastList', '#/requests');
+
+  const head = el('div', 'dash-head');
+  head.append(el('h1', null, 'Salon requests'));
+  head.append(el('div', 'dash-sub',
+    'People asking to list a salon. Approving one makes the salon live and turns its applicant '
+    + 'into a salon owner — until then their account is an ordinary customer account.'));
+  view.append(head);
+
+  const listWrap = el('div');
+  view.append(listWrap);
+  listWrap.append(SkeletonList(3, () => {
+    const row = document.createElement('div');
+    row.className = 'skeleton skeleton-row';
+    return row;
+  }));
+
+  let salons;
+  try {
+    ({ salons } = await api('/api/admin/salons?status=pending'));
+  } catch (err) {
+    listWrap.innerHTML = '';
+    listWrap.append(errorBox(err));
+    return;
+  }
+
+  listWrap.innerHTML = '';
+  if (!salons.length) {
+    listWrap.append(EmptyState({
+      icon: '✓',
+      title: 'No requests waiting',
+      body: 'Every salon listing request has been reviewed. New ones appear here the moment '
+        + 'someone submits one from "List your salon".',
+      action: 'See all salons',
+      onAction: () => { location.hash = '#/salons'; },
+    }));
+    return;
+  }
+
+  const list = el('div', 'list');
+  for (const s of salons) {
+    const item = el('div', 'item request-row');
+    item.style.cursor = 'pointer';
+    const open = () => { location.hash = `#/salon/${s.id}`; };
+    item.onclick = open;
+    item.tabIndex = 0;
+    item.setAttribute('role', 'link');
+    item.setAttribute('aria-label', `Review ${s.name}`);
+    item.onkeydown = (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      open();
+    };
+
+    const main = el('div', 'grow');
+    main.append(el('div', null, s.name));
+    main.append(el('div', 'meta', [s.address, s.area, s.city].filter(Boolean).join(', ')));
+    item.append(main);
+
+    // Who is asking, and how to reach them. The owner's email is the account
+    // they signed in with; the phone is what they gave on the form.
+    const owner = el('div');
+    owner.style.minWidth = '210px';
+    owner.append(el('div', null, s.ownerName || '(no name given)'));
+    owner.append(el('div', 'meta', [s.ownerEmail, s.ownerPhone].filter(Boolean).join(' · ') || 'no contact on file'));
+    item.append(owner);
+
+    item.append(el('span', 'pill', `${s.serviceCount} services`));
+    if (s.serviceCount === 0) item.append(el('span', 'pill warn', 'no menu'));
+    item.append(el('span', 'meta', `submitted ${day(s.submittedAt)}`));
+    item.append(statusPill(s.status));
+
+    // The queue's own call to action. It opens the detail rather than
+    // approving from here: approving a salon means reading the application,
+    // and a one-tap Approve on a list nobody has opened is how a queue gets
+    // cleared without being reviewed.
+    const review = el('button', 'btn sm primary', 'Review →');
+    review.type = 'button';
+    review.onclick = (e) => { e.stopPropagation(); open(); };
+    item.append(review);
+
+    list.append(item);
+  }
+  listWrap.append(list);
+}
+
 /* ---------------- salons list ---------------- */
 
 let salonFilters = { status: '', city: '', q: '' };
@@ -212,6 +317,7 @@ let salonFilters = { status: '', city: '', q: '' };
 async function salonsView() {
   const view = $('#view');
   view.innerHTML = '';
+  sessionStorage.setItem('adminLastList', '#/salons');
 
   const head = el('div', 'dash-head');
   head.append(el('h1', null, 'Salons'));
@@ -337,8 +443,13 @@ async function salonView(salonId) {
   const view = $('#view');
   view.innerHTML = '';
 
-  const back = el('a', 'btn sm', '← All salons');
-  back.href = '#/salons';
+  // Back to the queue when this was opened from it, back to the archive
+  // otherwise — a reviewer working the request list should not be dropped
+  // into a list of every salon on the platform after each decision.
+  const cameFromRequests = document.referrer.endsWith('#/requests')
+    || sessionStorage.getItem('adminLastList') === '#/requests';
+  const back = el('a', 'btn sm', cameFromRequests ? '← Salon requests' : '← All salons');
+  back.href = cameFromRequests ? '#/requests' : '#/salons';
   view.append(back);
 
   const s = await api(`/api/admin/salons/${salonId}`);
@@ -351,7 +462,13 @@ async function salonView(salonId) {
   head.append(title);
   head.append(el('div', 'meta', `${s.address}${s.city ? ' · ' + s.city : ''}`));
   head.append(el('div', 'meta', `${s.timezone} · commission ${(s.commissionBps / 100).toFixed(2)}%`));
-  head.append(el('div', 'meta', `Onboarded ${day(s.createdAt)}${s.approvedAt ? ` · approved ${day(s.approvedAt)}` : ''}`));
+  // "Submitted" is the request's own date and moves on a resubmission;
+  // "onboarded" is when the salon row first existed and never does. On a
+  // first application they are the same day and only one is shown.
+  const dates = [`Submitted ${day(s.submittedAt)}`];
+  if (day(s.createdAt) !== day(s.submittedAt)) dates.push(`first applied ${day(s.createdAt)}`);
+  if (s.approvedAt) dates.push(`approved ${day(s.approvedAt)}`);
+  head.append(el('div', 'meta', dates.join(' · ')));
   view.append(head);
 
   // ---- the application itself ----
@@ -960,6 +1077,7 @@ async function catalogView() {
 
 const routes = [
   [/^#\/overview$/, overviewView],
+  [/^#\/requests$/, requestsView],
   [/^#\/salons$/, salonsView],
   [/^#\/salon\/([\w-]+)$/, salonView],
   [/^#\/onboard$/, onboardView],

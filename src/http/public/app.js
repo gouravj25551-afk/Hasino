@@ -74,6 +74,29 @@ async function refreshSession() {
 }
 
 /**
+ * Resolves once the first answer about who is signed in has landed.
+ *
+ * lib/auth.js calls its handler with the restored user and returns; it does
+ * not wait for the handler to finish, and the handler is what fetches
+ * /api/me. So without this the very first route rendered while `app.session`
+ * was still null — and a route that needs a session (profile, bookings,
+ * checkout, the application form) would bounce to the login page, which then
+ * noticed the session had arrived and bounced back. Two redirects for a
+ * signed-in person opening their own bookmark, and the destination could be
+ * lost between them: both the bounce and the login page read the remembered
+ * route, and whichever ran second found it already spent and fell back to
+ * home.
+ *
+ * Racing it against a timeout rather than waiting outright: browsing is
+ * public and must not be held hostage to a slow or unreachable identity
+ * provider. If the answer has not come by then the app renders signed-out,
+ * exactly as it did before, and corrects itself when the session lands.
+ */
+const AUTH_SETTLE_TIMEOUT_MS = 4000;
+let markAuthSettled;
+const authSettled = new Promise((resolve) => { markAuthSettled = resolve; });
+
+/**
  * Where a visitor was going when they were asked to sign in.
  *
  * sessionStorage rather than the URL: the sign-in leaves for Google and comes
@@ -475,6 +498,7 @@ async function boot() {
       await watchAuthState(async (fbUser) => {
         if (!fbUser) {
           app.session = null;
+          markAuthSettled();
           // Signing out ends this launch as far as routing is concerned.
           // Without the reset, an owner who signed out and straight back in on
           // the same page would be left on the customer home, because
@@ -485,6 +509,7 @@ async function boot() {
         }
         try {
           await refreshSession();
+          markAuthSettled();
           // The saved list, now that there is somebody to have saved things.
           // Clerk restores asynchronously, so a screen full of salon cards is
           // usually already drawn by this point — lib/favorites.js tells each
@@ -505,14 +530,24 @@ async function boot() {
           // expired, or issued by a different instance. Browsing stays public,
           // so this drops to signed-out rather than interrupting the page.
           app.session = null;
+          markAuthSettled();
           renderChrome();
         }
       });
     } catch (err) {
       console.error('Clerk did not initialize — sign-in is unavailable', err);
       app.session = null;
+      markAuthSettled();
     }
   }
+
+  // Who is signed in, before the first route decides whether to let them in.
+  // Bounded, so an identity provider that never answers costs a moment rather
+  // than the whole app.
+  await Promise.race([
+    authSettled,
+    new Promise((resolve) => setTimeout(resolve, AUTH_SETTLE_TIMEOUT_MS)),
+  ]);
 
   renderChrome();
   await start((err) => {

@@ -98,7 +98,12 @@ CREATE TABLE IF NOT EXISTS salons (
   approved_by      uuid REFERENCES users(id),
   approved_at      timestamptz,
 
-  created_at       timestamptz NOT NULL DEFAULT now()
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  -- When the current application was submitted, as opposed to when the salon
+  -- first existed. A rejected application is fixed and resubmitted in place,
+  -- so created_at stops being the answer after the first attempt and the
+  -- pending queue is worked by this. See db/migrations/011.
+  submitted_at     timestamptz NOT NULL DEFAULT now()
 );
 
 -- [DEVIATION 1] salons.timezone

@@ -3,22 +3,32 @@ import { Avatar } from '../components/Avatar.js';
 import { Button } from '../components/Button.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { currentTheme, toggleTheme } from '../lib/theme.js';
+import { dateLong } from '../lib/format.js';
 
 /**
- * What this account's salon is, if anything.
+ * The state of this account's salon request, for an account that has one.
  *
- * One section with five states rather than one link with a changing label,
- * because they are genuinely different things: an invitation, an application
- * in progress, a refusal, a live salon, and a suspended one. Showing "list
- * your salon" to someone who applied last week — or to an approved owner —
- * is the version of this that reads as the product having forgotten them.
+ * There is deliberately no invitation here any more. "Become a Hasino Salon"
+ * sat on every customer's profile page and was the main way anyone reached the
+ * application form — which is exactly what a customer should not be offered:
+ * a customer account is a customer account, and listing a salon is a separate
+ * thing a person chooses to start from outside the customer app (the sign-in
+ * screen's "List your salon"). Removing it here is not a cosmetic change; the
+ * form and the API behind it are unchanged and still refuse to grant anyone
+ * anything without an admin.
  *
- * Approval is what turns the invitation into a dashboard. Nothing here can
- * grant it; the server decides and this only reports.
+ * What remains is the state of a request this account already made, which is
+ * the customer's own business and the only place they can see it: pending,
+ * turned down, or approved. Returns null when there is nothing to report,
+ * and the caller renders no section at all.
  */
 function salonSection(app, session) {
-  const panel = el('div', 'panel');
   const salon = session.salon;
+  // A plain customer with no request. Nothing about salons belongs on their
+  // profile — not a panel, not a heading, not a link.
+  if (!salon) return null;
+
+  const panel = el('div', 'panel');
 
   // Approved. role and salon.status move together — changeSalonStatus sets
   // both in one transaction — but the dashboard is offered on the role, which
@@ -38,17 +48,21 @@ function salonSection(app, session) {
     return panel;
   }
 
-  if (salon?.status === 'pending') {
-    panel.append(el('h2', null, 'Salon Application'));
+  if (salon.status === 'pending') {
+    panel.append(el('h2', null, 'Salon listing request'));
     panel.append(el('div', null, salon.name));
     panel.append(el('div', 'pill warn', '⏳ Under review'));
+    if (salon.submittedAt) {
+      panel.append(el('div', 'meta', `Submitted ${dateLong(salon.submittedAt, undefined)}`));
+    }
     panel.append(el('div', 'note',
-      'A Hasino admin is reviewing it. Your salon dashboard unlocks as soon as it is approved.'));
+      'A Hasino admin is reviewing it. Your salon dashboard unlocks as soon as it is approved. '
+      + 'Until then this account is a customer account, which is why nothing else has changed.'));
     return panel;
   }
 
-  if (salon?.status === 'rejected') {
-    panel.append(el('h2', null, 'Salon Application'));
+  if (salon.status === 'rejected') {
+    panel.append(el('h2', null, 'Salon listing request'));
     panel.append(el('div', null, salon.name));
     panel.append(el('div', 'pill bad', 'Not approved'));
     // The admin's reason, where the owner is standing. Same field the apply
@@ -61,20 +75,16 @@ function salonSection(app, session) {
     }
     panel.append(el('div', 'note',
       'You can update the details and submit it again — it goes back for review.'));
-    const again = Button({ label: 'View / reapply', onClick: () => app.navigate('#/apply') });
-    panel.append(again);
+    // Not an invitation to a customer, which is what the removed section was:
+    // this is the way back into a request this account has already made.
+    panel.append(Button({ label: 'View my request', onClick: () => app.navigate('#/apply') }));
     return panel;
   }
 
-  // Never applied.
-  panel.append(el('h2', null, 'Become a Hasino Salon'));
-  panel.append(el('p', 'sub',
-    'Take bookings from customers near you. Applications are reviewed by a Hasino admin.'));
-  panel.append(Button({
-    label: 'Apply as a Salon',
-    variant: 'primary',
-    onClick: () => app.navigate('#/apply'),
-  }));
+  // suspended, banned, or anything else the server may add later.
+  panel.append(el('h2', null, 'Salon listing request'));
+  panel.append(el('div', null, `${salon.name} is ${salon.status}`));
+  panel.append(el('div', 'note', 'Contact Hasino support if you think this is wrong.'));
   return panel;
 }
 
@@ -126,10 +136,15 @@ export function renderProfile(container, app) {
 
   container.append(list);
 
-  // The salon story, whatever stage it is at. There is deliberately no admin
-  // entry: the admin panel is a separate private process, not a page of this
-  // app, and an operator opens it on their own machine.
-  container.append(salonSection(app, session));
+  // The state of a salon request this account has already made, if it has
+  // made one. A customer who has not is shown nothing — there is no "list your
+  // salon" invitation on a customer's profile, by design.
+  //
+  // There is deliberately no admin entry either: the admin panel is a separate
+  // private process, not a page of this app, and an operator opens it on their
+  // own machine.
+  const salonState = salonSection(app, session);
+  if (salonState) container.append(salonState);
 
   container.append(
     Button({

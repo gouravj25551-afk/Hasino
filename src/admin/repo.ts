@@ -179,6 +179,8 @@ export interface AdminSalonRow {
   serviceCount: number;
   bookingCount: number;
   createdAt: string;
+  /** When the current request was submitted — moves on a resubmission. */
+  submittedAt: string;
   approvedAt: string | null;
 }
 
@@ -194,7 +196,8 @@ export async function listSalonsForAdmin(
     id: string; name: string; city: string | null; area: string | null; address: string;
     status: SalonStatus; commission_bps: number; owner_id: string; owner_name: string | null;
     owner_phone: string | null; owner_email: string | null; owner_signed_in: boolean;
-    service_count: string; booking_count: string; created_at: Date; approved_at: Date | null;
+    service_count: string; booking_count: string; created_at: Date; submitted_at: Date;
+    approved_at: Date | null;
   }>(
     `SELECT s.id, s.name, s.city, s.area, s.address, s.status, s.commission_bps,
             u.id AS owner_id, u.name AS owner_name, u.phone AS owner_phone,
@@ -204,7 +207,7 @@ export async function listSalonsForAdmin(
               WHERE ss.salon_id = s.id AND ss.active)          AS service_count,
             (SELECT count(*)::int8 FROM bookings b
               WHERE b.salon_id = s.id)                          AS booking_count,
-            s.created_at, s.approved_at
+            s.created_at, s.submitted_at, s.approved_at
        FROM salons s
        JOIN users u ON u.id = s.owner_id
       WHERE ($1::text IS NULL OR s.status = $1)
@@ -216,7 +219,10 @@ export async function listSalonsForAdmin(
       ORDER BY
         -- pending first: this list is the admin's inbox, not an archive
         CASE s.status WHEN 'pending' THEN 0 ELSE 1 END,
-        s.created_at DESC
+        -- and within that, by when the request was actually made. A
+        -- resubmitted application is a new request and belongs at the top of
+        -- the queue, not filed under the date its first attempt was created.
+        s.submitted_at DESC
       LIMIT $4`,
     [status ?? null, city ?? null, q ?? null, limit],
   );
@@ -237,6 +243,7 @@ export async function listSalonsForAdmin(
     serviceCount: Number(r.service_count),
     bookingCount: Number(r.booking_count),
     createdAt: r.created_at.toISOString(),
+    submittedAt: r.submitted_at.toISOString(),
     approvedAt: r.approved_at ? r.approved_at.toISOString() : null,
   }));
 }
@@ -599,13 +606,14 @@ export async function adminSalonDetail(db: Queryable, salonId: string) {
   const salon = await db.query<{
     id: string; name: string; address: string; city: string | null; area: string | null;
     lat: number; lng: number; timezone: string; status: SalonStatus; commission_bps: number;
-    phone: string | null; email: string | null; created_at: Date; approved_at: Date | null;
+    phone: string | null; email: string | null; created_at: Date; submitted_at: Date;
+    approved_at: Date | null;
     description: string | null; cover_url: string | null;
     owner_id: string; owner_name: string | null; owner_phone: string | null; owner_email: string | null;
     owner_signed_in: boolean; owner_role: string;
   }>(
     `SELECT s.id, s.name, s.address, s.city, s.area, s.lat, s.lng, s.timezone, s.status,
-            s.commission_bps, s.phone, s.email, s.created_at, s.approved_at,
+            s.commission_bps, s.phone, s.email, s.created_at, s.submitted_at, s.approved_at,
             s.description, s.cover_url,
             u.id AS owner_id, u.name AS owner_name, u.phone AS owner_phone,
             u.email AS owner_email, (u.auth_provider_id IS NOT NULL) AS owner_signed_in,
@@ -654,6 +662,9 @@ export async function adminSalonDetail(db: Queryable, salonId: string) {
     coverUrl: s.cover_url,
     photos: photos.rows.map((p) => p.url),
     createdAt: s.created_at.toISOString(),
+    // When this request was submitted, which a resubmission moves and
+    // createdAt does not. What the queue is ordered by.
+    submittedAt: s.submitted_at.toISOString(),
     approvedAt: s.approved_at ? s.approved_at.toISOString() : null,
     owner: {
       id: s.owner_id,
@@ -795,6 +806,18 @@ export interface ApplyInput {
   openAt?: string | null;
   closeAt?: string | null;
   /**
+   * The applicant's own name and number, as opposed to the salon's.
+   *
+   * Google supplies a name and no number, so the admin reviewing an
+   * application had a business to ring and no person — and `users.phone` is
+   * null for every account created since sign-in stopped asking for one.
+   * These are contact details, never identity: who the applicant *is* comes
+   * from the session, and this cannot reassign an application to anyone else.
+   * They are written onto the applicant's own users row.
+   */
+  ownerName?: string | null;
+  ownerPhone?: string | null;
+  /**
    * The menu, picked from the public service catalogue. Priced here so the
    * admin can see what this salon intends to charge before approving it — a
    * salon with no menu is invisible to customers anyway, so collecting it at
@@ -867,6 +890,13 @@ export async function applyForSalon(
     // Lexicographic works on zero-padded HH:MM and says what it means.
     throw new AdminError(400, 'BAD_HOURS', 'closing time must be after opening time');
   }
+  // The applicant's own number, in the same E.164 shape every other phone on
+  // the platform uses. Optional — a Google account has none and the salon's
+  // own number is the required one — but a value that is present has to be
+  // dialable, or it is worse than blank.
+  const ownerPhone = input.ownerPhone?.trim() ? validatePhone(input.ownerPhone) : null;
+  const ownerName = input.ownerName?.trim() ? input.ownerName.trim().slice(0, 120) : null;
+
   const coverUrl = input.coverUrl?.trim() ? validatePhotoUrl(input.coverUrl) : null;
   const photoUrls = (input.photoUrls ?? []).filter((u) => u.trim()).map(validatePhotoUrl).slice(0, 12);
 
@@ -915,25 +945,44 @@ export async function applyForSalon(
       input.phone ?? null, input.email ?? null,
       input.description?.trim() || null, coverUrl,
     ];
+    // submitted_at moves on every submission, created_at never does: one is
+    // "when was this request made", which a resubmission changes, and the
+    // other is "when did this salon first exist", which it does not. The
+    // pending queue is ordered by the first.
     const salon = existing
       ? await tx.query<{ id: string }>(
           `UPDATE salons
               SET owner_id = $1, name = $2, address = $3, city = $4, area = $5,
                   lat = $6, lng = $7, timezone = $8, status = 'pending',
                   commission_bps = $9, phone = $10, email = $11,
-                  description = $12, cover_url = $13
+                  description = $12, cover_url = $13, submitted_at = now()
             WHERE id = $14
             RETURNING id`,
           [...fields, existing.id],
         )
       : await tx.query<{ id: string }>(
           `INSERT INTO salons (owner_id, name, address, city, area, lat, lng, timezone,
-                               status, commission_bps, phone, email, description, cover_url)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,$11,$12,$13)
+                               status, commission_bps, phone, email, description, cover_url,
+                               submitted_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,$11,$12,$13, now())
            RETURNING id`,
           fields,
         );
     const salonId = salon.rows[0]!.id;
+
+    // The applicant's own contact details, onto their own row and nowhere
+    // else. coalesce so a blank field never wipes a number an admin recorded,
+    // and the id is the session's — this cannot touch another account.
+    if (ownerName || ownerPhone) {
+      await tx.query(
+        `UPDATE users
+            SET name  = coalesce($2, name),
+                phone = coalesce($3, phone),
+                updated_at = now()
+          WHERE id = $1`,
+        [applicant.userId, ownerName, ownerPhone],
+      );
+    }
 
     if (existing) {
       // The previous submission's menu, photos and hours are replaced by this
@@ -1006,8 +1055,8 @@ export async function applyForSalon(
           salonName: input.name.trim(),
           city: input.city.trim(),
           address: input.address.trim(),
-          ownerName: applicant.name,
-          ownerPhone: applicant.phone,
+          ownerName: ownerName ?? applicant.name,
+          ownerPhone: ownerPhone ?? applicant.phone,
           ownerEmail: applicant.email,
         },
         dedupeKey: `salon_application:${salonId}:${to}`,
