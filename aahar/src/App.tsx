@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { HashRouter, Routes, Route } from 'react-router-dom'
+import { LangProvider } from '@/lib/lang'
 import { StoreProvider } from '@/lib/data/store'
 import { Layout } from '@/components/Layout'
 import { Dashboard } from '@/screens/Dashboard'
@@ -22,8 +23,9 @@ import { Parchi } from '@/screens/Parchi'
 
 export function App() {
   return (
-    <StoreProvider>
-      <BrowserRouter>
+    <LangProvider>
+      <StoreProvider>
+        <HashRouter>
         <Routes>
           <Route path="/parchi/:id" element={<Parchi />} />
           <Route element={<Layout />}>
@@ -46,7 +48,8 @@ export function App() {
             <Route path="/audit" element={<AuditLog />} />
           </Route>
         </Routes>
-      </BrowserRouter>
-    </StoreProvider>
+        </HashRouter>
+      </StoreProvider>
+    </LangProvider>
   )
 }

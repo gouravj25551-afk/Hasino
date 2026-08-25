@@ -5,3 +5,6 @@ dist-ssr
 .DS_Store
 node_modules/.tmp
 *.tsbuildinfo
+
+# Built Android APKs — delivered as files, not committed
+*.apk

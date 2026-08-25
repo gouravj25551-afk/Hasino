@@ -3,13 +3,14 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Icon, type IconName } from '@/components/icons'
 import { cn } from '@/lib/cn'
 import { useStore } from '@/lib/data/store'
+import { useLang } from '@/lib/lang'
+import type { TKey } from '@/lib/translations'
 import { dashboard } from '@/lib/select'
 import { Avatar } from '@/components/ui'
 
 interface NavItem {
   to: string
-  label: string
-  hindi: string
+  key: TKey
   icon: IconName
   badge?: number
 }
@@ -19,40 +20,42 @@ function useNav(): { primary: NavItem[]; secondary: NavItem[] } {
   const d = dashboard(state)
   return {
     primary: [
-      { to: '/', label: 'Dashboard', hindi: 'डैशबोर्ड', icon: 'dashboard' },
-      { to: '/sales', label: 'Sales', hindi: 'बिक्री', icon: 'sales' },
-      { to: '/customers', label: 'Khata', hindi: 'खाता', icon: 'khata' },
-      { to: '/payments', label: 'Payments', hindi: 'भुगतान', icon: 'rupee' },
-      { to: '/purchases', label: 'Purchases', hindi: 'खरीद', icon: 'purchase' },
-      { to: '/inventory', label: 'Inventory', hindi: 'स्टॉक', icon: 'inventory', badge: d.lowStock || undefined },
-      { to: '/production', label: 'Production', hindi: 'उत्पादन', icon: 'production' },
-      { to: '/dispatch', label: 'Dispatch', hindi: 'डिस्पैच', icon: 'dispatch', badge: d.pendingDispatch || undefined },
-      { to: '/rokad', label: 'Rokad', hindi: 'रोकड़', icon: 'rokad' },
-      { to: '/expenses', label: 'Expenses', hindi: 'खर्च', icon: 'expenses' },
-      { to: '/reports', label: 'Reports', hindi: 'रिपोर्ट', icon: 'reports' },
+      { to: '/', key: 'nav.dashboard', icon: 'dashboard' },
+      { to: '/sales', key: 'nav.sales', icon: 'sales' },
+      { to: '/customers', key: 'nav.khata', icon: 'khata' },
+      { to: '/payments', key: 'nav.payments', icon: 'rupee' },
+      { to: '/purchases', key: 'nav.purchases', icon: 'purchase' },
+      { to: '/inventory', key: 'nav.inventory', icon: 'inventory', badge: d.lowStock || undefined },
+      { to: '/production', key: 'nav.production', icon: 'production' },
+      { to: '/dispatch', key: 'nav.dispatch', icon: 'dispatch', badge: d.pendingDispatch || undefined },
+      { to: '/rokad', key: 'nav.rokad', icon: 'rokad' },
+      { to: '/expenses', key: 'nav.expenses', icon: 'expenses' },
+      { to: '/reports', key: 'nav.reports', icon: 'reports' },
     ],
     secondary: [
-      { to: '/reminders', label: 'Reminders', hindi: 'रिमाइंडर', icon: 'bell' },
-      { to: '/settings', label: 'Settings', hindi: 'सेटिंग', icon: 'settings' },
+      { to: '/reminders', key: 'nav.reminders', icon: 'bell' },
+      { to: '/settings', key: 'nav.settings', icon: 'settings' },
     ],
   }
 }
 
 function Brand() {
+  const { t } = useLang()
   return (
     <div className="flex items-center gap-2.5">
-      <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-600 text-white shadow-sm">
+      <span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-600 text-white">
         <Icon.production className="h-5 w-5" />
       </span>
       <div className="leading-tight">
-        <div className="text-[15px] font-extrabold tracking-tight text-ink-900">Aahar</div>
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-400">Feed Factory OS</div>
+        <div className="text-[15px] font-extrabold tracking-tight text-ink-900">{t('app.name')}</div>
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-400">{t('app.tagline')}</div>
       </div>
     </div>
   )
 }
 
 function SideLink({ item }: { item: NavItem }) {
+  const { t } = useLang()
   return (
     <NavLink
       to={item.to}
@@ -69,7 +72,7 @@ function SideLink({ item }: { item: NavItem }) {
         return (
           <>
             <I className={cn('h-5 w-5', isActive ? 'text-brand-600' : 'text-ink-400 group-hover:text-ink-700')} />
-            <span className="flex-1">{item.label}</span>
+            <span className="flex-1">{t(item.key)}</span>
             {item.badge ? (
               <span className="grid h-5 min-w-5 place-items-center rounded-full bg-rose-500 px-1 text-[11px] font-bold text-white">{item.badge}</span>
             ) : null}
@@ -83,16 +86,17 @@ function SideLink({ item }: { item: NavItem }) {
 export function Layout() {
   const { primary, secondary } = useNav()
   const { state } = useStore()
+  const { t } = useLang()
   const nav = useNavigate()
   const loc = useLocation()
   const [moreOpen, setMoreOpen] = useState(false)
   const me = state.users.find((u) => u.id === state.currentUserId)
 
   const bottom: NavItem[] = [
-    { to: '/', label: 'Home', hindi: 'होम', icon: 'dashboard' },
-    { to: '/sales', label: 'Sales', hindi: 'बिक्री', icon: 'sales' },
-    { to: '/customers', label: 'Khata', hindi: 'खाता', icon: 'khata' },
-    { to: '/rokad', label: 'Rokad', hindi: 'रोकड़', icon: 'rokad' },
+    { to: '/', key: 'nav.home', icon: 'dashboard' },
+    { to: '/sales', key: 'nav.sales', icon: 'sales' },
+    { to: '/customers', key: 'nav.khata', icon: 'khata' },
+    { to: '/rokad', key: 'nav.rokad', icon: 'rokad' },
   ]
 
   return (
@@ -116,7 +120,7 @@ export function Layout() {
             <Avatar name={me?.name ?? 'User'} className="h-9 w-9" />
             <div className="min-w-0 flex-1 leading-tight">
               <div className="truncate text-sm font-semibold text-ink-900">{me?.name}</div>
-              <div className="text-xs capitalize text-ink-400">{me?.role}</div>
+              <div className="text-xs capitalize text-ink-400">{t(('role.' + (me?.role ?? 'viewer')) as TKey)}</div>
             </div>
           </div>
         </div>
@@ -124,26 +128,18 @@ export function Layout() {
 
       {/* Main column */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Top bar */}
         <header className="no-print sticky top-0 z-30 flex items-center gap-3 border-b border-line bg-surface/90 px-4 py-3 backdrop-blur lg:px-8">
           <div className="lg:hidden">
             <Brand />
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <button
-              onClick={() => nav('/reminders')}
-              className="relative grid h-11 w-11 place-items-center rounded-xl text-ink-500 hover:bg-canvas"
-              aria-label="Reminders"
-            >
+            <button onClick={() => nav('/reminders')} className="relative grid h-11 w-11 place-items-center rounded-xl text-ink-500 hover:bg-canvas" aria-label={t('nav.reminders')}>
               <Icon.bell className="h-5 w-5" />
               <span className="absolute right-2.5 top-2.5 h-2 w-2 rounded-full bg-rose-500" />
             </button>
-            <button
-              onClick={() => nav('/sales/new')}
-              className="inline-flex h-11 items-center gap-2 rounded-xl bg-brand-600 px-4 text-[15px] font-bold text-white shadow-sm transition hover:bg-brand-700 active:scale-[.98]"
-            >
+            <button onClick={() => nav('/sales/new')} className="inline-flex h-11 items-center gap-2 rounded-xl bg-brand-600 px-4 text-[15px] font-bold text-white transition hover:bg-brand-700 active:scale-[.98]">
               <Icon.plus className="h-5 w-5" />
-              <span className="hidden sm:inline">New Sale</span>
+              <span className="hidden sm:inline">{t('nav.newSale')}</span>
             </button>
           </div>
         </header>
@@ -158,11 +154,7 @@ export function Layout() {
         {bottom.slice(0, 2).map((i) => (
           <BottomLink key={i.to} item={i} />
         ))}
-        <button
-          onClick={() => nav('/sales/new')}
-          className="relative -mt-5 flex flex-1 flex-col items-center"
-          aria-label="New sale"
-        >
+        <button onClick={() => nav('/sales/new')} className="relative -mt-5 flex flex-1 flex-col items-center" aria-label={t('nav.newSale')}>
           <span className="grid h-14 w-14 place-items-center rounded-full bg-brand-600 text-white shadow-lg ring-4 ring-surface">
             <Icon.plus className="h-7 w-7" />
           </span>
@@ -170,12 +162,9 @@ export function Layout() {
         {bottom.slice(2).map((i) => (
           <BottomLink key={i.to} item={i} />
         ))}
-        <button
-          onClick={() => setMoreOpen(true)}
-          className={cn('flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[11px] font-semibold', 'text-ink-400')}
-        >
+        <button onClick={() => setMoreOpen(true)} className="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[11px] font-semibold text-ink-400">
           <Icon.menu className="h-5 w-5" />
-          More
+          {t('nav.more')}
         </button>
       </nav>
 
@@ -193,14 +182,11 @@ export function Layout() {
                   return (
                     <button
                       key={i.to}
-                      onClick={() => {
-                        nav(i.to)
-                        setMoreOpen(false)
-                      }}
+                      onClick={() => { nav(i.to); setMoreOpen(false) }}
                       className={cn('flex flex-col items-center gap-1.5 rounded-2xl border border-line p-3', active && 'border-brand-200 bg-brand-50')}
                     >
                       <I className={cn('h-6 w-6', active ? 'text-brand-600' : 'text-ink-500')} />
-                      <span className="text-xs font-semibold text-ink-700">{i.label}</span>
+                      <span className="text-xs font-semibold text-ink-700">{t(i.key)}</span>
                     </button>
                   )
                 })}
@@ -213,6 +199,7 @@ export function Layout() {
 }
 
 function BottomLink({ item }: { item: NavItem }) {
+  const { t } = useLang()
   const I = Icon[item.icon]
   return (
     <NavLink
@@ -223,7 +210,7 @@ function BottomLink({ item }: { item: NavItem }) {
       }
     >
       <I className="h-5 w-5" />
-      {item.label}
+      {t(item.key)}
     </NavLink>
   )
 }

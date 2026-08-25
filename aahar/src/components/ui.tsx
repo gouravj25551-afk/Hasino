@@ -113,13 +113,11 @@ export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
 
 // ---------------------------------------------------------------- Page header
 
-export function PageHeader({ title, hindi, sub, action }: { title: string; hindi?: string; sub?: string; action?: ReactNode }) {
+export function PageHeader({ title, sub, action }: { title: string; sub?: string; action?: ReactNode }) {
   return (
     <div className="mb-5 flex items-end justify-between gap-3">
       <div>
-        <h1 className="text-2xl font-bold text-ink-900">
-          {title} {hindi && <span className="hi text-lg font-medium text-ink-400">· {hindi}</span>}
-        </h1>
+        <h1 className="text-2xl font-bold text-ink-900">{title}</h1>
         {sub && <p className="mt-0.5 text-sm text-ink-500">{sub}</p>}
       </div>
       {action}

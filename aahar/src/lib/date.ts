@@ -36,9 +36,16 @@ export function fmtFull(iso: string): string {
   return `${d.getDate()} ${MON[d.getMonth()]} ${d.getFullYear()}`
 }
 
-/** 'Today' / 'Tomorrow' / 'in 3 days' / '5 days ago' */
-export function relDue(iso: string): string {
+/** 'Today' / 'Tomorrow' / 'in 3 days' / '5 days ago', localized. */
+export function relDue(iso: string, lang: 'en' | 'hi' = 'en'): string {
   const d = daysBetween(TODAY, iso)
+  if (lang === 'hi') {
+    if (d === 0) return 'आज'
+    if (d === 1) return 'कल'
+    if (d === -1) return 'कल'
+    if (d > 0) return `${d} दिन में`
+    return `${-d} दिन पहले`
+  }
   if (d === 0) return 'Today'
   if (d === 1) return 'Tomorrow'
   if (d === -1) return 'Yesterday'

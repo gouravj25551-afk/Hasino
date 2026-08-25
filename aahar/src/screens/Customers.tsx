@@ -1,17 +1,21 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '@/lib/data/store'
+import { useLang } from '@/lib/lang'
 import { outstanding } from '@/lib/select'
 import type { PartyKind } from '@/lib/types'
 import { money } from '@/lib/money'
-import { Card, PageHeader, SearchBox, Segmented, Avatar, Empty } from '@/components/ui'
+import { Card, PageHeader, SearchBox, Segmented, Avatar, Empty, Button } from '@/components/ui'
 import { Icon } from '@/components/icons'
+import { PartyForm } from '@/components/PartyForm'
 
 export function Customers() {
   const { state } = useStore()
+  const { t } = useLang()
   const nav = useNavigate()
   const [kind, setKind] = useState<PartyKind>('customer')
   const [q, setQ] = useState('')
+  const [addOpen, setAddOpen] = useState(false)
 
   const rows = useMemo(() => {
     return state.parties
@@ -22,46 +26,35 @@ export function Customers() {
   }, [state, kind, q])
 
   const totalOut = rows.reduce((s, r) => s + Math.max(0, r.bal), 0)
+  const sub = kind === 'customer' ? t('cust.subCollect', { n: rows.length, amt: money(totalOut) }) : t('cust.subPay', { n: rows.length, amt: money(totalOut) })
 
   return (
     <div>
-      <PageHeader
-        title="Khata"
-        hindi="खाता"
-        sub={`${rows.length} ${kind === 'customer' ? 'customers' : 'suppliers'} · ${kind === 'customer' ? 'to collect' : 'to pay'} ${money(totalOut)}`}
-      />
+      <PageHeader title={t('cust.title')} sub={sub}
+        action={<Button className="hidden sm:inline-flex" onClick={() => setAddOpen(true)}><Icon.plus className="h-5 w-5" /> {kind === 'customer' ? t('cust.addCustomer') : t('cust.addSupplier')}</Button>} />
 
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="sm:w-52">
-          <Segmented
-            value={kind}
-            onChange={setKind}
-            options={[
-              { value: 'customer', label: 'Customers' },
-              { value: 'supplier', label: 'Suppliers' },
-            ]}
-          />
+          <Segmented value={kind} onChange={setKind} options={[{ value: 'customer', label: t('cust.customers') }, { value: 'supplier', label: t('cust.suppliers') }]} />
         </div>
-        <div className="flex-1">
-          <SearchBox value={q} onChange={setQ} placeholder="Search name, city, phone…" />
-        </div>
+        <div className="flex-1"><SearchBox value={q} onChange={setQ} placeholder={t('cust.searchPlaceholder')} /></div>
       </div>
 
       <Card className="divide-y divide-line">
         {rows.length === 0 ? (
-          <Empty icon="khata" title="No accounts found" sub="Try a different search or add a new party." />
+          <Empty icon="khata" title={t('cust.noneFound')} sub={t('cust.noneSub')} />
         ) : (
           rows.map(({ p, bal }) => (
             <button key={p.id} onClick={() => nav('/customers/' + p.id)} className="flex w-full items-center gap-3 px-4 py-3.5 text-left hover:bg-canvas">
               <Avatar name={p.name} />
               <div className="min-w-0 flex-1">
                 <div className="truncate font-semibold text-ink-900">{p.name}</div>
-                <div className="text-xs text-ink-400">{p.city} · {p.phone}</div>
+                <div className="text-xs text-ink-400">{p.city}{p.city && p.phone ? ' · ' : ''}{p.phone}</div>
               </div>
               <div className="text-right">
                 <div className={`font-bold tabular ${bal > 0 ? 'text-rose-600' : bal < 0 ? 'text-brand-600' : 'text-ink-400'}`}>{money(Math.abs(bal))}</div>
                 <div className="text-[11px] font-semibold text-ink-400">
-                  {bal > 0 ? (kind === 'customer' ? 'to collect' : 'to pay') : bal < 0 ? 'advance' : 'settled'}
+                  {bal > 0 ? (kind === 'customer' ? t('cust.toCollect') : t('cust.toPay')) : bal < 0 ? t('cust.advance') : t('cust.settled')}
                 </div>
               </div>
               <Icon.chevron className="h-5 w-5 text-ink-400" />
@@ -70,12 +63,11 @@ export function Customers() {
         )}
       </Card>
 
-      {kind === 'customer' && (
-        <div className="mt-4 flex items-center gap-2 rounded-xl bg-brand-50 px-4 py-3 text-sm text-brand-700">
-          <Icon.whatsapp className="h-5 w-5 shrink-0" />
-          Tap any customer to open their digital khata, record a payment, or share the statement on WhatsApp.
-        </div>
-      )}
+      <div className="no-print fixed bottom-24 right-4 z-30 sm:hidden">
+        <button onClick={() => setAddOpen(true)} className="grid h-14 w-14 place-items-center rounded-full bg-brand-600 text-white shadow-lg"><Icon.plus className="h-6 w-6" /></button>
+      </div>
+
+      <PartyForm open={addOpen} onClose={() => setAddOpen(false)} kind={kind} />
     </div>
   )
 }
