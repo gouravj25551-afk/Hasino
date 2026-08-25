@@ -9,3 +9,11 @@ node_modules/
 
 # Local TLS material for phone testing. Machine-specific, never deployed.
 .certs/
+# Sibling projects that live beside Hasino, not inside it. Aahar is its own
+# application with its own package.json, Capacitor project and release APK —
+# it was committed here by accident and now lives at ../Aahar. Its history was
+# preserved with `git subtree split -P aahar -b aahar-standalone` before the
+# files were moved out, so nothing was lost. These lines exist so a stray
+# checkout or a copied folder cannot pull either project back in.
+newportfolio/
+aahar/
