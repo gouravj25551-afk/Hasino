@@ -66,6 +66,25 @@ services:
       # chair, the completion OTP still gates service, and no money moves.
       - key: PAYMENTS_PROVIDER
         value: none
+      # Apply outstanding migrations before this process starts serving.
+      #
+      # Nothing else in the deploy path does. The Dockerfile goes straight to
+      # `node src/main.ts`; Render's pre-deploy command is a paid feature; and
+      # the GitHub workflow only migrates when a DATABASE_URL secret is set,
+      # which is optional and, unset, degrades to a warning. Without this the
+      # schema advanced only when somebody ran the script by hand, and the code
+      # here has already shipped ahead of it once.
+      #
+      # Safe to leave on: scripts/migrate.ts is idempotent, holds a Postgres
+      # advisory lock so a restart or a second container cannot double-apply,
+      # and runs each file in a transaction. A failed migration exits before
+      # listening, so the health check fails and the PREVIOUS version keeps
+      # serving — nothing goes down, the release simply does not happen.
+      #
+      # Set on this service only. The admin panel shares the database, and one
+      # owner for the schema is clearer than two racing for the same lock.
+      - key: RUN_MIGRATIONS_ON_BOOT
+        value: "true"
       # sync: false means "Render must not invent a value and must not carry
       # one over from a template" — you type these once in the dashboard, and
       # they are never written into this file or into git.

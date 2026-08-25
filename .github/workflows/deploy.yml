@@ -106,12 +106,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The secret rides in via env rather than being interpolated into the
+      # script body. `${{ secrets.X }}` inside a `run:` block is textually
+      # pasted into the shell before it runs, so a value containing a quote or
+      # a backtick would be parsed as shell syntax rather than as data — and
+      # the one thing this URL is, is a capability. Through env it is a plain
+      # variable the shell never re-parses.
       - name: Require the deploy hook
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
-          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
-            echo "::error::RENDER_DEPLOY_HOOK_URL is not set. Add it from"
-            echo "::error::Render -> your service -> Settings -> Deploy Hook,"
-            echo "::error::then re-run this workflow."
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "::error::RENDER_DEPLOY_HOOK_URL is not set, so this push was"
+            echo "::error::verified but never released. Add it in GitHub ->"
+            echo "::error::Settings -> Secrets and variables -> Actions ->"
+            echo "::error::New repository secret, with the value from Render ->"
+            echo "::error::your service -> Settings -> Deploy Hook, then re-run."
             exit 1
           fi
 
@@ -133,18 +143,27 @@ jobs:
           node scripts/migrate.ts
           node scripts/migrate.ts --status
 
-      - name: Warn when migrations are not automated
+      # Not an error, and no longer a gap. The service applies outstanding
+      # migrations at boot (RUN_MIGRATIONS_ON_BOOT in render.yaml ->
+      # src/db/migrate-on-boot.ts), which is the path that does not require a
+      # production database credential to live in GitHub. Setting the
+      # DATABASE_URL secret here is the alternative, for migrating ahead of the
+      # release rather than during it; the two are safe together — the script
+      # is idempotent and holds an advisory lock — but one of them is enough.
+      - name: Note where migrations run
         if: env.HAS_DB_URL != 'true'
         run: |
-          echo "::warning::DATABASE_URL secret is not set, so migrations were"
-          echo "::warning::not applied. If this push added or changed a"
-          echo "::warning::migration, run 'node scripts/migrate.ts' against"
-          echo "::warning::production before trusting the deploy."
+          echo "DATABASE_URL secret is not set, so migrations were not applied here."
+          echo "The service applies them at boot instead (RUN_MIGRATIONS_ON_BOOT)."
+          echo "Watch the Render deploy log for the '+ 0NN_....sql' lines, or run"
+          echo "'node scripts/migrate.ts --status' against production to confirm."
 
       - name: Trigger the Render deploy
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
           echo "Triggering Render deploy for ${GITHUB_SHA::7}..."
-          code=$(curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" -o /dev/null -w '%{http_code}')
+          code=$(curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL" -o /dev/null -w '%{http_code}')
           echo "Render deploy hook responded $code."
 
       - name: Wait for the new version to come up
