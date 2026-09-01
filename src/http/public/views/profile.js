@@ -115,6 +115,12 @@ export function renderProfile(container, app) {
   bookingsLink.style.cssText = 'text-decoration:none; color:inherit';
   list.append(bookingsLink);
 
+  const savedLink = el('a', 'item');
+  savedLink.append(iconEl('heart', { size: 19 }), el('span', 'grow', 'Saved'));
+  savedLink.href = '#/saved';
+  savedLink.style.cssText = 'text-decoration:none; color:inherit';
+  list.append(savedLink);
+
   const notifications = el('div', 'item');
   notifications.append(iconEl('bell', { size: 19 }), el('span', 'grow', 'Notifications'));
   notifications.onclick = () => notifications.replaceWith(EmptyState({ title: 'No notifications yet.' }));

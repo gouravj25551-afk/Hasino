@@ -934,50 +934,233 @@ td input, td select { min-width: 72px; }
   color: var(--brand-ink);
 }
 
-/* Hero Section */
-.hero-box {
-  /* The gradient is two tokens, so it follows the theme without a second
-     rule — --hero-from/--hero-to are set in both dark palettes. */
-  background: linear-gradient(135deg, var(--hero-from) 0%, var(--hero-to) 100%);
-  border: 1px solid var(--hero-line);
-  border-radius: var(--radius-xl);
-  padding: clamp(var(--space-8), 5vw, var(--space-16)) clamp(var(--space-6), 4vw, var(--space-12));
+/* Hero Section — an editorial split: value line + search on one side, a single
+   grooming photograph on the other. No tinted box and no bloom; the breathing
+   room and the photograph carry it, which is what pulls it away from the
+   template look a bordered gradient panel gives. */
+.hero {
+  display: grid;
+  grid-template-columns: 1.08fr 0.92fr;
+  gap: clamp(var(--space-6), 4vw, var(--space-12));
+  align-items: center;
   margin-bottom: var(--section-gap);
-  position: relative;
-  overflow: hidden;
+  padding: clamp(var(--space-2), 2.5vw, var(--space-8)) 0;
 }
-/* A whisper of brand behind the headline. Sits under the content, is purely
-   decorative, and is the one flourish on the page. Deliberately faint: a
-   stronger bloom read as a purple blob dropped onto the hero — the tell of a
-   template — where this only keeps the corner from going flat. */
-.hero-box::after {
-  content: "";
-  position: absolute;
-  inset: auto -12% -70% auto;
-  width: 420px; height: 420px;
-  background: radial-gradient(circle, color-mix(in srgb, var(--brand) 13%, transparent) 0%, transparent 70%);
-  pointer-events: none;
-  z-index: 0;
-}
-.hero-box > * { position: relative; z-index: 1; }
-.hero-box h1 {
-  /* Fluid rather than fixed: 32px is a large heading on a phone and a small
-     one on a 27" display. clamp lets one rule read correctly on both. */
-  font-size: clamp(var(--text-2xl), 5vw, var(--text-4xl));
+.hero-copy { min-width: 0; }   /* lets the column shrink instead of overflowing */
+.hero-copy h1 {
+  /* Fluid rather than fixed: a large heading on a phone and a small one on a
+     27" display are different type sizes. clamp lets one rule set both. */
+  font-size: clamp(var(--text-3xl), 5.2vw, var(--text-5xl));
   font-weight: 800;
   line-height: var(--leading-tight);
   letter-spacing: var(--tracking-tight);
-  margin-bottom: var(--space-3);
+  margin: 0 0 var(--space-4);
   color: var(--text);
-  max-width: 18ch;   /* breaks the headline where it reads, not at the gutter */
+  max-width: 15ch;   /* breaks the headline where it reads, not at the gutter */
 }
-.hero-box p {
+.hero-copy p {
   font-size: var(--text-lg);
   line-height: var(--leading-base);
   color: var(--dim);
-  margin-top: 0;
-  margin-bottom: var(--space-6);
-  max-width: 46ch;
+  margin: 0 0 var(--space-6);
+  max-width: 48ch;
+}
+.hero-media {
+  position: relative;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+  /* The gradient is the fallback the photo sits on: if the image is slow,
+     blocked or 404s (onerror adds .hero-media-fallback), this is what shows —
+     a deliberate brand panel, not a broken frame. */
+  background: linear-gradient(140deg, var(--brand-700) 0%, var(--brand) 70%, var(--brand-600) 100%);
+  box-shadow: var(--elevation-2);
+}
+.hero-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.hero-media-fallback .hero-img { display: none; }
+
+.hero-cues {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+.hero-cues-label {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  margin-right: var(--space-1);
+}
+.hero-cue {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius-pill);
+  padding: 7px 15px;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out);
+}
+.hero-cue:hover { border-color: var(--brand); background: var(--surface-2); }
+
+/* Below the split's comfortable width, stack: photo band first, then the copy
+   and search. A shorter, wider crop up top reads as a banner rather than a
+   portrait squeezed into a phone. */
+@media (max-width: 820px) {
+  .hero {
+    grid-template-columns: 1fr;
+    gap: var(--space-5);
+    padding-top: 0;
+  }
+  .hero-media { order: -1; aspect-ratio: 16 / 10; }
+  .hero-copy h1 { max-width: 18ch; }
+}
+
+/* A shared section heading for the editorial blocks below the results. */
+.section-title {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-snug);
+  margin: 0 0 var(--space-5);
+  color: var(--text);
+}
+
+/* Ad band — a full-width campaign creative: one photograph, a headline over a
+   scrim, one action. The scrim is legibility for the white text and, when the
+   image fails, the whole background (see .adband-fallback). */
+.adband {
+  position: relative;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-bottom: var(--section-gap);
+  min-height: 320px;
+  display: flex;
+  align-items: center;
+  background: linear-gradient(135deg, var(--brand-700), var(--ink));
+  box-shadow: var(--elevation-2);
+}
+.adband-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+.adband-fallback .adband-img { display: none; }
+/* A left-weighted scrim so the copy stays readable over any photograph without
+   dimming the whole image into mud. */
+.adband::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(11,11,16,.82) 0%, rgba(11,11,16,.55) 45%, rgba(11,11,16,.15) 100%);
+  pointer-events: none;
+}
+.adband:hover .adband-img { transform: scale(1.03); }
+.adband-inner {
+  position: relative;
+  z-index: 1;
+  padding: clamp(var(--space-8), 5vw, var(--space-12));
+  max-width: 34rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+.adband-eyebrow {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--on-brand) 78%, transparent);
+}
+.adband-inner h2 {
+  margin: 0;
+  font-size: clamp(var(--text-2xl), 4vw, var(--text-4xl));
+  font-weight: 800;
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  color: var(--on-brand);
+}
+.adband-sub {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+  color: color-mix(in srgb, var(--on-brand) 82%, transparent);
+  max-width: 40ch;
+}
+
+/* Promo band — one photograph, one line, one action. */
+.promo {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-bottom: var(--section-gap);
+  background: var(--surface);
+}
+.promo-media {
+  position: relative;
+  min-height: 260px;
+  background: linear-gradient(140deg, var(--brand-700), var(--brand));
+}
+.promo-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.promo-media-fallback .promo-img { display: none; }
+.promo-copy {
+  padding: clamp(var(--space-6), 4vw, var(--space-10));
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+.promo-copy h2 {
+  margin: 0;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-snug);
+  color: var(--text);
+}
+.promo-copy p {
+  margin: 0;
+  font-size: var(--text-base);
+  color: var(--dim);
+  line-height: var(--leading-base);
+  max-width: 42ch;
+}
+.promo-copy .btn { margin-top: var(--space-2); }
+
+@media (max-width: 820px) {
+  .promo { grid-template-columns: 1fr; }
+  .promo-media { order: -1; min-height: 200px; }
+  .adband { min-height: 280px; }
+  .adband::after {
+    /* A near-full scrim reads better than a side gradient once the copy sits
+       over the middle of a narrow image. */
+    background: linear-gradient(180deg, rgba(11,11,16,.35) 0%, rgba(11,11,16,.78) 100%);
+  }
+  .adband-inner { max-width: none; }
 }
 .search-bar-wrap {
   display: flex;

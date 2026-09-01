@@ -51,10 +51,20 @@ export async function renderCheckout(container, app, bookingId) {
       // Not an error the customer caused, and not a broken deployment: Hasino
       // has not turned payments on yet. The booking above this is already
       // reserved, so the honest message is "nothing to pay", not "failed".
+      //
+      // This is also the one place payment information is shown to a customer
+      // today, so it is where the booking-payment model is stated — in future
+      // tense, because no charge happens now. The 30% is a booking advance that
+      // cuts no-shows, NOT a Hasino fee or commission; the rest is paid to the
+      // salon directly. Refund/cancellation terms are deliberately not stated
+      // yet — those rules are still to be defined.
       return renderGone(
         panel,
         app,
-        'Online payment is coming soon. Your booking is reserved — pay at the salon for now.',
+        'Online payment isn’t live yet — your booking is already reserved, so pay at the ' +
+          'salon for now. When it launches, you’ll confirm a booking with a 30% advance and ' +
+          'pay the remaining 70% at the salon. The advance simply holds your chair and helps ' +
+          'barbers avoid no-shows.',
       );
     }
     panel.innerHTML = '';

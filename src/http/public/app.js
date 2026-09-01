@@ -34,6 +34,7 @@ import { renderExplore } from './views/explore.js';
 import { renderSalon, releaseCartBarSpace } from './views/salon.js';
 import { renderCheckout } from './views/checkout.js';
 import { renderBookings } from './views/bookings.js';
+import { renderSaved } from './views/saved.js';
 import { renderProfile } from './views/profile.js';
 import { renderLogin } from './views/login.js';
 import { renderApply } from './views/apply.js';
@@ -345,6 +346,7 @@ for (const [pattern, handler] of [
   [/^#\/explore$/, () => renderExplore(viewRoot, app)],
   [/^#\/checkout\/([\w-]+)$/, (id) => renderCheckout(viewRoot, app, id)],
   [/^#\/bookings$/, () => renderBookings(viewRoot, app)],
+  [/^#\/saved$/, () => renderSaved(viewRoot, app)],
   [/^#\/profile$/, () => renderProfile(viewRoot, app)],
   [/^#\/login$/, () => renderLogin(viewRoot, app)],
   [/^#\/apply$/, () => renderApply(viewRoot, app)],

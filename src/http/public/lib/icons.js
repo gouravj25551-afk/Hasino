@@ -50,6 +50,8 @@ const PATHS = {
   circle: '<circle cx="12" cy="12" r="9"/>',
   // catalogue
   tag: '<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>',
+  // saved / favourites
+  heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/>',
 };
 
 /** Icon names known to the set — lets callers fall back to text for anything else. */

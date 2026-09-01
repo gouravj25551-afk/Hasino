@@ -10,7 +10,7 @@ import { HISTORY_GRACE_MIN, NoShowTooEarlyError, customerCancelBooking } from '.
 import { rescheduleBooking } from '../booking/reschedule.ts';
 import { BookingError, SlotUnavailableError } from '../booking/errors.ts';
 import { ForbiddenError, listCustomerBookings } from '../business/repo.ts';
-import { addFavorite, getBooking, getSalon, listFavorites, listSalons, removeFavorite } from '../salons/repo.ts';
+import { addFavorite, getBooking, getSalon, listFavorites, listFavoriteSalons, listSalons, removeFavorite } from '../salons/repo.ts';
 import {
   ImageUploadError,
   deleteStagedImage,
@@ -136,6 +136,7 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'views/salon.js',
   'views/checkout.js',
   'views/bookings.js',
+  'views/saved.js',
   'views/profile.js',
   'views/login.js',
   'views/apply.js',
@@ -814,6 +815,13 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
   if (method === 'GET' && path === '/api/me/favorites') {
     const s = await session(db, req);
     return json(res, 200, { salonIds: await listFavorites(db, s.userId) });
+  }
+
+  // Full cards for the saved screen, newest first. Separate from the ids-only
+  // list above, which exists to paint hearts and must stay cheap.
+  if (method === 'GET' && path === '/api/me/saved') {
+    const s = await session(db, req);
+    return json(res, 200, { salons: await listFavoriteSalons(db, s.userId) });
   }
 
   if (method === 'POST' && path === '/api/me/favorites') {

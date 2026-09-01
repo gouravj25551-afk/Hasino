@@ -117,9 +117,18 @@ export function normalizeCity(city: string | null | undefined): string | null {
 export async function listSalons(
   db: Queryable,
   q?: string,
-  opts: { lat?: number; lng?: number; city?: string; category?: string; limit?: number; now?: Date } = {},
+  opts: {
+    lat?: number;
+    lng?: number;
+    city?: string;
+    category?: string;
+    limit?: number;
+    now?: Date;
+    /** Restrict to these salon ids (used by the saved-salons list). */
+    salonIds?: string[];
+  } = {},
 ): Promise<SalonSummary[]> {
-  const { lat, lng, category, limit = 50, now = new Date() } = opts;
+  const { lat, lng, category, limit = 50, now = new Date(), salonIds: filterIds } = opts;
   const city = normalizeCity(opts.city);
 
   const res = await db.query<{
@@ -154,6 +163,7 @@ export async function listSalons(
       WHERE s.status = 'active'
         AND ($1::text IS NULL OR s.name ILIKE '%' || $1 || '%' OR s.address ILIKE '%' || $1 || '%')
         AND ($6::text IS NULL OR lower(regexp_replace(btrim(s.city), '\\s+', ' ', 'g')) = $6)
+        AND ($7::uuid[] IS NULL OR s.id = ANY($7))
         AND ($5::text IS NULL OR EXISTS (
               SELECT 1 FROM salon_services ss2
                 JOIN services sv2 ON sv2.id = ss2.service_id
@@ -162,7 +172,7 @@ export async function listSalons(
       GROUP BY s.id
       ORDER BY distance_km ASC NULLS LAST, s.name
       LIMIT $2`,
-    [q ?? null, limit, lat ?? null, lng ?? null, category ?? null, city],
+    [q ?? null, limit, lat ?? null, lng ?? null, category ?? null, city, filterIds ?? null],
   );
 
   const salonIds = res.rows.map((r) => r.id);
@@ -386,4 +396,24 @@ export async function addFavorite(db: Queryable, userId: string, salonId: string
 
 export async function removeFavorite(db: Queryable, userId: string, salonId: string): Promise<void> {
   await db.query(`DELETE FROM favorites WHERE user_id = $1 AND salon_id = $2`, [userId, salonId]);
+}
+
+/**
+ * The saved salons as full cards, newest save first — the order the favorites
+ * table already stores (created_at DESC in listFavorites). listSalons does the
+ * rating/price/open-now work and drops anything no longer active, so a salon
+ * that was de-listed after being saved simply falls out of the list rather than
+ * rendering a dead card. Its ORDER BY is distance/name, so the recency order is
+ * reimposed here against the id order.
+ */
+export async function listFavoriteSalons(
+  db: Queryable,
+  userId: string,
+  opts: { now?: Date } = {},
+): Promise<SalonSummary[]> {
+  const ids = await listFavorites(db, userId);
+  if (ids.length === 0) return [];
+  const salons = await listSalons(db, undefined, { salonIds: ids, limit: ids.length, ...opts });
+  const byId = new Map(salons.map((s) => [s.id, s]));
+  return ids.map((id) => byId.get(id)).filter((s): s is SalonSummary => s !== undefined);
 }
