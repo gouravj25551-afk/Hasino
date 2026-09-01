@@ -7,14 +7,18 @@ import { SkeletonList } from '../components/Skeleton.js';
 import { getCity, locationParams } from '../lib/location.js';
 import { loadFavorites } from '../lib/favorites.js';
 
+// Text chips, no per-category pictographs. A row of emoji faces was the
+// loudest "assembled quickly" tell on the home screen, and the mature version
+// of a filter strip — the one Zomato and Airbnb actually ship — is set in type:
+// the label carries the meaning and the filled state carries the selection.
 const CATEGORIES = [
-  { id: '', name: 'All', icon: '✨' },
-  { id: 'hair', name: 'Haircut', icon: '✂️' },
-  { id: 'beard', name: 'Beard', icon: '🧔' },
-  { id: 'color', name: 'Color', icon: '🎨' },
-  { id: 'facial', name: 'Facial', icon: '💆' },
-  { id: 'styling', name: 'Styling', icon: '💇' },
-  { id: 'grooming', name: 'Grooming', icon: '🧼' },
+  { id: '', name: 'All' },
+  { id: 'hair', name: 'Haircut' },
+  { id: 'beard', name: 'Beard' },
+  { id: 'color', name: 'Color' },
+  { id: 'facial', name: 'Facial' },
+  { id: 'styling', name: 'Styling' },
+  { id: 'grooming', name: 'Grooming' },
 ];
 
 export async function renderHome(container, app) {
@@ -46,7 +50,7 @@ export async function renderHome(container, app) {
   const catStrip = el('div', 'category-strip');
   for (const cat of CATEGORIES) {
     const chip = el('div', 'category-card' + (activeCategory === cat.id ? ' active' : ''));
-    chip.append(el('span', 'category-icon', cat.icon), el('span', null, cat.name));
+    chip.append(el('span', null, cat.name));
     chip.onclick = () => {
       activeCategory = cat.id;
       for (const c of catStrip.children) c.classList.remove('active');

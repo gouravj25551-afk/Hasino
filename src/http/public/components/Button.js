@@ -1,8 +1,14 @@
 import { el } from '../lib/dom.js';
+import { iconEl } from '../lib/icons.js';
 
 /**
  * The five intents the design system defines: '' (default/outline), 'primary',
  * 'secondary', 'ghost', 'danger', 'success'. Sizes: '', 'sm', 'lg'.
+ *
+ * `icon` is a name from the icon set (lib/icons.js), drawn before the label —
+ * the button is already an inline-flex row with a gap, so the icon and text
+ * space themselves. Passing it beats prepending an emoji to the label, which is
+ * how these buttons used to get their glyphs.
  *
  * `loading` is a state rather than a caller's job: the button keeps its label
  * and therefore its width — so nothing on the row jumps — and shows a spinner
@@ -11,6 +17,7 @@ import { el } from '../lib/dom.js';
  */
 export function Button({
   label,
+  icon,
   variant = '',
   size = '',
   onClick,
@@ -20,7 +27,12 @@ export function Button({
   type = 'button',
 } = {}) {
   const cls = ['btn', variant, size, block ? 'block' : ''].filter(Boolean).join(' ');
-  const btn = el('button', cls, label);
+  // Text-only stays textContent (unchanged); an icon means composing children.
+  const btn = icon ? el('button', cls) : el('button', cls, label);
+  if (icon) {
+    btn.append(iconEl(icon, { size: size === 'sm' ? 16 : 18 }));
+    if (label != null) btn.append(el('span', null, label));
+  }
   btn.type = type;
   btn.disabled = disabled;
   if (loading) btn.setAttribute('aria-busy', 'true');

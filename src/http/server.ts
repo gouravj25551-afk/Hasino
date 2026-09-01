@@ -105,6 +105,7 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'lib/dom.js',
   'lib/favorites.js',
   'lib/format.js',
+  'lib/icons.js',
   'lib/imagecrop.js',
   'lib/location.js',
   'lib/payments.js',

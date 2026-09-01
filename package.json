@@ -16,6 +16,7 @@
     "db:seed": "node scripts/seed-catalog.ts",
     "test": "node --test --test-concurrency=1 test/*.test.ts",
     "typecheck": "tsc --noEmit",
+    "jobs": "node scripts/run-jobs.ts",
     "smoke": "node scripts/smoke.ts",
     "db:fixture": "CI_SMOKE=true node scripts/ci-fixture.ts",
     "admin": "node src/admin-main.ts",

@@ -181,19 +181,19 @@ export async function renderBookings(container, app) {
       // difference between "nothing here" and "here is what to do next".
       const copy = {
         upcoming: {
-          icon: '◷',
+          icon: 'clock',
           title: 'No upcoming bookings',
           body: 'When you book a salon, it appears here with your verification code.',
           action: 'Browse salons',
         },
         past: {
-          icon: '✓',
+          icon: 'check',
           title: 'No past visits yet',
           body: 'Bookings move here automatically once they are finished.',
           action: 'Browse salons',
         },
         cancelled: {
-          icon: '○',
+          icon: 'circle',
           title: 'Nothing cancelled',
           body: 'Bookings you or a salon cancel are kept here, so you always have the record.',
           action: 'Browse salons',

@@ -1,6 +1,7 @@
 import { el } from '../lib/dom.js';
 import { awaitClerk, currentUser, signInWithGoogle } from '../lib/auth.js';
 import { back as goBack } from '../lib/router.js';
+import { iconEl } from '../lib/icons.js';
 
 function card(...children) {
   const box = el('div', 'panel');
@@ -160,10 +161,17 @@ function renderGoogleStep(container, app, ssoError) {
       salonBtn,
       status,
       Object.assign(
-        el('div', 'note',
-          '🔒 Both use the same Google sign-in. Listing a salon opens a request — '
-          + 'a Hasino admin reviews it, and only an approval turns your account into a '
-          + 'salon owner. Until then it stays an ordinary customer account.'),
+        (() => {
+          const note = el('div', 'note note-lead');
+          note.append(
+            iconEl('lock', { size: 15 }),
+            document.createTextNode(
+              'Both use the same Google sign-in. Listing a salon opens a request — '
+              + 'a Hasino admin reviews it, and only an approval turns your account into a '
+              + 'salon owner. Until then it stays an ordinary customer account.'),
+          );
+          return note;
+        })(),
         { style: 'margin-top:24px; text-align:left' },
       ),
     ),

@@ -536,7 +536,7 @@ async function todayView() {
   if (!bookings.length) {
     view.append(
       EmptyState({
-        icon: '◷',
+        icon: 'clock',
         title: 'Nothing booked for this day',
         body: 'Bookings appear here the moment a customer confirms one. Check your timings and services are set up so customers can find you.',
         action: 'Check timings',

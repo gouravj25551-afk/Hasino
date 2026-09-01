@@ -63,10 +63,14 @@ describe('the deploy workflow', () => {
   });
 
   it('does not race Render’s own auto-deploy', () => {
-    // Both services must opt out, or Render fires on the raw push ahead of
-    // the gate and the ungated build is the one that goes live.
+    // Every service must opt out, or Render fires on the raw push ahead of
+    // the gate and the ungated build is the one that goes live. Asserted as
+    // "one line per service, all false" rather than a fixed count, so adding a
+    // service (the jobs cron) is a one-line render.yaml change, not a test
+    // edit — but a service that forgets the opt-out still fails here.
+    const services = (renderYaml.match(/^\s*- type:\s/gm) ?? []).length;
     const autoDeploys = [...renderYaml.matchAll(/^\s*autoDeploy:\s*(\S+)/gm)].map((m) => m[1]);
-    assert.equal(autoDeploys.length, 2, 'expected one autoDeploy line per service');
+    assert.equal(autoDeploys.length, services, 'expected one autoDeploy line per service');
     for (const value of autoDeploys) assert.equal(value, 'false');
   });
 });

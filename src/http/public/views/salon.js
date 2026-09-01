@@ -12,6 +12,7 @@ import { HeartButton } from '../components/HeartButton.js';
 import { CategoryNav, scrollToSection } from '../components/CategoryNav.js';
 import { cartFor, cartSalonId, cartTotals, clearCart, saveCart } from '../lib/cart.js';
 import { loadFavorites } from '../lib/favorites.js';
+import { iconEl } from '../lib/icons.js';
 
 export async function renderSalon(container, app, salonId) {
   container.innerHTML = '';
@@ -312,14 +313,17 @@ function heroPanel(salon, app) {
       salon.openNow ? (salon.closesAt ? `Open till ${salon.closesAt}` : 'Open now') : 'Closed now',
     ),
   );
-  facts.append(el('span', 'meta', `📍 ${salon.address}`));
+  const addressFact = el('span', 'meta');
+  addressFact.append(iconEl('pin', { size: 15 }), document.createTextNode(salon.address));
+  facts.append(addressFact);
   if (salon.fromPrice != null) facts.append(el('span', 'meta', `from ${rupees(salon.fromPrice)}`));
   info.append(facts);
 
   const actions = el('div', 'row');
   actions.style.marginTop = 'var(--space-4)';
   actions.append(Button({
-    label: '📍 Directions',
+    label: 'Directions',
+    icon: 'navigation',
     size: 'sm',
     onClick: () => window.open(`https://maps.google.com/?q=${salon.lat},${salon.lng}`, '_blank', 'noopener'),
   }));

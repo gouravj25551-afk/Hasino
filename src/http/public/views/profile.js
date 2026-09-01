@@ -4,6 +4,7 @@ import { Button } from '../components/Button.js';
 import { EmptyState } from '../components/EmptyState.js';
 import { currentTheme, toggleTheme } from '../lib/theme.js';
 import { dateLong } from '../lib/format.js';
+import { iconEl } from '../lib/icons.js';
 
 /**
  * The state of this account's salon request, for an account that has one.
@@ -108,12 +109,14 @@ export function renderProfile(container, app) {
   container.append(card);
 
   const list = el('div', 'list');
-  const bookingsLink = el('a', 'item', '📅 My bookings');
+  const bookingsLink = el('a', 'item');
+  bookingsLink.append(iconEl('calendar', { size: 19 }), el('span', 'grow', 'My bookings'));
   bookingsLink.href = '#/bookings';
   bookingsLink.style.cssText = 'text-decoration:none; color:inherit';
   list.append(bookingsLink);
 
-  const notifications = el('div', 'item', '🔔 Notifications');
+  const notifications = el('div', 'item');
+  notifications.append(iconEl('bell', { size: 19 }), el('span', 'grow', 'Notifications'));
   notifications.onclick = () => notifications.replaceWith(EmptyState({ title: 'No notifications yet.' }));
   list.append(notifications);
 
@@ -121,13 +124,15 @@ export function renderProfile(container, app) {
   // looking for it under settings. Both read and write lib/theme.js, so
   // whichever is used, the other is right the next time it is drawn.
   const theme = el('div', 'item');
-  const themeLabel = el('div', 'grow');
+  const themeLabel = el('span', 'grow', 'Appearance');
   const themeValue = el('span', 'pill brand');
   const paintTheme = () => {
     const dark = currentTheme() === 'dark';
-    themeLabel.textContent = '🌗 Appearance';
+    themeIcon.replaceWith((themeIcon = iconEl(dark ? 'moon' : 'sun', { size: 19 })));
     themeValue.textContent = dark ? 'Dark' : 'Light';
   };
+  let themeIcon = iconEl('sun', { size: 19 });
+  theme.append(themeIcon);
   paintTheme();
   theme.style.cursor = 'pointer';
   theme.onclick = () => { toggleTheme(); paintTheme(); };

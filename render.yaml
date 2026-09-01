@@ -195,3 +195,75 @@ services:
       # administer Hasino from anywhere on the internet.
       - key: ADMIN_EMAILS
         sync: false
+
+  # ------------------------------------------------------------------ jobs
+  # The background jobs, on a clock that does not sleep.
+  #
+  # The four jobs (expire holds, process refunds, send queued mail, sweep
+  # staged images) also run as interval loops inside the web service — see
+  # startWorkers in src/http/server.ts. On a paid, always-on web instance that
+  # is enough and this cron is redundant. On the FREE web tier it is not: the
+  # web service sleeps after ~15 minutes idle and a sleeping process runs no
+  # timers, so holds expire late and mail waits until the next visitor wakes
+  # it. This cron is a SEPARATE container that Render wakes on the schedule
+  # below regardless of whether the web service is asleep — which is what makes
+  # the jobs actually run in that deployment.
+  #
+  # It runs `node scripts/run-jobs.ts`, which runs each job ONCE and exits.
+  # Running it alongside the in-process workers is safe: every job takes the
+  # same Postgres advisory lock first (workers/runner.ts), so an overlapping
+  # tick finds the lock held and skips rather than doing work twice.
+  #
+  # CAVEAT worth knowing before this applies cleanly: Render's Cron Jobs are
+  # NOT part of the free plan — the cron runtime bills per run and the account
+  # needs a card on file. Everything else in this file is free-tier; this one
+  # service is the exception. If that is not wanted yet, delete this block and
+  # rely on the in-process workers plus traffic keeping the web service awake.
+  # The fix that matters either way is the command: a Render Cron Job created
+  # by hand in the dashboard must run `node scripts/run-jobs.ts` — pointing it
+  # at anything else (or at a URL this app does not serve) is why a hand-made
+  # cron shows up failing while the app has no matching endpoint.
+  - type: cron
+    name: hasino-jobs
+    runtime: docker
+    region: singapore
+    branch: main
+    # Same reason as the two web services: the gated GitHub workflow is the one
+    # release path, and Render's own auto-deploy would fire ahead of the gate.
+    autoDeploy: false
+    dockerfilePath: ./Dockerfile
+    # Overrides the Dockerfile CMD (node src/main.ts). One run, then exit.
+    dockerCommand: node scripts/run-jobs.ts
+    # Every 5 minutes. The tightest job interval in-process is 30s (sweep
+    # holds), against an 8-minute hold TTL, so 5 minutes keeps an abandoned
+    # chair from lingering more than a few minutes past its hold — good enough
+    # for a free-tier pilot, and cheap on a per-run cron bill. Tighten toward
+    # */2 if holds feel slow to release. Render reads this in UTC.
+    schedule: "*/5 * * * *"
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_FORMAT
+        value: json
+      # This container runs scripts/run-jobs.ts, not src/main.ts, so it never
+      # reaches the boot-migration path at all — the migrate-on-boot flag is
+      # deliberately absent here. The jobs only read and update rows the web
+      # service's boot migration has already created, and one owner for the
+      # schema stays one owner.
+      #
+      # Same provider posture as the web service. With 'none' the refund job is
+      # inert (no money moves anywhere), which is the current pilot state.
+      - key: PAYMENTS_PROVIDER
+        value: none
+      # Must be the SAME Neon database the web and admin services use — the jobs
+      # act on the very rows those services write.
+      - key: DATABASE_URL
+        sync: false
+      # Optional, and shared with the web service: without RESEND_API_KEY and
+      # EMAIL_FROM the notification job falls back to logging each mail instead
+      # of sending it (ConsoleChannel in src/notify/dispatch.ts). Set both here
+      # AND on the web service for mail to actually leave the building.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false

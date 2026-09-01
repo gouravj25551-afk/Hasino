@@ -1,6 +1,7 @@
 import { el } from '../lib/dom.js';
 import { BottomSheet } from './BottomSheet.js';
 import { currentPosition, reverseGeocode, searchPlaces, setLocation } from '../lib/location.js';
+import { iconEl } from '../lib/icons.js';
 
 /**
  * "Choose your location" — the sheet behind the header chip.
@@ -40,10 +41,15 @@ export function LocationSheet({ onPick } = {}) {
   const useMine = el('button', 'btn primary');
   useMine.type = 'button';
   useMine.style.cssText = 'width:100%; display:flex; align-items:center; justify-content:center; gap:8px;';
-  useMine.textContent = '📍 Use my current location';
+  const setUseMine = (text, withIcon = true) => {
+    useMine.textContent = '';
+    if (withIcon) useMine.append(iconEl('pin', { size: 17 }));
+    useMine.append(document.createTextNode(text));
+  };
+  setUseMine('Use my current location');
   useMine.onclick = async () => {
     useMine.disabled = true;
-    useMine.textContent = 'Finding you…';
+    setUseMine('Finding you…', false);
     status.style.display = 'none';
     try {
       const { lat, lng } = await currentPosition();
@@ -55,7 +61,7 @@ export function LocationSheet({ onPick } = {}) {
       status.style.display = 'block';
       status.textContent = err.message;
       useMine.disabled = false;
-      useMine.textContent = '📍 Use my current location';
+      setUseMine('Use my current location');
       search.focus();
     }
   };
@@ -66,11 +72,13 @@ export function LocationSheet({ onPick } = {}) {
   wrap.append(or);
 
   // ---- search ----
+  const searchField = el('div', 'input-icon');
+  searchField.append(iconEl('search', { size: 18 }));
   const search = el('input');
   search.type = 'search';
-  search.placeholder = '🔎  Search city, area or pincode';
-  search.style.width = '100%';
-  wrap.append(search);
+  search.placeholder = 'Search city, area or pincode';
+  searchField.append(search);
+  wrap.append(searchField);
 
   const results = el('div', 'list');
   results.style.marginTop = '10px';

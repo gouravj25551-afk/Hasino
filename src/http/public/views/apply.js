@@ -6,6 +6,7 @@ import { currentPosition } from '../lib/location.js';
 import { dateLong } from '../lib/format.js';
 import { Stepper } from '../components/Stepper.js';
 import { CARD_ASPECT, canCropImages, cropImage } from '../lib/imagecrop.js';
+import { iconEl } from '../lib/icons.js';
 
 /**
  * "List your salon" — a signed-in customer applying to join.
@@ -308,7 +309,8 @@ function renderForm(container, app, session) {
     'We find your salon on the map from the address above. If you are at the salon now, '
     + 'this pins it exactly.');
   const locate = Button({
-    label: '📍 Pin my exact location',
+    label: 'Pin my exact location',
+    icon: 'pin',
     size: 'sm',
     onClick: async () => {
       locate.disabled = true;
@@ -316,14 +318,14 @@ function renderForm(container, app, session) {
       try {
         coords = await currentPosition();
         pinNote.textContent = `Pinned to your current position (${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}).`;
-        locate.textContent = '📍 Pinned';
+        locate.textContent = 'Pinned';
       } catch (err) {
         coords = null;
         // Not a failure worth blocking on: without a pin the address is
         // geocoded, which is what most applicants will rely on anyway.
         pinNote.textContent = `${err.message} We will locate your salon from the address instead.`;
         locate.disabled = false;
-        locate.textContent = '📍 Pin my exact location';
+        locate.textContent = 'Pin my exact location';
       }
     },
   });
@@ -577,7 +579,9 @@ function renderForm(container, app, session) {
 /** The "we have it, here is what happens next" screen. */
 function submittedPanel() {
   const done = el('div', 'panel');
-  done.append(el('div', 'empty-icon', '✓'));
+  const doneIcon = el('div', 'empty-icon');
+  doneIcon.append(iconEl('check', { size: 24 }));
+  done.append(doneIcon);
   done.append(el('h1', null, 'Application received'));
   done.append(el('p', 'sub',
     'A Hasino admin will review it. Nothing is visible to customers until it is approved — '

@@ -253,7 +253,7 @@ async function requestsView() {
   listWrap.innerHTML = '';
   if (!salons.length) {
     listWrap.append(EmptyState({
-      icon: '✓',
+      icon: 'check',
       title: 'No requests waiting',
       body: 'Every salon listing request has been reviewed. New ones appear here the moment '
         + 'someone submits one from "List your salon".',
@@ -389,7 +389,7 @@ async function salonsView() {
         const filtered = salonFilters.status || salonFilters.city || salonFilters.q;
         listWrap.append(
           EmptyState({
-            icon: '◈',
+            icon: 'tag',
             title: filtered ? 'Nothing matches those filters' : 'No salons yet',
             body: filtered
               ? 'Try a different status, city or search term — or clear the filters to see everything.'

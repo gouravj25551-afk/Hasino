@@ -79,27 +79,75 @@ export const JOBS: JobDefinition[] = [
   },
 ];
 
-async function runOnce(deps: WorkerDeps, job: JobDefinition): Promise<void> {
+/**
+ * One attempt at one job. Returns the job's counts, or null when another
+ * instance held the advisory lock and this tick did nothing. `alwaysLog` is
+ * the difference between the two schedulers that call this: the 30-second
+ * interval loop logs only a tick that did something (a worker printing
+ * "0 expired" every 30s buries the tick that mattered), while a cron
+ * invocation is a discrete event that should leave one line per run whether or
+ * not it found work — that is what makes "did the 05:00 run happen?" answerable
+ * from the logs.
+ */
+async function runOnce(
+  deps: WorkerDeps,
+  job: JobDefinition,
+  opts: { alwaysLog?: boolean } = {},
+): Promise<JobCounts | null> {
   const client = await deps.db.connect();
   try {
     const got = await client.query<{ locked: boolean }>('SELECT pg_try_advisory_lock($1) AS locked', [
       job.lockKey,
     ]);
-    if (!got.rows[0]?.locked) return;
+    if (!got.rows[0]?.locked) {
+      if (opts.alwaysLog) log.info(`job ${job.name} skipped`, { reason: 'locked by another instance' });
+      return null;
+    }
 
     try {
       const started = Date.now();
       const result = await job.run(deps);
-      // Only log a tick that did something. A worker logging "0 expired" every
-      // 30 seconds buries the tick that mattered.
       const did = Object.values(result).some((v) => v > 0);
-      if (did) log.info(`job ${job.name}`, { ...result, ms: Date.now() - started });
+      if (did || opts.alwaysLog) log.info(`job ${job.name}`, { ...result, ms: Date.now() - started });
+      return result;
     } finally {
       await client.query('SELECT pg_advisory_unlock($1)', [job.lockKey]);
     }
   } finally {
     client.release();
   }
+}
+
+/**
+ * Run every job exactly once and return, logging one line per job. This is the
+ * entry point for a scheduler that lives OUTSIDE this process — a Render Cron
+ * Job, a Kubernetes CronJob, anything that runs a command on a clock — as
+ * opposed to {@link startWorkers}, which owns its own timers. The two are safe
+ * to run at the same time: every job takes the same `pg_try_advisory_lock`
+ * first, so an external tick that overlaps the in-process one simply finds the
+ * lock held and skips. Errors are caught per job so one failing job does not
+ * strand the others; the caller decides the exit code from the returned flag.
+ */
+export async function runJobsOnce(
+  deps: WorkerDeps,
+  jobs: JobDefinition[] = JOBS,
+): Promise<{ ok: boolean }> {
+  const runId = randomUUID().slice(0, 8);
+  log.info('cron run start', { runId, jobs: jobs.map((j) => j.name).join(',') });
+  const started = Date.now();
+  let ok = true;
+  for (const job of jobs) {
+    try {
+      await withRequestContext({ requestId: `cron:${job.name}:${runId}` }, () =>
+        runOnce(deps, job, { alwaysLog: true }),
+      );
+    } catch (err) {
+      ok = false;
+      reportError(err, { job: job.name, runId });
+    }
+  }
+  log.info('cron run done', { runId, ok, ms: Date.now() - started });
+  return { ok };
 }
 
 export interface RunningWorkers {

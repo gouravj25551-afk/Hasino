@@ -2,6 +2,7 @@ import { el } from '../lib/dom.js';
 import { Avatar } from './Avatar.js';
 import { Button } from './Button.js';
 import { currentTheme, toggleTheme } from '../lib/theme.js';
+import { iconEl } from '../lib/icons.js';
 
 /**
  * The salon panel link, for an approved owner.
@@ -95,10 +96,9 @@ function AccountMenu({ user, onSignOut }) {
     const paintTheme = () => {
       themeItem.innerHTML = '';
       const dark = currentTheme() === 'dark';
-      themeItem.append(
-        el('span', null, dark ? '☀️ Light mode' : '🌙 Dark mode'),
-        el('span', 'value', dark ? 'Dark' : 'Light'),
-      );
+      const label = el('span', 'menu-item-label');
+      label.append(iconEl(dark ? 'sun' : 'moon', { size: 17 }), document.createTextNode(dark ? 'Light mode' : 'Dark mode'));
+      themeItem.append(label, el('span', 'value', dark ? 'Dark' : 'Light'));
     };
     paintTheme();
     themeItem.onclick = (e) => {
@@ -149,7 +149,7 @@ export function TopBar({ user, locationLabel, onLocationClick, onSignIn, onSignO
   bar.append(logo);
 
   const location = el('div', 'location-chip');
-  location.append(document.createTextNode('📍 '));
+  location.append(iconEl('pin', { size: 16 }));
   // textContent, not innerHTML: this string comes from a geocoder, and a
   // place name is not markup.
   location.append(Object.assign(el('b'), { textContent: locationLabel || 'Select location' }));
