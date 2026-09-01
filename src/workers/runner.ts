@@ -6,6 +6,7 @@ import { dispatchDue, type Channel } from '../notify/dispatch.ts';
 import { sweepStagedImages } from '../salons/images.ts';
 import type { RazorpayClient } from '../payments/razorpay.ts';
 import { log, reportError, withRequestContext } from '../obs/logger.ts';
+import { recordCronHeartbeat } from '../obs/heartbeat.ts';
 import { randomUUID } from 'node:crypto';
 
 /**
@@ -136,17 +137,29 @@ export async function runJobsOnce(
   log.info('cron run start', { runId, jobs: jobs.map((j) => j.name).join(',') });
   const started = Date.now();
   let ok = true;
+  // What each job did this run, flattened and prefixed (refunds and
+  // notifications both report `processed`), so the heartbeat carries a readable
+  // record of a degraded run, not just a dead one.
+  const counts: Record<string, number> = {};
   for (const job of jobs) {
     try {
-      await withRequestContext({ requestId: `cron:${job.name}:${runId}` }, () =>
+      const result = await withRequestContext({ requestId: `cron:${job.name}:${runId}` }, () =>
         runOnce(deps, job, { alwaysLog: true }),
       );
+      if (result) for (const [k, v] of Object.entries(result)) counts[`${job.name}.${k}`] = v;
     } catch (err) {
       ok = false;
       reportError(err, { job: job.name, runId });
     }
   }
-  log.info('cron run done', { runId, ok, ms: Date.now() - started });
+  const ms = Date.now() - started;
+  // The liveness record read by /readyz. Best-effort: a heartbeat that cannot
+  // be written must not turn a run that did its work into a failure, so this is
+  // logged and swallowed rather than thrown.
+  await recordCronHeartbeat(deps.db, { ok, ms, runId, counts }).catch((err: unknown) =>
+    reportError(err, { during: 'cron-heartbeat', runId }),
+  );
+  log.info('cron run done', { runId, ok, ms });
   return { ok };
 }
 

@@ -49,6 +49,7 @@ import { WebhookSignatureError, handleWebhook } from '../payments/webhook.ts';
 import { channelFromEnv } from '../notify/dispatch.ts';
 import { startWorkers, type RunningWorkers } from '../workers/runner.ts';
 import { annotate, log, newRequestId, reportError, withRequestContext } from '../obs/logger.ts';
+import { readCronHeartbeat } from '../obs/heartbeat.ts';
 
 /**
  * DEV_AUTH swaps real token verification for a header naming the user
@@ -279,10 +280,38 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     } catch (err) {
       return json(res, 503, { ok: false, db: 'unreachable', error: (err as Error).message });
     }
+    // The cron liveness record: how long ago the background-job cron last ran.
+    // Null means it has never run against this database; a large ageSeconds
+    // means it has stopped. Read-only and unauthenticated on purpose — a
+    // timestamp is the whole point, so anyone can check the cron without the
+    // Render dashboard.
+    let cron: {
+      lastRunAt: string;
+      ageSeconds: number;
+      ok: boolean;
+      runs: number;
+      lastMs: number | null;
+    } | null = null;
+    try {
+      const hb = await readCronHeartbeat(db);
+      if (hb) {
+        cron = {
+          lastRunAt: hb.lastRunAt.toISOString(),
+          ageSeconds: Math.round((Date.now() - hb.lastRunAt.getTime()) / 1000),
+          ok: hb.ok,
+          runs: hb.runs,
+          lastMs: hb.ms,
+        };
+      }
+    } catch {
+      // The heartbeat table not existing (a database behind on migrations) must
+      // not fail readiness — the service is still ready to serve.
+    }
     return json(res, 200, {
       ok: true,
       auth: DEV_AUTH ? 'DEV_AUTH (insecure)' : verifier.kind,
       payments: payments.enabled ? payments.client.kind : 'disabled',
+      cron,
     });
   }
 

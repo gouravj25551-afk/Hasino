@@ -53,7 +53,7 @@ export async function reset(pool: pg.Pool): Promise<void> {
     TRUNCATE booking_slots, booking_items, bookings, reviews, salon_strikes,
              salon_holidays, salon_hours, salon_services, services, salons, users,
              payments, refunds, ledger_entries, payouts, webhook_events,
-             notifications, idempotency_keys
+             notifications, idempotency_keys, cron_heartbeat
     RESTART IDENTITY CASCADE
   `);
 }

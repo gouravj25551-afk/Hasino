@@ -557,4 +557,17 @@ CREATE TABLE IF NOT EXISTS salon_strikes (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- ---------- cron liveness ----------
+-- One row (id pinned to 1), upserted by runJobsOnce() on every cron invocation
+-- and read by GET /readyz. See db/migrations/013_cron_heartbeat.sql.
+CREATE TABLE IF NOT EXISTS cron_heartbeat (
+  id          smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  last_run_at timestamptz NOT NULL DEFAULT now(),
+  last_ok     boolean     NOT NULL DEFAULT true,
+  last_ms     integer,
+  last_run_id text,
+  last_counts jsonb,
+  runs        bigint      NOT NULL DEFAULT 0
+);
+
 COMMIT;
