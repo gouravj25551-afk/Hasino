@@ -70,10 +70,10 @@ export function contentSecurityPolicy(publishableKey = process.env['CLERK_PUBLIS
     // creates that frame — without it here the script is blocked, and the only
     // symptom is that sign-up fails with captcha_invalid. Sign-in is
     // unaffected, so this breaks new accounts exclusively.
-    `script-src 'self' https://checkout.razorpay.com https://*.razorpay.com https://cdn.jsdelivr.net ${clerk} https://challenges.cloudflare.com`,
+    `script-src 'self' https://checkout.razorpay.com https://*.razorpay.com https://sdk.cashfree.com https://cdn.jsdelivr.net ${clerk} https://challenges.cloudflare.com`,
     "worker-src 'self' blob:",
-    `frame-src https://api.razorpay.com https://*.razorpay.com ${clerk} https://challenges.cloudflare.com`,
-    `connect-src 'self' https://*.razorpay.com https://lumberjack.razorpay.com ${clerk} https://api.clerk.com`,
+    `frame-src https://api.razorpay.com https://*.razorpay.com https://*.cashfree.com ${clerk} https://challenges.cloudflare.com`,
+    `connect-src 'self' https://*.razorpay.com https://lumberjack.razorpay.com https://*.cashfree.com ${clerk} https://api.clerk.com`,
     // The customer app has no build step, so component styles are inline.
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: https:",

@@ -45,7 +45,7 @@ import { AuthError, verifierFromEnv } from '../auth/verifier.ts';
 import { type Session, authenticate, requireRole } from '../auth/session.ts';
 import { StubRazorpayClient, paymentsConfigFromEnv } from '../payments/razorpay.ts';
 import { PaymentError, confirmCheckout, openCheckout } from '../payments/service.ts';
-import { WebhookSignatureError, handleWebhook } from '../payments/webhook.ts';
+import { WebhookSignatureError, handleWebhook, handleCashfreeWebhook } from '../payments/webhook.ts';
 import { channelFromEnv } from '../notify/dispatch.ts';
 import { startWorkers, type RunningWorkers } from '../workers/runner.ts';
 import { annotate, log, newRequestId, reportError, withRequestContext } from '../obs/logger.ts';
@@ -345,6 +345,31 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       { cache },
     );
     log.info('webhook', { event: result.event, outcome: result.outcome });
+    return json(res, result.status, { received: true, outcome: result.outcome });
+  }
+
+  // ---------- Cashfree webhook ----------
+  // Same rules as the Razorpay one: unauthenticated by design (the signature is
+  // the authentication), reads the raw body, verifies before parsing. Cashfree
+  // signs timestamp + rawBody, so both headers are forwarded.
+  if (method === 'POST' && path === '/api/webhooks/cashfree') {
+    if (payments.provider !== 'cashfree') {
+      throw new HttpError(404, 'Not found');
+    }
+    const raw = await readRawBody(req);
+    const sig = req.headers['x-webhook-signature'];
+    const ts = req.headers['x-webhook-timestamp'];
+    const result = await handleCashfreeWebhook(
+      db,
+      payments,
+      raw,
+      {
+        signature: Array.isArray(sig) ? sig[0] : sig,
+        timestamp: Array.isArray(ts) ? ts[0] : ts,
+      },
+      { cache },
+    );
+    log.info('webhook', { provider: 'cashfree', event: result.event, outcome: result.outcome });
     return json(res, result.status, { received: true, outcome: result.outcome });
   }
 
@@ -975,7 +1000,9 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       {
         bookingId,
         customerId: customer.userId,
-        orderId: String(body['razorpay_order_id'] ?? ''),
+        // Cashfree posts `orderId`; Razorpay posts the razorpay_* triple. The
+        // service branches on provider, so the unused fields are simply empty.
+        orderId: String(body['orderId'] ?? body['razorpay_order_id'] ?? ''),
         paymentId: String(body['razorpay_payment_id'] ?? ''),
         signature: String(body['razorpay_signature'] ?? ''),
       },

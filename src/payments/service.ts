@@ -6,6 +6,7 @@ import { BookingError } from '../booking/errors.ts';
 import { enqueueNotification } from '../notify/outbox.ts';
 import type { PaymentsConfig, RazorpayClient } from './razorpay.ts';
 import { RazorpayError, verifyCheckoutSignature } from './razorpay.ts';
+import { HttpCashfreeClient } from './cashfree.ts';
 
 type Queryable = Pool | PoolClient;
 
@@ -139,8 +140,14 @@ export interface CheckoutSession {
   orderId: string;
   amount: number;
   currency: string;
-  /** the public key the browser needs — never the secret */
+  /** which SDK the browser should open. */
+  provider: 'none' | 'razorpay' | 'cashfree';
+  /** Razorpay: the public key the browser needs — never the secret. Empty for Cashfree. */
   keyId: string;
+  /** Cashfree: the per-order token the SDK opens checkout with. Not a secret. */
+  paymentSessionId?: string;
+  /** Cashfree: 'sandbox' or 'production', so the SDK opens the right environment. */
+  mode?: 'sandbox' | 'production';
   /** when the chair stops being held, so the UI can count down */
   holdExpiresAt: string | null;
   // All three are hints Razorpay's checkout pre-fills; null simply leaves the
@@ -194,18 +201,35 @@ export async function openCheckout(
   let orderId: string;
   let amount: number;
   let currency: string;
+  let paymentSessionId: string | undefined;
 
-  const found = existing.rows[0];
-  if (found) {
-    orderId = found.rzp_order_id;
-    amount = found.amount;
-    currency = found.currency;
-  } else {
-    const order = await cfg.client.createOrder({
+  const createOrderForBooking = () =>
+    cfg.client.createOrder({
       amountPaise: ctx.amount,
       receipt: bookingId,
       notes: { booking_id: bookingId, salon_id: ctx.salonId, customer_id: ctx.customerId },
+      customer: { id: ctx.customerId, name: ctx.customerName, email: ctx.customerEmail, phone: ctx.customerPhone },
+      ...(row.hold_expires_at ? { expiryIso: row.hold_expires_at.toISOString() } : {}),
     });
+
+  const found = existing.rows[0];
+  if (found && cfg.provider !== 'cashfree') {
+    // Razorpay reuse: re-creating would hit its duplicate-receipt rejection, so
+    // the stored order is returned as-is; the browser needs only key + order id.
+    orderId = found.rzp_order_id;
+    amount = found.amount;
+    currency = found.currency;
+  } else if (found) {
+    // Cashfree reload: the order already exists, but a payment_session_id is
+    // single-use per attempt. Re-creating is idempotent (order id is the key),
+    // so it returns the same order with a fresh session to open.
+    const order = await createOrderForBooking();
+    orderId = order.id;
+    amount = found.amount;
+    currency = found.currency;
+    paymentSessionId = order.paymentSessionId;
+  } else {
+    const order = await createOrderForBooking();
     await db.query(
       `INSERT INTO payments (booking_id, salon_id, customer_id, rzp_order_id, amount, currency)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -216,6 +240,7 @@ export async function openCheckout(
     orderId = order.id;
     amount = order.amount;
     currency = order.currency;
+    paymentSessionId = order.paymentSessionId;
   }
 
   return {
@@ -223,7 +248,12 @@ export async function openCheckout(
     orderId,
     amount,
     currency,
-    keyId: cfg.keyId,
+    provider: cfg.provider,
+    // The app id is server-side only; Cashfree's browser SDK opens with the
+    // payment_session_id, so keyId is deliberately blank on that path.
+    keyId: cfg.provider === 'cashfree' ? '' : cfg.keyId,
+    ...(paymentSessionId ? { paymentSessionId } : {}),
+    ...(cfg.cashfreeMode ? { mode: cfg.cashfreeMode } : {}),
     holdExpiresAt: row.hold_expires_at ? row.hold_expires_at.toISOString() : null,
     prefill: { name: ctx.customerName, email: ctx.customerEmail, contact: ctx.customerPhone },
     salonName: ctx.salonName,
@@ -592,6 +622,10 @@ export async function confirmCheckout(
 ): Promise<CaptureResult> {
   if (!cfg.enabled) throw new PaymentsDisabledError();
 
+  // Cashfree has no browser-signed callback: the client just tells us which
+  // order to check, and we ask Cashfree what really happened.
+  if (cfg.provider === 'cashfree') return confirmCashfree(db, cfg, input, opts);
+
   if (!verifyCheckoutSignature(input, cfg.keySecret)) throw new BadSignatureError();
 
   const owns = await db.query<{ id: string }>(
@@ -628,6 +662,75 @@ export async function confirmCheckout(
   }
 
   return applyCapture(db, cfg, { orderId: input.orderId, paymentId: input.paymentId, method, amount }, opts);
+}
+
+/**
+ * Confirm a Cashfree booking by verifying the ORDER server-side.
+ *
+ * The browser is not trusted at all here — it only names the order. We ask
+ * Cashfree whether that order is PAID and pull the settling payment out of it.
+ * SUCCESS captures (idempotent, shared with the webhook); a dropped/declined
+ * payment is recorded and surfaced; a still-processing one is left for the
+ * webhook to finish so the customer is never told "failed" prematurely.
+ */
+async function confirmCashfree(
+  db: Pool,
+  cfg: PaymentsConfig,
+  input: { bookingId: string; customerId: string; orderId: string },
+  opts: { now?: Date; cache?: SnapshotCache },
+): Promise<CaptureResult> {
+  const owns = await db.query<{ id: string }>(
+    `SELECT p.id FROM payments p
+      WHERE p.rzp_order_id = $1 AND p.booking_id = $2 AND p.customer_id = $3`,
+    [input.orderId, input.bookingId, input.customerId],
+  );
+  if (owns.rowCount === 0) throw new PaymentNotFoundError();
+
+  const client = cfg.client;
+  if (!(client instanceof HttpCashfreeClient)) {
+    throw new PaymentError('PROVIDER_MISMATCH', 'Cashfree confirm reached a non-Cashfree client');
+  }
+
+  let verification;
+  try {
+    verification = await client.verifyOrder(input.orderId);
+  } catch (err) {
+    if (err instanceof RazorpayError && !err.retryable) {
+      throw new PaymentError('CASHFREE_REJECTED', err.message);
+    }
+    throw new PaymentError(
+      'VERIFY_UNAVAILABLE',
+      'Could not reach Cashfree to verify. Your booking will confirm shortly.',
+    );
+  }
+
+  if (verification.outcome === 'failed') {
+    await applyFailure(db, {
+      orderId: input.orderId,
+      paymentId: verification.paymentId,
+      code: 'CASHFREE_FAILED',
+      description: 'Payment failed or was dropped',
+    });
+    throw new PaymentError('PAYMENT_FAILED', 'Your payment did not go through. Please try again.');
+  }
+  if (verification.outcome === 'pending' || verification.outcome === 'unknown') {
+    throw new PaymentError(
+      'PAYMENT_PENDING',
+      'Your payment is still processing. Your booking will confirm shortly.',
+    );
+  }
+
+  return applyCapture(
+    db,
+    cfg,
+    {
+      orderId: input.orderId,
+      paymentId: verification.paymentId ?? input.orderId,
+      method: verification.method,
+      amount: verification.amountPaise,
+    },
+    opts,
+  );
 }
 
 // ------------------------------------------------------------------- refunds
@@ -732,6 +835,7 @@ export async function processDueRefunds(
     reason: string;
     attempts: number;
     rzp_payment_id: string | null;
+    rzp_order_id: string | null;
     salon_id: string;
   }>(
     `UPDATE refunds r
@@ -747,7 +851,7 @@ export async function processDueRefunds(
            FOR UPDATE SKIP LOCKED
         )
       RETURNING r.id, r.payment_id, r.booking_id, r.amount, r.reason, r.attempts,
-                p.rzp_payment_id, p.salon_id`,
+                p.rzp_payment_id, p.rzp_order_id, p.salon_id`,
     [now, limit],
   );
 
@@ -772,6 +876,8 @@ export async function processDueRefunds(
         amountPaise: row.amount,
         refundId: row.id,
         reason: row.reason,
+        // Cashfree refunds are keyed by order; Razorpay ignores this.
+        ...(row.rzp_order_id ? { orderId: row.rzp_order_id } : {}),
       });
 
       // Razorpay's 'pending' means it accepted the refund but the bank has not

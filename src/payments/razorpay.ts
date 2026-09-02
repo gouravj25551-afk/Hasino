@@ -12,6 +12,7 @@
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { HttpCashfreeClient, type CashfreeEnv } from './cashfree.ts';
 
 const API = 'https://api.razorpay.com/v1';
 
@@ -22,6 +23,12 @@ export interface RazorpayOrder {
   status: 'created' | 'attempted' | 'paid';
   receipt: string | null;
   notes: Record<string, string>;
+  /**
+   * Cashfree only. The token the browser SDK needs to render checkout — it is
+   * NOT a secret (it is single-order and short-lived), which is the whole point:
+   * the client gets this, never the API key. Razorpay leaves it undefined.
+   */
+  paymentSessionId?: string;
 }
 
 export interface RazorpayPayment {
@@ -53,6 +60,10 @@ export interface CreateOrderInput {
   receipt: string;
   notes?: Record<string, string>;
   currency?: string;
+  /** Cashfree only: it requires a customer id + phone on the order. Razorpay ignores this. */
+  customer?: { id: string; name?: string | null; email?: string | null; phone?: string | null };
+  /** Cashfree only: order expiry (ISO 8601), set from the hold TTL. Razorpay ignores this. */
+  expiryIso?: string;
 }
 
 export interface CreateRefundInput {
@@ -61,6 +72,8 @@ export interface CreateRefundInput {
   /** Our refunds.id. Written into notes and used to detect a duplicate. */
   refundId: string;
   reason: string;
+  /** Cashfree only: refunds are issued against the order, not the payment id. */
+  orderId?: string;
 }
 
 export interface RazorpayClient {
@@ -418,7 +431,7 @@ export class StubRazorpayClient implements RazorpayClient {
  * Adding Cashfree or anyone else means a new RazorpayClient implementation and
  * a new value here — the rest of the system asks `provider`, never a key.
  */
-export type PaymentProvider = 'none' | 'razorpay';
+export type PaymentProvider = 'none' | 'razorpay' | 'cashfree';
 
 export interface PaymentsConfig {
   provider: PaymentProvider;
@@ -431,6 +444,8 @@ export interface PaymentsConfig {
   /** how long a pending_payment booking holds its chair */
   holdTtlMs: number;
   enabled: boolean;
+  /** Cashfree only: which environment the browser SDK should open against. */
+  cashfreeMode?: 'sandbox' | 'production';
 }
 
 export const DEFAULT_HOLD_TTL_MS = 8 * 60_000;
@@ -471,11 +486,40 @@ export function paymentsConfigFromEnv(ciSmoke: boolean): PaymentsConfig {
   // should not require deleting a credential, which is the sort of change
   // nobody remembers how to undo.
   const forced = process.env['PAYMENTS_PROVIDER'];
-  if (forced && forced !== 'none' && forced !== 'razorpay') {
-    throw new Error(`PAYMENTS_PROVIDER must be 'none' or 'razorpay', got "${forced}"`);
+  if (forced && forced !== 'none' && forced !== 'razorpay' && forced !== 'cashfree') {
+    throw new Error(`PAYMENTS_PROVIDER must be 'none', 'razorpay' or 'cashfree', got "${forced}"`);
   }
 
-  if (keyId && keySecret && forced !== 'none') {
+  // Cashfree, when selected and configured. The secret key is BOTH the API
+  // credential and the webhook signing key, so there is no separate webhook
+  // secret. keyId is the app id — kept server-side only; the browser gets a
+  // per-order payment_session_id, never this.
+  const cfAppId = process.env['CASHFREE_APP_ID'] ?? '';
+  const cfSecret = process.env['CASHFREE_SECRET_KEY'] ?? '';
+  if (forced === 'cashfree' && cfAppId && cfSecret) {
+    const env: CashfreeEnv = process.env['CASHFREE_ENV'] === 'production' ? 'production' : 'sandbox';
+    const notifyBase = process.env['PUBLIC_BASE_URL'] ?? process.env['RENDER_APP_URL'] ?? '';
+    const client = new HttpCashfreeClient({
+      appId: cfAppId,
+      secretKey: cfSecret,
+      env,
+      ...(process.env['CASHFREE_API_VERSION'] ? { apiVersion: process.env['CASHFREE_API_VERSION'] } : {}),
+      ...(notifyBase ? { notifyUrl: `${notifyBase.replace(/\/$/, '')}/api/webhooks/cashfree` } : {}),
+    });
+    return {
+      provider: 'cashfree',
+      client,
+      keyId: cfAppId,
+      keySecret: cfSecret,
+      webhookSecret: cfSecret,
+      commissionBps,
+      holdTtlMs,
+      enabled: true,
+      cashfreeMode: env,
+    };
+  }
+
+  if (keyId && keySecret && forced !== 'none' && forced !== 'cashfree') {
     return {
       provider: 'razorpay',
       client: new HttpRazorpayClient({ keyId, keySecret }),

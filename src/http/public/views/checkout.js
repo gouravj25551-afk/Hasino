@@ -8,6 +8,8 @@ import {
   CheckoutFailed,
   confirmPayment,
   openRazorpayCheckout,
+  openCashfreeCheckout,
+  confirmCashfreeBooking,
   waitForConfirmation,
 } from '../lib/payments.js';
 
@@ -142,16 +144,26 @@ function draw(panel, app, booking, checkout) {
   // A route change must not leave a timer writing into a detached node.
   window.addEventListener('hashchange', () => clearInterval(timer), { once: true });
 
+  const isCashfree = checkout.provider === 'cashfree';
+
   payBtn.onclick = async () => {
     if (expired) return;
     status.innerHTML = '';
     payBtn.disabled = true;
-    payBtn.textContent = 'Opening Razorpay…';
+    payBtn.textContent = isCashfree ? 'Opening Cashfree…' : 'Opening Razorpay…';
 
     try {
-      const signed = await openRazorpayCheckout(checkout);
-      payBtn.textContent = 'Confirming…';
-      const result = await confirmPayment(booking.id, signed);
+      let result;
+      if (isCashfree) {
+        // The result is not trusted — confirm re-verifies the order server-side.
+        await openCashfreeCheckout(checkout);
+        payBtn.textContent = 'Confirming…';
+        result = await confirmCashfreeBooking(booking.id, checkout.orderId);
+      } else {
+        const signed = await openRazorpayCheckout(checkout);
+        payBtn.textContent = 'Confirming…';
+        result = await confirmPayment(booking.id, signed);
+      }
       clearInterval(timer);
 
       if (result.outcome === 'refunding') {
@@ -184,6 +196,18 @@ function draw(panel, app, booking, checkout) {
       }
       if (err instanceof CheckoutFailed) {
         status.append(el('div', 'out bad', `${err.message}. Nothing was charged — try another method.`));
+        return;
+      }
+      // Cashfree, verified server-side: still settling, or a real decline.
+      if (err instanceof ApiError && err.code === 'PAYMENT_PENDING') {
+        payBtn.disabled = true;
+        status.append(
+          el('div', 'note', 'Payment is still processing. Your booking will confirm shortly — check My Bookings in a minute.'),
+        );
+        return;
+      }
+      if (err instanceof ApiError && err.code === 'PAYMENT_FAILED') {
+        status.append(el('div', 'out bad', 'Your payment did not go through. Nothing was charged — you can try again above.'));
         return;
       }
       // The money may have moved even though our confirm call did not land.

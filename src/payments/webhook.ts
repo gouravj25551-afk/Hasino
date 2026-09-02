@@ -2,6 +2,7 @@ import type { Pool } from '../db/pool.ts';
 import type { SnapshotCache } from '../availability/cache.ts';
 import type { PaymentsConfig } from './razorpay.ts';
 import { verifyWebhookSignature } from './razorpay.ts';
+import { classifyWebhookType, verifyCashfreeWebhookSignature } from './cashfree.ts';
 import { applyCapture, applyFailure } from './service.ts';
 
 /**
@@ -207,6 +208,123 @@ async function dispatch(
       // subscribe to 40-odd events and the list grows; unknown ones must be a
       // no-op rather than an error, or enabling one in their dashboard breaks
       // production.
+      return null;
+  }
+}
+
+// --------------------------------------------------------------------- cashfree
+
+interface CashfreeWebhookBody {
+  type?: string;
+  data?: {
+    order?: { order_id?: string; order_amount?: number };
+    payment?: {
+      cf_payment_id?: number | string;
+      payment_status?: string;
+      payment_amount?: number;
+      payment_group?: string;
+    };
+  };
+}
+
+/**
+ * Cashfree's webhook. Same three rules as the Razorpay one above — verify the
+ * RAW bytes, verify BEFORE parsing, return 2xx for anything recorded — and the
+ * same durable-claim-then-dispatch shape, so a duplicate delivery hits the
+ * claim and does no work twice. Cashfree signs `timestamp + rawBody`, so both
+ * headers are needed; there is no separate webhook secret (the API secret key
+ * signs it). Cashfree sends no event id, so the claim key is a content hash of
+ * the body — a genuine re-delivery is byte-identical and dedupes.
+ */
+export async function handleCashfreeWebhook(
+  db: Pool,
+  cfg: PaymentsConfig,
+  rawBody: Buffer,
+  headers: { signature?: string | undefined; timestamp?: string | undefined },
+  opts: { now?: Date; cache?: SnapshotCache } = {},
+): Promise<WebhookResult> {
+  if (!verifyCashfreeWebhookSignature(rawBody, headers.timestamp, headers.signature, cfg.webhookSecret)) {
+    throw new WebhookSignatureError();
+  }
+
+  let event: CashfreeWebhookBody;
+  try {
+    event = JSON.parse(rawBody.toString('utf8')) as CashfreeWebhookBody;
+  } catch {
+    return { outcome: 'failed', event: 'unparseable', status: 400, detail: 'body is not JSON' };
+  }
+
+  const type = event.type ?? 'unknown';
+  const eventId = `cf:${(await import('node:crypto')).createHash('sha256').update(rawBody).digest('hex')}`;
+
+  const claim = await db.query(
+    `INSERT INTO webhook_events (id, event, payload)
+     VALUES ($1, $2, $3::jsonb)
+     ON CONFLICT (id) DO NOTHING`,
+    [eventId, type, rawBody.toString('utf8')],
+  );
+  if (claim.rowCount === 0) {
+    return { outcome: 'duplicate', event: type, status: 200 };
+  }
+
+  try {
+    const detail = await dispatchCashfree(db, cfg, event, opts);
+    await db.query(
+      `UPDATE webhook_events SET status = $2, processed_at = now(), attempts = attempts + 1 WHERE id = $1`,
+      [eventId, detail === null ? 'ignored' : 'processed'],
+    );
+    return {
+      outcome: detail === null ? 'ignored' : 'processed',
+      event: type,
+      status: 200,
+      ...(detail ? { detail } : {}),
+    };
+  } catch (err) {
+    const message = (err as Error).message.slice(0, 500);
+    await db.query(
+      `UPDATE webhook_events SET status = 'failed', error = $2, attempts = attempts + 1 WHERE id = $1`,
+      [eventId, message],
+    );
+    // 500 so Cashfree retries; the durable row means the retry dedupes.
+    return { outcome: 'failed', event: type, status: 500, detail: message };
+  }
+}
+
+async function dispatchCashfree(
+  db: Pool,
+  cfg: PaymentsConfig,
+  event: CashfreeWebhookBody,
+  opts: { now?: Date; cache?: SnapshotCache },
+): Promise<string | null> {
+  const orderId = str(event.data?.order?.order_id);
+  const payment = event.data?.payment;
+  const paymentId = payment?.cf_payment_id != null ? String(payment.cf_payment_id) : null;
+
+  switch (classifyWebhookType(event.type)) {
+    case 'success': {
+      if (!orderId) return null;
+      // payment_amount is rupees on the wire; applyCapture checks paise.
+      const amountPaise = payment?.payment_amount != null ? Math.round(payment.payment_amount * 100) : undefined;
+      const result = await applyCapture(
+        db,
+        cfg,
+        { orderId, paymentId: paymentId ?? orderId, method: payment?.payment_group ?? null, amount: amountPaise },
+        opts,
+      );
+      return `${result.outcome} ${result.bookingId}`;
+    }
+    case 'failed':
+    case 'dropped': {
+      if (!orderId) return null;
+      await applyFailure(db, {
+        orderId,
+        paymentId,
+        code: event.type ?? 'CASHFREE_FAILED',
+        description: `Cashfree ${payment?.payment_status ?? 'failure'}`,
+      });
+      return `failed ${orderId}`;
+    }
+    default:
       return null;
   }
 }

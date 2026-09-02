@@ -109,6 +109,57 @@ export function openRazorpayCheckout(checkout) {
   );
 }
 
+// ------------------------------------------------------------------- cashfree
+
+const CASHFREE_SRC = 'https://sdk.cashfree.com/js/v3/cashfree.js';
+let cashfreeLoader = null;
+
+/** Load the Cashfree v3 SDK once, lazily. Same shape as loadRazorpay. */
+export function loadCashfree() {
+  if (window.Cashfree) return Promise.resolve(window.Cashfree);
+  if (cashfreeLoader) return cashfreeLoader;
+  cashfreeLoader = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = CASHFREE_SRC;
+    script.async = true;
+    script.onload = () =>
+      window.Cashfree
+        ? resolve(window.Cashfree)
+        : reject(new Error('Cashfree loaded but did not register'));
+    script.onerror = () => {
+      cashfreeLoader = null;
+      reject(new Error('Could not reach Cashfree. Check your connection and try again.'));
+    };
+    document.head.append(script);
+  });
+  return cashfreeLoader;
+}
+
+/**
+ * Open Cashfree's hosted checkout in a modal and resolve when it closes.
+ *
+ * The result is deliberately NOT trusted to decide whether the booking is paid
+ * — the server re-verifies the order with Cashfree in confirm. This resolves
+ * for a completed, cancelled or failed attempt alike; the truth comes from the
+ * confirm call, and the webhook is the backstop if the customer closes the tab.
+ */
+export async function openCashfreeCheckout(checkout) {
+  const Cashfree = await loadCashfree();
+  const cashfree = Cashfree({ mode: checkout.mode === 'production' ? 'production' : 'sandbox' });
+  return cashfree.checkout({
+    paymentSessionId: checkout.paymentSessionId,
+    redirectTarget: '_modal',
+  });
+}
+
+/** Confirm a Cashfree booking. The server verifies the order — the browser only names it. */
+export async function confirmCashfreeBooking(bookingId, orderId) {
+  return api(`/api/bookings/${bookingId}/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({ orderId }),
+  });
+}
+
 /**
  * The whole payment step for a booking that is already holding its chair.
  *
