@@ -97,6 +97,9 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   // `script-src 'self'` with no 'unsafe-inline'.
   'app.js',
   'business.js',
+  // The pre-paint launch script (theme + splash watchdog). Classic, not a
+  // module, so it runs before app.js during head parsing.
+  'splash-boot.js',
   'lib/api.js',
   'lib/auth.js',
   'lib/backbutton.js',

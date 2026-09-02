@@ -4,10 +4,107 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Hasino — Salon & Barber Booking Marketplace</title>
+
 <link rel="stylesheet" href="/brand.css">
 <link rel="stylesheet" href="/app.css">
+
+<!-- Sets the launch theme, wires the retry button, and arms the splash
+     watchdog — before first paint and before app.js. A same-origin file, not
+     an inline script, because the CSP is script-src 'self'. -->
+<script src="/splash-boot.js"></script>
+
+<!-- The launch splash. Inline so it is part of the first paint — the module
+     graph and Clerk take a moment to initialise, and this covers that moment
+     with the Hasino mark instead of an empty page. It is the real wordmark
+     (text, so it is crisp at any density and weighs nothing), not an image.
+     app.js removes it the instant the first screen is ready; it adds no delay
+     of its own. Styles are inline so the splash never depends on class rules
+     loading in any particular order. -->
+<style>
+  #splash {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg, #0b0b10);
+    padding: max(env(safe-area-inset-top), 20px) 20px max(env(safe-area-inset-bottom), 20px);
+    opacity: 1;
+    transition: opacity 0.28s ease;
+  }
+  #splash.is-hiding { opacity: 0; pointer-events: none; }
+  #splash-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 22px;
+    animation: splash-in 0.42s cubic-bezier(0.22, 0.68, 0.32, 1) both;
+  }
+  /* The topbar lockup, scaled up — the same mark, so the app the splash hands
+     off to is visibly the app the splash promised. */
+  #splash .lockup {
+    font-size: 34px;
+    border-radius: 15px;
+    padding: 12px 22px 15px;
+  }
+  #splash-bar {
+    width: 92px;
+    height: 3px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--brand, #9b8ae8) 20%, transparent);
+  }
+  #splash-bar > span {
+    display: block;
+    width: 42%;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--brand, #9b8ae8);
+    animation: splash-slide 1.1s ease-in-out infinite;
+  }
+  #splash-error {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    text-align: center;
+    max-width: 30ch;
+  }
+  #splash-error p {
+    margin: 0;
+    color: var(--dim, #6c6980);
+    font: 500 14.5px/1.55 var(--font, system-ui, -apple-system, sans-serif);
+  }
+  #splash.has-error #splash-bar { display: none; }
+  #splash.has-error #splash-error { display: flex; }
+  @keyframes splash-in {
+    from { opacity: 0; transform: translateY(4px) scale(0.985); }
+    to   { opacity: 1; transform: none; }
+  }
+  @keyframes splash-slide {
+    0%   { transform: translateX(-120%); }
+    100% { transform: translateX(330%); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #splash-inner { animation: none; }
+    #splash-bar > span { animation-duration: 2.4s; }
+    #splash { transition-duration: 0.12s; }
+  }
+</style>
 </head>
 <body>
+
+<div id="splash" role="status" aria-label="Loading Hasino">
+  <div id="splash-inner">
+    <span class="lockup"><span class="wordmark">has<span class="i">i</span>no</span></span>
+    <div id="splash-bar" aria-hidden="true"><span></span></div>
+    <div id="splash-error">
+      <p>Hasino didn’t finish loading. Please try again.</p>
+      <button type="button" class="btn primary">Try again</button>
+    </div>
+  </div>
+</div>
 
 <div id="topbar"></div>
 <div class="wrap" id="view"></div>

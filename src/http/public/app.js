@@ -48,6 +48,42 @@ const viewRoot = document.getElementById('view');
 const topbarRoot = document.getElementById('topbar');
 const bottomNavRoot = document.getElementById('bottomNav');
 
+/**
+ * The launch splash (index.html) hand-off.
+ *
+ * revealApp() fades the splash out once the first screen's shell is in the DOM
+ * — never on a timer, so a fast boot reveals fast and a slow one stays covered
+ * exactly as long as it genuinely needs. splashError() is the escape hatch: if
+ * boot throws before it can reveal, the splash shows a retry rather than
+ * hanging. Both clear the inline watchdog and are safe to call more than once.
+ */
+let splashDone = false;
+function stopSplashWatchdog() {
+  if (window.__hasinoSplashWatchdog) {
+    clearTimeout(window.__hasinoSplashWatchdog);
+    window.__hasinoSplashWatchdog = null;
+  }
+}
+function revealApp() {
+  if (splashDone) return;
+  splashDone = true;
+  stopSplashWatchdog();
+  const splash = document.getElementById('splash');
+  if (!splash) return;
+  splash.classList.add('is-hiding');
+  const remove = () => splash.remove();
+  splash.addEventListener('transitionend', remove, { once: true });
+  // Belt and suspenders: if the transition never fires (reduced motion,
+  // background tab), take it off the page anyway so it can never trap input.
+  setTimeout(remove, 400);
+}
+function splashError() {
+  if (splashDone) return;
+  stopSplashWatchdog();
+  const splash = document.getElementById('splash');
+  if (splash) splash.classList.add('has-error');
+}
+
 /** Shared app state + the handful of things every view needs from the shell. */
 const app = {
   session: null,       // GET /api/me response, or null when signed out
@@ -552,11 +588,24 @@ async function boot() {
   ]);
 
   renderChrome();
-  await start((err) => {
+  // start() renders the first route synchronously up to its first await — the
+  // topbar, the view's skeletons and the bottom nav are all in the DOM by the
+  // time it returns its promise. Reveal on the next frame, once that shell has
+  // painted behind the splash, then let the route's own data finish loading
+  // under it. This is the whole point: the splash covers real initialisation
+  // time and not a millisecond more.
+  const firstRoute = start((err) => {
     console.error('route error', err);
     showRouteError(err);
   });
+  requestAnimationFrame(revealApp);
+  await firstRoute;
   window.addEventListener('hashchange', renderChrome);
 }
 
-boot();
+// A boot that rejects (rather than handling its own error) must not leave the
+// splash up forever — surface the retry instead.
+boot().catch((err) => {
+  console.error('Hasino failed to start', err);
+  splashError();
+});
