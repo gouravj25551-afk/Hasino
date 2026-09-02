@@ -15,7 +15,6 @@ import {
   completeRedirectCallback,
   signOut,
   isNativeApp,
-  isAndroidBrowser,
   callbackWantsNativeApp,
   nativeCallbackUrl,
   nativeCallbackIntentUrl,
@@ -306,13 +305,21 @@ function navigateTo(dest, { swap = false } = {}) {
 /**
  * Send a signed-in person where they belong. Called on the sign-in that just
  * completed, and by the login view when someone already signed in opens it.
+ *
+ * `fromFreshSignIn` marks the browser OAuth return. Clerk finishes OAuth by
+ * navigating to redirectUrlComplete ('#/home'), so a browser sign-in lands the
+ * app on '#/home' rather than '#/login' — but that '#/home' is a transient the
+ * flow dropped us on, not a place the person chose, so it must be replaced for
+ * the same reason the login page is: Back must not return to it.
  */
-function afterSignIn() {
+function afterSignIn({ fromFreshSignIn = false } = {}) {
   // Leaving the login page replaces it. Pushing over it left a signed-in
   // person one Back press away from a sign-in screen that would immediately
   // send them forward again, which is the loop the customer sees as "the back
-  // button does nothing".
-  navigateTo(afterSignInDestination(), { swap: currentHash() === '#/login' });
+  // button does nothing". The post-OAuth '#/home' is the same kind of transient.
+  navigateTo(afterSignInDestination(), {
+    swap: fromFreshSignIn || currentHash() === '#/login',
+  });
 }
 
 function renderChrome() {
@@ -507,13 +514,23 @@ async function boot() {
     // hold: no network at install time, a sideloaded build, a device that
     // never rechecked. Handing the callback on by scheme needs no
     // verification and cannot fail that way.
-    // Two signals, either one is enough. `?native=1` is the precise one, set
-    // when the sign-in started in the app — but it has to survive Clerk and
-    // Google, and if it is dropped the browser silently finishes the sign-in
-    // and the app stays signed out, which is the bug rather than a detail. An
-    // Android browser on this page is the second signal; the hand-off screen
-    // it leads to can always be declined.
-    if (!isNativeApp() && (callbackWantsNativeApp() || isAndroidBrowser())) {
+    // Gate the hand-off on the precise signal ONLY: `?native=1`, set when the
+    // sign-in started in the app. `isAndroidBrowser()` used to stand in as a
+    // second signal, but it matches *every* Android phone on the mobile web —
+    // the app tags its own WebView with `HasinoApp/` (capacitor.config.ts), so
+    // an Android UA without that tag is an ordinary web visitor, not a stranded
+    // app user. Treating them as stranded auto-redirected them to `intent://`
+    // and never completed their web sign-in: they landed on a "Signed in" page
+    // that could not open any app and were never actually authenticated — the
+    // exact "signed in but not really, and no redirect" the mobile users saw.
+    //
+    // The residual risk this trades for is narrow: an app-started sign-in whose
+    // `?native=1` was dropped in transit AND whose App Links failed, landing in
+    // an external browser. That double failure is rare; breaking sign-in for
+    // all Android web users is not. When it does happen the browser simply
+    // finishes the sign-in on the web, which is a working session rather than a
+    // dead end.
+    if (!isNativeApp() && callbackWantsNativeApp()) {
       return handOffToNativeApp();
     }
 
@@ -535,51 +552,73 @@ async function boot() {
   {
     // Browsing is public even if Clerk was never configured on this deploy —
     // only sign-in itself should fail, visibly, when attempted.
-    try {
-      await watchAuthState(async (fbUser) => {
-        if (!fbUser) {
-          app.session = null;
-          markAuthSettled();
-          // Signing out ends this launch as far as routing is concerned.
-          // Without the reset, an owner who signed out and straight back in on
-          // the same page would be left on the customer home, because
-          // routeOnOpen had already spent its one shot.
-          openRouted = false;
-          renderChrome();
-          return;
-        }
-        try {
-          await refreshSession();
-          markAuthSettled();
-          // The saved list, now that there is somebody to have saved things.
-          // Clerk restores asynchronously, so a screen full of salon cards is
-          // usually already drawn by this point — lib/favorites.js tells each
-          // heart on it what it should be, rather than leaving them all
-          // outlines until the next navigation.
-          loadFavorites({ signedIn: true, force: true }).catch(() => {});
-          // The session can land after the login view has already painted —
-          // Clerk restores asynchronously. Leaving the user on a sign-in page
-          // they no longer need is the same dead end as the original loop,
-          // just one step later.
-          if (currentHash() === '#/login') afterSignIn();
-          // Every other way in: the app was opened with a session already
-          // restored. An owner belongs in their panel then too, not only on
-          // the sign-in that created the session.
-          else routeOnOpen();
-        } catch {
-          // A Clerk session whose token the server will not accept — revoked,
-          // expired, or issued by a different instance. Browsing stays public,
-          // so this drops to signed-out rather than interrupting the page.
-          app.session = null;
-          markAuthSettled();
-          renderChrome();
-        }
-      });
-    } catch (err) {
+    //
+    // Deliberately NOT awaited. watchAuthState() loads clerk-js (1.5MB, from a
+    // third-party CDN) before it resolves, and awaiting it here would block the
+    // first render on that download — so on a device or network where the CDN
+    // is slow, blocked, or unparseable the whole app hangs on the splash, not
+    // just sign-in. That is the opposite of "browsing survives a slow provider".
+    // The Promise.race below is what bounds the wait: the handler calls
+    // markAuthSettled() the moment it has an answer, and if that never comes the
+    // race renders signed-out and the listener corrects it whenever Clerk lands.
+    watchAuthState(async (fbUser) => {
+      if (!fbUser) {
+        app.session = null;
+        markAuthSettled();
+        // Signing out ends this launch as far as routing is concerned.
+        // Without the reset, an owner who signed out and straight back in on
+        // the same page would be left on the customer home, because
+        // routeOnOpen had already spent its one shot.
+        openRouted = false;
+        renderChrome();
+        return;
+      }
+      try {
+        await refreshSession();
+        markAuthSettled();
+        // The saved list, now that there is somebody to have saved things.
+        // Clerk restores asynchronously, so a screen full of salon cards is
+        // usually already drawn by this point — lib/favorites.js tells each
+        // heart on it what it should be, rather than leaving them all
+        // outlines until the next navigation.
+        loadFavorites({ signedIn: true, force: true }).catch(() => {});
+        // A sign-in the person just completed and the app merely re-opening
+        // with a session already restored route differently — the first honours
+        // where they were headed (returnTo) and why they signed in (the salon
+        // intent); the second only sends an owner to their panel and must never
+        // move a customer off a page they deep-linked to.
+        //
+        // The hash alone cannot tell these apart. In the browser, Clerk ends
+        // OAuth by navigating to redirectUrlComplete ('#/home'), so a fresh
+        // sign-in lands on '#/home', not '#/login'. Gating the destination on
+        // '#/login' therefore fired it for NO browser sign-in: every one landed
+        // on '#/home' and had its returnTo and salon intent dropped.
+        //
+        // `postSignIn` is the signal that survives the round trip. It is set
+        // only by the sign-in buttons — the single signInWithGoogle() call site
+        // — so its presence when a session lands means a user-initiated sign-in
+        // just completed. afterSignInDestination() consumes it. The login view
+        // is still handled directly for the already-signed-in case, where the
+        // session restores while that page is showing and there is no intent.
+        const fromFreshSignIn = sessionStorage.getItem('postSignIn') !== null;
+        if (fromFreshSignIn || currentHash() === '#/login') afterSignIn({ fromFreshSignIn });
+        // Every other way in: the app was opened with a session already
+        // restored. An owner belongs in their panel then too, not only on
+        // the sign-in that created the session.
+        else routeOnOpen();
+      } catch {
+        // A Clerk session whose token the server will not accept — revoked,
+        // expired, or issued by a different instance. Browsing stays public,
+        // so this drops to signed-out rather than interrupting the page.
+        app.session = null;
+        markAuthSettled();
+        renderChrome();
+      }
+    }).catch((err) => {
       console.error('Clerk did not initialize — sign-in is unavailable', err);
       app.session = null;
       markAuthSettled();
-    }
+    });
   }
 
   // Who is signed in, before the first route decides whether to let them in.
@@ -601,7 +640,15 @@ async function boot() {
     console.error('route error', err);
     showRouteError(err);
   });
+  // Reveal on the next frame in the ordinary case, so the shell has painted
+  // behind the splash first. But requestAnimationFrame is PAUSED while the
+  // document is hidden — a cold load in a background tab, a prerender, or a PWA
+  // that launches before it is visible would never get that frame, and the
+  // splash would sit until the 12s watchdog turned it into "didn't finish
+  // loading" over a fully-loaded app. setTimeout still fires when hidden, so it
+  // is the backstop; revealApp() is idempotent, so whichever runs first wins.
   requestAnimationFrame(revealApp);
+  setTimeout(revealApp, 300);
   await firstRoute;
   window.addEventListener('hashchange', renderChrome);
 }

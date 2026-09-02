@@ -122,18 +122,17 @@ describe('the hand-off back to the app', () => {
     assert.match(app, /nativeCallbackIntentUrl\(\)/);
   });
 
-  it('does not depend on ?native=1 surviving Clerk and Google', () => {
-    // The flag is the precise signal, but if it is dropped anywhere on the
-    // round trip the browser silently keeps the session. An Android browser on
-    // the callback page is enough to offer the hand-off.
-    assert.match(app, /callbackWantsNativeApp\(\) \|\| isAndroidBrowser\(\)/);
-    assert.match(auth, /export function isAndroidBrowser/);
-  });
-
-  it('never offers it inside the app itself', () => {
-    // The app IS where the callback should land; handing it to itself would
-    // be a loop.
-    assert.match(app, /!isNativeApp\(\) && \(/);
+  it('hands off only for a sign-in that started in the app', () => {
+    // The hand-off is gated on the precise signal alone: `?native=1`, set only
+    // when the sign-in began in the app. A broad `isAndroidBrowser()` fallback
+    // used to stand in for it, but that matches every Android phone on the
+    // mobile web — and the app tags its own WebView with `HasinoApp/`, so an
+    // Android UA without that tag is an ordinary web visitor, not a stranded
+    // app user. Diverting them auto-redirected to intent:// and never completed
+    // their web sign-in: "Signed in" on screen, no session, no redirect.
+    assert.match(app, /!isNativeApp\(\) && callbackWantsNativeApp\(\)/);
+    // And the old user-agent-only divert must be gone from the live condition.
+    assert.doesNotMatch(app, /callbackWantsNativeApp\(\) \|\| isAndroidBrowser/);
   });
 
   it('leaves a way to finish in the browser, for a phone with no app', () => {

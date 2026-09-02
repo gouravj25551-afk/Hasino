@@ -311,7 +311,20 @@ describe('the login page does not trap the back button', () => {
   });
 
   it('signing in leaves the login page behind rather than on top of', () => {
-    assert.match(app, /navigateTo\(afterSignInDestination\(\), \{ swap: currentHash\(\) === '#\/login' \}\)/);
+    assert.match(app, /navigateTo\(afterSignInDestination\(\), \{/);
+    // Replaces the login page, and also the transient '#/home' Clerk drops a
+    // browser sign-in on — neither is a place Back should return to.
+    assert.match(app, /swap: fromFreshSignIn \|\| currentHash\(\) === '#\/login'/);
+  });
+
+  it('runs the destination logic for a browser sign-in, not only on #/login', () => {
+    // In the browser, Clerk ends OAuth on redirectUrlComplete ('#/home'), so a
+    // fresh sign-in never lands on '#/login'. Gating the destination on that
+    // hash dropped every browser sign-in on '#/home' and lost its returnTo and
+    // salon intent. `postSignIn` is set only by the sign-in buttons and rides
+    // the OAuth round trip, so it is the signal a sign-in just completed.
+    assert.match(app, /const fromFreshSignIn = sessionStorage\.getItem\('postSignIn'\) !== null/);
+    assert.match(app, /if \(fromFreshSignIn \|\| currentHash\(\) === '#\/login'\) afterSignIn\(\{ fromFreshSignIn \}\)/);
   });
 
   it('and finishes the trip the visitor was on', () => {
