@@ -38,6 +38,7 @@ import { renderSaved } from './views/saved.js';
 import { renderProfile } from './views/profile.js';
 import { renderLogin } from './views/login.js';
 import { renderApply } from './views/apply.js';
+import { renderTerms, renderPrivacy } from './views/legal.js';
 
 // Before anything renders: the stored theme, or the device's. Any later and
 // the first paint is the wrong colour and then corrects itself, which on a
@@ -385,6 +386,8 @@ for (const [pattern, handler] of [
   [/^#\/saved$/, () => renderSaved(viewRoot, app)],
   [/^#\/profile$/, () => renderProfile(viewRoot, app)],
   [/^#\/login$/, () => renderLogin(viewRoot, app)],
+  [/^#\/terms$/, () => renderTerms(viewRoot, app)],
+  [/^#\/privacy$/, () => renderPrivacy(viewRoot, app)],
   [/^#\/apply$/, () => renderApply(viewRoot, app)],
 ]) {
   register(pattern, (...args) => {

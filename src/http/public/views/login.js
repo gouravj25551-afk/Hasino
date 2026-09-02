@@ -116,7 +116,8 @@ function renderGoogleStep(container, app, ssoError) {
     } catch (err) {
       sessionStorage.removeItem('postSignIn');
       status.textContent = err.message || 'Sign-in failed. Please try again.';
-      for (const b of [customerBtn, salonBtn]) b.disabled = false;
+      // Back to whatever the consent checkbox allows, not unconditionally on.
+      syncButtons();
     }
   };
 
@@ -150,15 +151,49 @@ function renderGoogleStep(container, app, ssoError) {
   customerBtn.onclick = () => start(customerBtn, 'customer');
   salonBtn.onclick = () => start(salonBtn, 'salon');
 
+  /**
+   * Required agreement, gating both buttons. The choice is remembered for this
+   * tab (sessionStorage) so opening the Terms or the Privacy Policy — which
+   * navigates away from this page — and coming back does not silently clear it.
+   */
+  let agreed = sessionStorage.getItem('hasino.agreedTerms') === '1';
+  const consent = el('label', 'consent');
+  const consentBox = el('input');
+  consentBox.type = 'checkbox';
+  consentBox.className = 'consent-box';
+  consentBox.checked = agreed;
+  const consentText = el('span', 'consent-text');
+  consentText.append(document.createTextNode('I agree to Hasino’s '));
+  const termsLink = el('a', 'legal-link', 'Terms & Conditions');
+  termsLink.href = '#/terms';
+  const privacyLink = el('a', 'legal-link', 'Privacy Policy');
+  privacyLink.href = '#/privacy';
+  // A tap on a link means "open the document", not "toggle the box" — stop the
+  // label from also flipping the checkbox.
+  for (const a of [termsLink, privacyLink]) a.addEventListener('click', (e) => e.stopPropagation());
+  consentText.append(termsLink, document.createTextNode(' and '), privacyLink, document.createTextNode('.'));
+  consent.append(consentBox, consentText);
+
+  const syncButtons = () => {
+    for (const b of [customerBtn, salonBtn]) b.disabled = !agreed;
+  };
+  consentBox.onchange = () => {
+    agreed = consentBox.checked;
+    try { sessionStorage.setItem('hasino.agreedTerms', agreed ? '1' : '0'); } catch {}
+    syncButtons();
+  };
+  syncButtons();
+
   container.append(
     card(
       logo(),
       el('h1', null, 'Welcome to Hasino'),
       Object.assign(el('p', 'sub', 'Book top salons & barbers near you — or list your own.'), {
-        style: 'margin-bottom:28px',
+        style: 'margin-bottom:24px',
       }),
       customerBtn,
       salonBtn,
+      consent,
       status,
       Object.assign(
         (() => {

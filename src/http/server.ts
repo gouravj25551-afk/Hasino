@@ -111,6 +111,7 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'lib/format.js',
   'lib/icons.js',
   'lib/imagecrop.js',
+  'lib/legal-content.js',
   'lib/location.js',
   'lib/payments.js',
   'lib/router.js',
@@ -144,6 +145,7 @@ const assets = loadAssets(new URL('./public/', import.meta.url), [
   'views/profile.js',
   'views/login.js',
   'views/apply.js',
+  'views/legal.js',
 ]);
 
 const PAGES: Record<string, string> = {

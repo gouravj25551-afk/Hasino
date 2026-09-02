@@ -147,6 +147,15 @@ export function renderProfile(container, app) {
 
   container.append(list);
 
+  // Reachable after sign-in too, not only from the consent line at sign-in.
+  const legal = el('div', 'profile-legal');
+  const termsLink = el('a', 'legal-link', 'Terms & Conditions');
+  termsLink.href = '#/terms';
+  const privacyLink = el('a', 'legal-link', 'Privacy Policy');
+  privacyLink.href = '#/privacy';
+  legal.append(termsLink, el('span', 'profile-legal-dot', '·'), privacyLink);
+  container.append(legal);
+
   // The state of a salon request this account has already made, if it has
   // made one. A customer who has not is shown nothing — there is no "list your
   // salon" invitation on a customer's profile, by design.
