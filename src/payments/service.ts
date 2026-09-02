@@ -209,7 +209,11 @@ export async function openCheckout(
       receipt: bookingId,
       notes: { booking_id: bookingId, salon_id: ctx.salonId, customer_id: ctx.customerId },
       customer: { id: ctx.customerId, name: ctx.customerName, email: ctx.customerEmail, phone: ctx.customerPhone },
-      ...(row.hold_expires_at ? { expiryIso: row.hold_expires_at.toISOString() } : {}),
+      // Deliberately NO order_expiry_time. Cashfree requires it to be more than
+      // 15 minutes out, but the hold is 8 — pinning the order to the hold would
+      // fail order creation outright. Timing is ours to enforce: sweep-holds
+      // frees the chair, and a payment that lands after the hold is caught by
+      // the late-capture refund path, exactly as on the Razorpay side.
     });
 
   const found = existing.rows[0];
