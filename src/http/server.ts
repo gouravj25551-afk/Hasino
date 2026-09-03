@@ -16,6 +16,7 @@ import {
   deleteStagedImage,
   readImageBody,
   saveStagedImage,
+  serveGalleryPhoto,
   serveSalonImage,
   serveStagedImage,
   stagedImageFor,
@@ -43,6 +44,7 @@ import {
 } from './middleware.ts';
 import { AuthError, verifierFromEnv } from '../auth/verifier.ts';
 import { type Session, authenticate, requireRole } from '../auth/session.ts';
+import { AccountDeletionBlockedError, deleteOwnAccount } from '../auth/account.ts';
 import { StubRazorpayClient, paymentsConfigFromEnv } from '../payments/razorpay.ts';
 import { PaymentError, confirmCheckout, openCheckout } from '../payments/service.ts';
 import { WebhookSignatureError, handleWebhook, handleCashfreeWebhook } from '../payments/webhook.ts';
@@ -708,6 +710,22 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     throw new HttpError(404, 'This salon has no image');
   }
 
+  // GET /api/salons/:id/photos/:photoId/image — one uploaded gallery photo, as
+  // bytes. Public for the same reason as the storefront shot above: the gallery
+  // is on the salon's public page, seen by someone who has never signed in.
+  if (
+    method === 'GET' &&
+    seg[0] === 'api' &&
+    seg[1] === 'salons' &&
+    seg[3] === 'photos' &&
+    seg[5] === 'image' &&
+    seg.length === 6
+  ) {
+    const served = await serveGalleryPhoto(db, uuid(seg[2]!, 'salonId'), uuid(seg[4]!, 'photoId'), req, res);
+    if (served) return;
+    throw new HttpError(404, 'No such photo');
+  }
+
   if (
     method === 'POST' &&
     seg[0] === 'api' &&
@@ -814,6 +832,26 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       avatarUrl: s.avatarUrl,
       blockedUntil: s.blockedUntil,
     });
+  }
+
+  // DELETE /api/me — the account's owner deletes it.
+  //
+  // The row is anonymised, not removed: bookings, payments and reviews reference
+  // it as a NOT NULL customer_id and are records that must add up. A salon owner
+  // is refused here (409 OWNS_SALON) and pointed at support. The client signs
+  // out of the identity provider on success — with auth_provider_id cleared, the
+  // row is already unreachable by any token, so a refresh finds nobody signed in.
+  if (method === 'DELETE' && path === '/api/me') {
+    const s = await session(db, req);
+    try {
+      await deleteOwnAccount(db, s.userId);
+    } catch (err) {
+      if (err instanceof AccountDeletionBlockedError) {
+        throw new HttpError(409, err.message, err.code);
+      }
+      throw err;
+    }
+    return json(res, 200, { ok: true });
   }
 
   if (method === 'GET' && path === '/api/me/bookings') {

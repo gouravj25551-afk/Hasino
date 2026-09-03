@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS users (
                  CHECK (role IN ('customer','business','admin')),
   no_show_count  smallint NOT NULL DEFAULT 0,
   blocked_until  timestamptz,
+  -- Set when the account's owner deletes it. The row is kept and anonymised
+  -- (name/email/avatar/phone/auth_provider_id cleared) rather than removed,
+  -- because bookings/payments/reviews reference it as a NOT NULL customer_id
+  -- and are records that must add up. See db/migrations/015_user_deleted_at.sql.
+  deleted_at     timestamptz,
   created_at     timestamptz NOT NULL DEFAULT now(),
   updated_at     timestamptz NOT NULL DEFAULT now()   -- [DEVIATION 5]
 );
@@ -157,13 +162,29 @@ CREATE INDEX IF NOT EXISTS salon_status_events_salon_idx
 --   image; salon_photos is the gallery. Seeded only from scripts/seed-demo.ts
 --   — never hardcoded in application code — so a salon with no photos
 --   renders a placeholder instead of a borrowed stock image.
+-- [DEVIATION 6 / migration 014] salon_photos is the gallery — many rows per
+--   salon. A row is EITHER a linked/seeded photo (url set, no bytes) OR one an
+--   owner uploaded in the panel (bytes in Postgres, url null, served from
+--   /api/salons/:id/photos/:photoId/image). The two are coalesced into one
+--   served URL by the customer query. Bytes live here for the same reason as
+--   salon_images: no object storage, ephemeral container disk.
 CREATE TABLE IF NOT EXISTS salon_photos (
-  id       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  salon_id uuid NOT NULL REFERENCES salons(id) ON DELETE CASCADE,
-  url      text NOT NULL,
-  sort     smallint NOT NULL DEFAULT 0
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  salon_id     uuid NOT NULL REFERENCES salons(id) ON DELETE CASCADE,
+  url          text,
+  sort         smallint NOT NULL DEFAULT 0,
+  content_type text CHECK (content_type IN ('image/jpeg','image/png','image/webp')),
+  bytes        bytea,
+  byte_size    integer,
+  checksum     text,
+  uploaded_by  uuid REFERENCES users(id),
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT salon_photos_url_or_bytes CHECK (url IS NOT NULL OR bytes IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS salon_photos_salon_idx ON salon_photos (salon_id, sort);
+-- The same picture uploaded twice is one gallery photo, not two.
+CREATE UNIQUE INDEX IF NOT EXISTS salon_photos_checksum_uniq
+  ON salon_photos (salon_id, checksum) WHERE checksum IS NOT NULL;
 
 -- [DEVIATION 11] salon_images — the storefront shot, uploaded rather than linked.
 --   cover_url is still the only pointer to a salon's picture; this holds the

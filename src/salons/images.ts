@@ -420,3 +420,186 @@ export async function sweepStagedImages(
   );
   return { swept: res.rowCount ?? 0 };
 }
+
+// ---------- the gallery: many photos per salon ----------
+
+/**
+ * How many gallery photos a salon may hold.
+ *
+ * The gallery is a handful of shots of the shop and the work, not an album:
+ * the customer carousel is something people swipe once, and a cap keeps both
+ * that and the per-salon bytes in Postgres bounded. Stated to the owner in the
+ * panel before they hit it, and enforced here so the limit is real and not
+ * merely drawn.
+ */
+export const MAX_GALLERY_PHOTOS = 8;
+
+/** The URL an uploaded gallery photo is served from. Same origin, cache-friendly. */
+export function galleryPhotoUrl(salonId: string, photoId: string, checksum: string): string {
+  // The checksum in the query string is what lets the response be cached hard:
+  // a photo's bytes never change under a fixed id+checksum, so the URL is
+  // immutable and nothing serves a stale copy.
+  return `/api/salons/${salonId}/photos/${photoId}/image?v=${checksum}`;
+}
+
+export interface GalleryPhoto {
+  id: string;
+  /** The URL to render, whether the row is an upload or a seeded link. */
+  url: string;
+}
+
+/**
+ * A salon's gallery photos, in display order, as URLs the browser can render.
+ *
+ * A row is either an uploaded photo (bytes here, served URL) or a seeded/linked
+ * one (its own url); this coalesces the two so callers never learn the
+ * difference. Same shape and order the customer carousel already reads.
+ */
+export async function listGalleryPhotos(db: Queryable, salonId: string): Promise<GalleryPhoto[]> {
+  const res = await db.query<{ id: string; url: string }>(
+    `SELECT id,
+            coalesce(url, '/api/salons/' || salon_id || '/photos/' || id || '/image?v=' || checksum) AS url
+       FROM salon_photos
+      WHERE salon_id = $1
+      ORDER BY sort, created_at`,
+    [salonId],
+  );
+  return res.rows.map((r) => ({ id: r.id, url: r.url }));
+}
+
+export interface AddedGalleryPhoto extends GalleryPhoto {
+  /** True when this exact image was already in the gallery; no row was added. */
+  duplicate: boolean;
+}
+
+/**
+ * Add one uploaded photo to a salon's gallery.
+ *
+ * Callers are responsible for authorisation — the owner route resolves the
+ * salon from the signed-in owner. `salonId` must never come from a request body.
+ *
+ * Three rules, each a failure the panel names:
+ *  - the file must actually be an image (415), sniffed from its bytes;
+ *  - the gallery is capped at MAX_GALLERY_PHOTOS (409 GALLERY_FULL);
+ *  - the same image twice is one photo — a re-upload returns the existing row
+ *    rather than a second copy, so a double-tap or a retry after a flaky
+ *    network cannot litter the gallery.
+ */
+export async function addGalleryPhoto(
+  db: Pool,
+  salonId: string,
+  bytes: Buffer,
+  uploadedBy: string | null,
+): Promise<AddedGalleryPhoto> {
+  const contentType = sniffImageType(bytes);
+  if (!contentType) {
+    throw new ImageUploadError(
+      415,
+      'UNSUPPORTED_IMAGE',
+      'That file is not a JPEG, PNG or WebP image.',
+    );
+  }
+
+  const checksum = createHash('sha256').update(bytes).digest('base64url').slice(0, 22);
+
+  return withTransaction(db, async (tx) => {
+    const salon = await tx.query(`SELECT 1 FROM salons WHERE id = $1 FOR SHARE`, [salonId]);
+    if (salon.rowCount === 0) {
+      throw new ImageUploadError(404, 'NO_SUCH_SALON', 'No such salon');
+    }
+
+    // The same picture again is the same photo. Return it instead of a second
+    // row — and instead of the unique-index violation the INSERT would raise.
+    const existing = await tx.query<{ id: string }>(
+      `SELECT id FROM salon_photos WHERE salon_id = $1 AND checksum = $2`,
+      [salonId, checksum],
+    );
+    const already = existing.rows[0];
+    if (already) {
+      return { id: already.id, url: galleryPhotoUrl(salonId, already.id, checksum), duplicate: true };
+    }
+
+    const count = await tx.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM salon_photos WHERE salon_id = $1`,
+      [salonId],
+    );
+    if (Number(count.rows[0]?.n ?? 0) >= MAX_GALLERY_PHOTOS) {
+      throw new ImageUploadError(
+        409,
+        'GALLERY_FULL',
+        `A salon can have at most ${MAX_GALLERY_PHOTOS} photos. Delete one to add another.`,
+      );
+    }
+
+    const inserted = await tx.query<{ id: string }>(
+      `INSERT INTO salon_photos (salon_id, content_type, bytes, byte_size, checksum, uploaded_by, sort)
+       VALUES ($1, $2, $3, $4, $5, $6,
+               coalesce((SELECT max(sort) + 1 FROM salon_photos WHERE salon_id = $1), 0))
+       RETURNING id`,
+      [salonId, contentType, bytes, bytes.length, checksum, uploadedBy],
+    );
+    const id = inserted.rows[0]!.id;
+    return { id, url: galleryPhotoUrl(salonId, id, checksum), duplicate: false };
+  });
+}
+
+/**
+ * Remove one gallery photo. Scoped to the salon, so an owner can only ever
+ * delete their own. Returns false when the id names nothing here — a photo
+ * already gone, or one that was never this salon's — which the route reports as
+ * a 404 rather than pretending it deleted something.
+ */
+export async function deleteGalleryPhoto(
+  db: Queryable,
+  salonId: string,
+  photoId: string,
+): Promise<boolean> {
+  const res = await db.query(`DELETE FROM salon_photos WHERE salon_id = $1 AND id = $2`, [
+    salonId,
+    photoId,
+  ]);
+  return (res.rowCount ?? 0) > 0;
+}
+
+/**
+ * GET /api/salons/:id/photos/:photoId/image — one uploaded gallery photo.
+ *
+ * Public and cached exactly like serveSalonImage: the gallery appears on a
+ * salon's public page, and the URL carries the content hash so a fixed URL's
+ * bytes never change. Only rows with stored bytes are served here; a seeded
+ * link is rendered from its own url and never reaches this route.
+ */
+export async function serveGalleryPhoto(
+  db: Queryable,
+  salonId: string,
+  photoId: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<boolean> {
+  const found = await db.query<{ content_type: string; bytes: Buffer; checksum: string }>(
+    `SELECT content_type, bytes, checksum
+       FROM salon_photos
+      WHERE salon_id = $1 AND id = $2 AND bytes IS NOT NULL`,
+    [salonId, photoId],
+  );
+  const image = found.rows[0];
+  if (!image) return false;
+
+  const etag = `"${image.checksum}"`;
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, { etag, 'cache-control': 'public, max-age=31536000, immutable' });
+    res.end();
+    return true;
+  }
+
+  res.writeHead(200, {
+    'content-type': image.content_type,
+    'content-length': String(image.bytes.length),
+    etag,
+    'cache-control': 'public, max-age=31536000, immutable',
+    'x-content-type-options': 'nosniff',
+    'content-disposition': 'inline',
+  });
+  res.end(image.bytes);
+  return true;
+}

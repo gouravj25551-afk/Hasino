@@ -26,7 +26,13 @@ import {
   upsertService,
 } from '../business/repo.ts';
 import { listPayouts, salonBalance, salonEarnings, salonLedger } from '../payments/ledger.ts';
-import { readImageBody, saveSalonImage } from '../salons/images.ts';
+import {
+  addGalleryPhoto,
+  deleteGalleryPhoto,
+  listGalleryPhotos,
+  readImageBody,
+  saveSalonImage,
+} from '../salons/images.ts';
 import { HttpError, bool, int, json, readJson, str, uuid } from './respond.ts';
 
 /**
@@ -129,6 +135,35 @@ export async function businessRoutes(
     const stored = await saveSalonImage(db, salon.id, bytes, ownerId);
     json(res, 200, { coverImage: stored.coverUrl, byteSize: stored.byteSize, contentType: stored.contentType });
     return true;
+  }
+
+  // ---- the salon's gallery: many photos, distinct from the one storefront shot ----
+  //
+  // salon.id is resolved from the authenticated owner exactly like every other
+  // route here, so an owner only ever touches their own gallery and no photo or
+  // salon id crosses the wire from the client except the photo id on DELETE,
+  // which is scoped to this salon by the query.
+  if (tail[0] === 'photos') {
+    if (method === 'GET' && tail.length === 1) {
+      json(res, 200, { photos: await listGalleryPhotos(db, salon.id) });
+      return true;
+    }
+    // POST, not PUT: the gallery holds many, and each upload adds one. The body
+    // is the raw image bytes, the same shape the storefront upload takes.
+    if (method === 'POST' && tail.length === 1) {
+      const bytes = await readImageBody(req);
+      const added = await addGalleryPhoto(db, salon.id, bytes, ownerId);
+      await cache.invalidate(salon.id);
+      json(res, added.duplicate ? 200 : 201, { photo: { id: added.id, url: added.url }, duplicate: added.duplicate });
+      return true;
+    }
+    if (method === 'DELETE' && tail.length === 2) {
+      const removed = await deleteGalleryPhoto(db, salon.id, uuid(tail[1]!, 'photoId'));
+      if (!removed) throw new HttpError(404, 'That photo is not in this gallery', 'NO_SUCH_PHOTO');
+      await cache.invalidate(salon.id);
+      json(res, 200, { ok: true });
+      return true;
+    }
   }
 
   // ---- screen 1: services ----

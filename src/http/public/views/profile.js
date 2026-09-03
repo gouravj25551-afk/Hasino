@@ -1,4 +1,6 @@
 import { el } from '../lib/dom.js';
+import { api } from '../lib/api.js';
+import { ask, notify } from '../lib/dialog.js';
 import { Avatar } from '../components/Avatar.js';
 import { Button } from '../components/Button.js';
 import { EmptyState } from '../components/EmptyState.js';
@@ -173,4 +175,78 @@ export function renderProfile(container, app) {
       onClick: () => app.signOut(),
     }),
   );
+
+  container.append(deleteAccountSection(app));
+}
+
+// Delete this account, for good.
+//
+// A real deletion, not a hidden flag: the server anonymises the users row and
+// purges the personal data hanging off it (see src/auth/account.ts). Past
+// bookings are kept as the visited salons' records but no longer carry the
+// customer's name — which the confirmation says plainly, because "this cannot be
+// undone" is only honest if it also says what survives.
+//
+// Two gates before anything happens: a destructive confirmation, and typing the
+// word DELETE inside it — so a mis-tap cannot delete an account. A single
+// in-flight guard plus a disabled button stop a double submission. On success
+// the client signs out of the identity provider and lands on the signed-out
+// home; with the row's auth link already cleared server-side, a refresh finds
+// nobody signed in and the account cannot reappear.
+function deleteAccountSection(app) {
+  const panel = el('div', 'panel');
+  panel.append(el('h2', null, 'Delete account'));
+  panel.append(el('p', 'sub',
+    'Permanently delete your Hasino account. Your saved salons and notifications are removed; '
+    + 'past bookings are kept as the salons’ records but no longer linked to you.'));
+
+  const status = el('div');
+  const btn = el('button', 'btn danger', 'Delete account');
+  btn.type = 'button';
+  let deleting = false;
+
+  btn.onclick = async () => {
+    if (deleting) return;
+    const answer = await ask({
+      title: 'Delete your account?',
+      message:
+        'This permanently deletes your Hasino account. Your saved salons and notifications are '
+        + 'removed. Past bookings are kept for the salons you visited, but no longer linked to your '
+        + 'name. This cannot be undone.\n\nType DELETE to confirm.',
+      confirmLabel: 'Delete my account',
+      danger: true,
+      input: { label: 'Type DELETE to confirm', placeholder: 'DELETE' },
+    });
+    if (!answer) return; // cancelled
+    if (answer.value !== 'DELETE') {
+      await notify({
+        title: 'Account not deleted',
+        message: 'You did not type DELETE, so nothing was changed.',
+      });
+      return;
+    }
+
+    deleting = true;
+    btn.disabled = true;
+    btn.textContent = 'Deleting…';
+    status.replaceChildren();
+    try {
+      await api('/api/me', { method: 'DELETE' });
+      // Clear the identity and every trace of this account in the client, then
+      // land on the signed-out home. app.signOut() drops the session, forgets
+      // favourites and redirects.
+      await app.signOut();
+    } catch (err) {
+      deleting = false;
+      btn.disabled = false;
+      btn.textContent = 'Delete account';
+      status.replaceChildren(el('div', 'out bad',
+        err.status === 409
+          ? err.message // e.g. a salon account, which support must close first
+          : (err.message || 'Could not delete your account. Please try again.')));
+    }
+  };
+
+  panel.append(btn, status);
+  return panel;
 }

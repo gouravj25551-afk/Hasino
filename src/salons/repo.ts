@@ -240,7 +240,12 @@ async function loadPresentationData(
       [salonIds, now],
     ),
     db.query<{ salon_id: string; url: string }>(
-      `SELECT salon_id, url FROM salon_photos WHERE salon_id = ANY($1) ORDER BY salon_id, sort`,
+      // A gallery row is either a seeded link (url) or an uploaded photo (bytes,
+      // served from its own route). Coalesce the two so the carousel gets one
+      // list of URLs and never has to know which kind each photo is.
+      `SELECT salon_id,
+              coalesce(url, '/api/salons/' || salon_id || '/photos/' || id || '/image?v=' || checksum) AS url
+         FROM salon_photos WHERE salon_id = ANY($1) ORDER BY salon_id, sort, created_at`,
       [salonIds],
     ),
   ]);

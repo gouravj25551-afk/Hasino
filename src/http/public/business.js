@@ -13,6 +13,13 @@ import { installBackHandler } from './lib/backbutton.js';
 import { EmptyState } from './components/EmptyState.js';
 import { toast as pushToast } from './components/Toast.js';
 import { CARD_ASPECT, canCropImages, cropImage } from './lib/imagecrop.js';
+import { initTheme, currentTheme, toggleTheme } from './lib/theme.js';
+
+// Light/dark, applied before the first paint so the panel never flashes the
+// wrong theme on launch — the same call the customer app makes at the top of
+// app.js. Reads and writes the one preference in lib/theme.js, so a choice made
+// here or in the customer app is honoured in both.
+initTheme();
 
 const $  = (s, r = document) => r.querySelector(s);
 const el = (t, cls, txt) => { const n = document.createElement(t); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
@@ -110,6 +117,24 @@ function accountMenu(me, { showExit }) {
     link('#/timings', 'Timings');
     link('#/services', 'Services & prices');
     if (showExit) link('/', 'Customer app');
+
+    // Light/dark, where "settings" live on a panel that has no settings page —
+    // the same place the customer app keeps it. Reads and writes lib/theme.js,
+    // so the label is always right for what is on screen. Kept open on click so
+    // the owner can see it flip; the rest of the menu closes on any click.
+    const themeItem = el('button', null);
+    themeItem.type = 'button';
+    themeItem.setAttribute('role', 'menuitem');
+    const paintTheme = () => {
+      themeItem.textContent = currentTheme() === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+    };
+    paintTheme();
+    themeItem.onclick = (e) => {
+      e.stopPropagation();
+      toggleTheme();
+      paintTheme();
+    };
+    menu.append(themeItem);
 
     const out = el('button', 'danger', 'Sign out');
     out.type = 'button';
@@ -517,10 +542,11 @@ async function todayView() {
   ctrl.append(close);
   view.append(ctrl);
 
-  // The salon's own photo lives on the screen the owner opens every morning.
-  // Buried behind a nav item, a salon with no picture stays a salon with no
-  // picture.
-  view.append(salonImagePanel(overview.salon));
+  // The salon's photo is not shown here. This screen is the working day — the
+  // numbers and the appointment list — and the photo belongs with the rest of
+  // what a customer sees, on Salon profile, where it is managed. It used to sit
+  // here too; that was a second copy of one control, and the dashboard reads as
+  // more intentional without it.
 
   const { bookings, serverNow, noShowGraceMin } = await api('/api/business/bookings?date=' + currentDate);
   // How far this device's clock is from the server's. Every "is it time yet?"
@@ -738,6 +764,192 @@ function salonImagePanel(salon) {
   return panel;
 }
 
+/* ---------- the salon's gallery: many photos, not the one cover ---------- */
+
+/** Kept in step with MAX_GALLERY_PHOTOS on the server, which is the real limit. */
+const MAX_GALLERY_PHOTOS = 8;
+
+/** POST one gallery photo. The body is the file itself, exactly like the cover. */
+async function uploadGalleryPhoto(file) {
+  if (!IMAGE_TYPES.includes(file.type)) {
+    throw new Error('Please choose a JPEG, PNG or WebP image.');
+  }
+  if (file.size > MAX_IMAGE_MB * 1024 * 1024) {
+    throw new Error(`That image is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is ${MAX_IMAGE_MB} MB.`);
+  }
+  return api('/api/business/photos', { method: 'POST', body: file, headers: { 'content-type': file.type } });
+}
+
+/**
+ * The gallery: the shots that sit behind the cover in the customer's carousel.
+ *
+ * Distinct from the cover panel above and never confused with it — this is
+ * salon_photos (many), that is the one storefront image. The panel loads its
+ * own list, so the profile screen paints immediately and the grid fills in;
+ * every upload and delete repaints from that in-memory list rather than
+ * re-fetching the whole profile.
+ *
+ * A photo whose bytes will not render (a dead seeded link, say) is caught by
+ * the <img> onerror and shown as a labelled placeholder with its own delete,
+ * rather than a browser's broken-image glyph.
+ */
+function salonGalleryPanel(salon) {
+  const panel = el('div', 'panel');
+  panel.append(el('h2', null, 'Gallery'));
+  panel.append(el('p', 'sub',
+    `More photos of the shop and your work. Customers swipe these after your main photo. Up to ${MAX_GALLERY_PHOTOS}.`));
+
+  const grid = el('div');
+  grid.style.cssText =
+    'display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:12px; margin:12px 0';
+
+  const status = el('div');
+  const file = el('input');
+  file.type = 'file';
+  file.accept = IMAGE_TYPES.join(',');
+  file.multiple = true; // add several at once; each is framed and uploaded in turn
+  file.style.display = 'none';
+
+  const pick = el('button', 'btn primary', 'Add photos');
+  pick.onclick = () => file.click();
+
+  // null while the first load is in flight, an array once it has answered. The
+  // one source of truth the grid paints from.
+  let photos = null;
+  let busy = false;
+
+  const cell = (p) => {
+    const box = el('div');
+    box.style.cssText =
+      'position:relative; aspect-ratio:1/1; border-radius:12px; overflow:hidden; ' +
+      'border:1px solid var(--line); background:var(--surface-2); display:grid; place-items:center';
+
+    const img = el('img');
+    img.src = p.url;
+    img.alt = '';
+    img.loading = 'lazy';
+    img.style.cssText = 'width:100%; height:100%; object-fit:cover';
+    // A photo that will not load must not render as a broken-image glyph.
+    img.onerror = () => { img.remove(); box.append(el('div', 'meta', 'Unavailable')); };
+    box.append(img);
+
+    const del = el('button', 'btn sm danger', 'Delete');
+    del.type = 'button';
+    del.style.cssText = 'position:absolute; right:6px; bottom:6px';
+    del.onclick = async () => {
+      if (busy) return;
+      const ok = await ask({
+        title: 'Delete this photo?',
+        message: 'It is removed from your gallery and customers stop seeing it.',
+        confirmLabel: 'Delete',
+        danger: true,
+      });
+      if (!ok) return;
+      del.disabled = true;
+      del.textContent = 'Deleting…';
+      try {
+        await api(`/api/business/photos/${p.id}`, { method: 'DELETE' });
+        // Deleting one already gone is not an error worth surfacing — the grid
+        // just no longer shows it. The API answers 404 NO_SUCH_PHOTO; either
+        // way the photo is not in the gallery, which is the state we repaint.
+        photos = photos.filter((x) => x.id !== p.id);
+        renderGrid();
+      } catch (err) {
+        if (err.status === 404) {
+          photos = photos.filter((x) => x.id !== p.id);
+          renderGrid();
+        } else {
+          del.disabled = false;
+          del.textContent = 'Delete';
+          status.replaceChildren(el('div', 'out bad', err.message || 'Could not delete that photo'));
+        }
+      }
+    };
+    box.append(del);
+    return box;
+  };
+
+  const renderGrid = () => {
+    grid.replaceChildren();
+    if (photos === null) {
+      const loading = el('div', 'meta', 'Loading photos…');
+      loading.style.gridColumn = '1 / -1';
+      grid.append(loading);
+    } else if (photos.length === 0) {
+      const empty = el('div', 'note', 'No gallery photos yet. Add a few to show off the space and your work.');
+      empty.style.gridColumn = '1 / -1';
+      grid.append(empty);
+    } else {
+      for (const p of photos) grid.append(cell(p));
+    }
+    const full = Array.isArray(photos) && photos.length >= MAX_GALLERY_PHOTOS;
+    pick.disabled = busy || full;
+    pick.textContent = full ? `Gallery full (${MAX_GALLERY_PHOTOS})` : 'Add photos';
+  };
+
+  file.onchange = async () => {
+    let chosen = [...(file.files ?? [])];
+    // So picking the same files again after a failure still fires onchange.
+    file.value = '';
+    if (!chosen.length || busy || photos === null) return;
+    status.replaceChildren();
+
+    const room = MAX_GALLERY_PHOTOS - photos.length;
+    if (room <= 0) return;
+    if (chosen.length > room) {
+      status.append(el('div', 'note', `Only ${room} more photo(s) fit. Adding the first ${room}.`));
+      chosen = chosen.slice(0, room);
+    }
+
+    busy = true;
+    renderGrid();
+    let added = 0;
+    for (let i = 0; i < chosen.length; i++) {
+      const original = chosen[i];
+      pick.textContent = `Uploading ${i + 1} of ${chosen.length}…`;
+      try {
+        if (!IMAGE_TYPES.includes(original.type)) {
+          throw new Error('Please choose a JPEG, PNG or WebP image.');
+        }
+        // Frame it to the card shape before upload, the same step the cover
+        // takes — so the carousel is consistent and the 2 MB cap is met.
+        // Backing out of the framer skips just that photo.
+        let toUpload = original;
+        if (canCropImages()) {
+          const framed = await cropImage(original, { aspect: CARD_ASPECT, title: 'Resize this photo' });
+          if (!framed) continue;
+          toUpload = framed;
+        }
+        const { photo, duplicate } = await uploadGalleryPhoto(toUpload);
+        if (!photos.some((x) => x.id === photo.id)) photos.push(photo);
+        if (!duplicate) added++;
+      } catch (err) {
+        status.append(el('div', 'out bad', err.message || 'Upload failed'));
+        // A GALLERY_FULL from a race, or any hard stop: no point continuing.
+        if (err.status === 409) break;
+      }
+    }
+    busy = false;
+    renderGrid();
+    if (added) status.append(el('div', 'out ok', `Added ${added} photo(s). Customers see them now.`));
+  };
+
+  panel.append(grid, pick, file, status);
+  panel.append(el('div', 'note', `JPEG, PNG or WebP, up to ${MAX_IMAGE_MB} MB each.`));
+
+  // Fill the grid without holding up the rest of the profile screen.
+  api('/api/business/photos')
+    .then(({ photos: list }) => { photos = list; renderGrid(); })
+    .catch((err) => {
+      photos = [];
+      renderGrid();
+      status.replaceChildren(el('div', 'out bad', err.message || 'Could not load your photos'));
+    });
+
+  renderGrid();
+  return panel;
+}
+
 /* ---------- profile: the salon as customers see it ---------- */
 
 /**
@@ -773,6 +985,9 @@ async function profileView() {
 
   // ---- the photo, from the panel the Today screen already uses ----
   view.append(salonImagePanel(salon));
+
+  // ---- the gallery: the rest of the photos, behind the cover ----
+  view.append(salonGalleryPanel(salon));
 
   // ---- name, description ----
   const about = el('div', 'panel');
@@ -871,6 +1086,54 @@ async function profileView() {
     + 'panel yours. It cannot be changed here — contact Hasino support if the salon needs to move '
     + 'to a different account.'));
   view.append(identity);
+
+  // ---- delete this account ----
+  //
+  // A salon account cannot be self-deleted: the salon carries other customers'
+  // bookings, a ledger and payouts. The server refuses (409 OWNS_SALON) and this
+  // surfaces that decision rather than pretending otherwise. If the salon were
+  // ever removed, the same button would delete the now-plain account and sign
+  // out, which is the path the customer app uses.
+  const danger = el('div', 'panel');
+  danger.append(el('h2', null, 'Delete account'));
+  danger.append(el('p', 'sub', 'Permanently delete the account you sign in with.'));
+  const delStatus = el('div');
+  const delBtn = el('button', 'btn danger', 'Delete account');
+  delBtn.type = 'button';
+  let deleting = false;
+  delBtn.onclick = async () => {
+    if (deleting) return;
+    const ok = await ask({
+      title: 'Delete your account?',
+      message:
+        'This permanently deletes your Hasino account. A salon account must be closed or moved '
+        + 'by Hasino support first — this will tell you if that applies.',
+      confirmLabel: 'Delete account',
+      danger: true,
+    });
+    if (!ok) return;
+    deleting = true;
+    delBtn.disabled = true;
+    delBtn.textContent = 'Deleting…';
+    delStatus.replaceChildren();
+    try {
+      await api('/api/me', { method: 'DELETE' });
+      // Only reachable once the account no longer owns a salon. Clear the
+      // identity and leave for the signed-out customer app.
+      await signOut();
+      location.href = '/';
+    } catch (err) {
+      deleting = false;
+      delBtn.disabled = false;
+      delBtn.textContent = 'Delete account';
+      delStatus.replaceChildren(el('div', 'out bad',
+        err.status === 409
+          ? err.message
+          : (err.message || 'Could not delete the account. Please try again.')));
+    }
+  };
+  danger.append(delBtn, delStatus);
+  view.append(danger);
 
   // ---- chairs ----
   const chairsPanel = el('div', 'panel');
