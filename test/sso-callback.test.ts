@@ -204,11 +204,20 @@ describe('the OAuth return comes back into the Android app', () => {
     assert.match(clientAuth, /HasinoApp\\\//);
   });
 
-  it('flags only the sign-ins that started in the app', () => {
-    // A web sign-in must complete in the browser it started in. The flag
-    // rides in the redirect URL because the browser that lands on the
-    // callback shares no storage with the app.
-    assert.match(clientAuth, /isNativeApp\(\) \? `\?\$\{NATIVE_FLAG\}=1` : ''/);
+  it('flags only the sign-ins that started in the app, by return path', () => {
+    // A web sign-in must complete in the browser it started in. The signal
+    // that this one started in the app rides in the redirect PATH, not a query
+    // parameter: Clerk drops an extra query parameter on the round trip but
+    // must navigate to the redirect path exactly, so the path survives where
+    // `?native=1` did not.
+    assert.match(clientAuth, /NATIVE_CALLBACK_PATH = '\/sso-callback\/native'/);
+    assert.match(clientAuth, /isNativeApp\(\) \? NATIVE_CALLBACK_PATH : CALLBACK_PATH/);
+    // and the callback page recognises that path as the hand-off signal.
+    assert.match(clientAuth, /window\.location\.pathname === NATIVE_CALLBACK_PATH/);
+  });
+
+  it('serves the app shell at the app-only callback path too', () => {
+    assert.match(server, /'\/sso-callback\/native': 'index\.html'/);
   });
 
   it('serves the site half of the agreement, and only when configured', () => {

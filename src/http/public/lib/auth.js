@@ -115,6 +115,32 @@ export async function watchAuthState(handler) {
 const CALLBACK_PATH = '/sso-callback';
 
 /**
+ * The callback path used when the sign-in started inside the Android app.
+ *
+ * This is the whole fix for "signed in, but stranded in Chrome". The app has
+ * to tell the callback page — which runs in an external browser that shares no
+ * storage with the app — that this particular sign-in began in the app and
+ * must be handed back to it. That signal has to survive a full round trip
+ * through Clerk and Google.
+ *
+ * It used to ride in a query parameter (`?native=1`). It does not survive:
+ * Clerk reconstructs the redirect target from the redirect_url it stored
+ * server-side and appends its own handshake parameters, and the extra query
+ * we added is dropped on the way back. The browser therefore lands on
+ * `/sso-callback?__clerk_handshake=…` with no marker, `callbackWantsNativeApp`
+ * reads false, and Chrome finishes the sign-in in its own cookie jar — exactly
+ * the stranding this was meant to prevent.
+ *
+ * The path, unlike an extra query parameter, is load-bearing for Clerk: it is
+ * the URL Clerk must navigate the browser to when the handshake completes, so
+ * it comes back verbatim. Encoding the signal in the path is what makes the
+ * hand-off fire reliably. `/sso-callback` still serves the app shell for the
+ * web flow; `/sso-callback/native` serves the same shell (see PAGES in
+ * src/http/server.ts) and additionally says "this one belongs to the app".
+ */
+const NATIVE_CALLBACK_PATH = '/sso-callback/native';
+
+/**
  * The custom scheme the Android app also answers on, and the reason it exists.
  *
  * App Links are the right way home — the callback stays one real https URL,
@@ -135,11 +161,11 @@ const CALLBACK_PATH = '/sso-callback';
 const NATIVE_SCHEME = 'hasino';
 
 /**
- * Marks a sign-in as having started inside the Android app, so the callback
- * knows whether it is home or stranded in a browser.
+ * The legacy query marker for the same thing NATIVE_CALLBACK_PATH now carries.
  *
- * It rides in the redirect URL because it has to survive a round trip through
- * Clerk and Google, landing in a browser that shares no storage with the app.
+ * Kept only as a second signal: if a future Clerk version does preserve extra
+ * query parameters, a `?native=1` still counts. The path is the reliable
+ * carrier; this costs nothing and never fires on its own today.
  */
 const NATIVE_FLAG = 'native';
 
@@ -161,7 +187,10 @@ export function isNativeApp() {
 
 /** True on the page load that Clerk redirected to after Google. */
 export function isRedirectCallback() {
-  return window.location.pathname === CALLBACK_PATH;
+  return (
+    window.location.pathname === CALLBACK_PATH ||
+    window.location.pathname === NATIVE_CALLBACK_PATH
+  );
 }
 
 /**
@@ -191,9 +220,10 @@ export function isAndroidBrowser() {
  * the browsers that do not implement intent:.
  */
 export function nativeCallbackIntentUrl() {
+  const path = window.location.pathname.replace(/^\//, '');
   const query = window.location.search.replace(/^\?/, '');
   return (
-    `intent://${CALLBACK_PATH.slice(1)}${query ? `?${query}` : ''}` +
+    `intent://${path}${query ? `?${query}` : ''}` +
     `#Intent;scheme=${NATIVE_SCHEME};package=com.hasino.app;end`
   );
 }
@@ -205,7 +235,11 @@ export function nativeCallbackIntentUrl() {
  * none of the app's storage, so the URL is the only thing that carries it.
  */
 export function callbackWantsNativeApp() {
-  return new URLSearchParams(window.location.search).get(NATIVE_FLAG) === '1';
+  return (
+    window.location.pathname === NATIVE_CALLBACK_PATH ||
+    // Legacy second signal; the path is what actually survives Clerk today.
+    new URLSearchParams(window.location.search).get(NATIVE_FLAG) === '1'
+  );
 }
 
 /**
@@ -216,7 +250,7 @@ export function callbackWantsNativeApp() {
  * here.
  */
 export function nativeCallbackUrl() {
-  return `${NATIVE_SCHEME}://${CALLBACK_PATH.slice(1)}${window.location.search}`;
+  return `${NATIVE_SCHEME}://${window.location.pathname.replace(/^\//, '')}${window.location.search}`;
 }
 
 /**
@@ -233,13 +267,15 @@ export async function signInWithGoogle() {
   try {
     await c.client.signIn.authenticateWithRedirect({
       strategy: 'oauth_google',
-      // ?native=1 when the app started this, so the callback can tell whether
-      // it landed at home or in a browser. Still one ordinary https URL, which
-      // is what Clerk accepts and what App Links claim — the flag changes
-      // nothing about where Clerk sends the browser, only what the page does
-      // when it gets there.
-      redirectUrl:
-        window.location.origin + CALLBACK_PATH + (isNativeApp() ? `?${NATIVE_FLAG}=1` : ''),
+      // A sign-in that began in the app returns to /sso-callback/native, so the
+      // callback page — which runs in an external browser with none of the
+      // app's storage — can tell it must hand the session back to the app. The
+      // signal is in the path, not a query parameter: Clerk drops the extra
+      // query it round-trips, but has to navigate to the redirect path exactly,
+      // so the path survives. Still one ordinary https URL, which is what Clerk
+      // accepts and what the App Links filter claims. The web flow is unchanged
+      // and keeps /sso-callback.
+      redirectUrl: window.location.origin + (isNativeApp() ? NATIVE_CALLBACK_PATH : CALLBACK_PATH),
       redirectUrlComplete: window.location.origin + routes.home,
     });
     return null; // navigating away
