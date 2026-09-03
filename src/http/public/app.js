@@ -509,27 +509,30 @@ async function boot() {
     // started from would still be showing a sign-in button, because a WebView
     // shares no storage with the browser.
     //
-    // App Links normally stop us ever getting here — Android hands the URL
-    // straight to the app. This is what happens when that verification did not
-    // hold: no network at install time, a sideloaded build, a device that
-    // never rechecked. Handing the callback on by scheme needs no
+    // App Links are supposed to stop us ever getting here — Android would hand
+    // the URL straight to the app. In practice they do not fire for an OAuth
+    // return: it arrives as the tail of a redirect chain (Google -> Clerk ->
+    // here) rather than a fresh navigation, which Android does not intercept,
+    // and verification can also simply not hold. So the browser lands here and
+    // has to hand the callback on itself, by scheme — which needs no
     // verification and cannot fail that way.
-    // Gate the hand-off on the precise signal ONLY: `?native=1`, set when the
-    // sign-in started in the app. `isAndroidBrowser()` used to stand in as a
-    // second signal, but it matches *every* Android phone on the mobile web —
-    // the app tags its own WebView with `HasinoApp/` (capacitor.config.ts), so
-    // an Android UA without that tag is an ordinary web visitor, not a stranded
-    // app user. Treating them as stranded auto-redirected them to `intent://`
-    // and never completed their web sign-in: they landed on a "Signed in" page
-    // that could not open any app and were never actually authenticated — the
-    // exact "signed in but not really, and no redirect" the mobile users saw.
     //
-    // The residual risk this trades for is narrow: an app-started sign-in whose
-    // `?native=1` was dropped in transit AND whose App Links failed, landing in
-    // an external browser. That double failure is rare; breaking sign-in for
-    // all Android web users is not. When it does happen the browser simply
-    // finishes the sign-in on the web, which is a working session rather than a
-    // dead end.
+    // Gate the hand-off on the precise signal ONLY: the callback PATH is
+    // `/sso-callback/native`, which the app sets as its redirect (lib/auth.js).
+    // `isAndroidBrowser()` used to stand in as a second signal, but it matches
+    // *every* Android phone on the mobile web — the app tags its own WebView
+    // with `HasinoApp/` (capacitor.config.ts), so an Android UA without that
+    // tag is an ordinary web visitor, not a stranded app user. Treating them as
+    // stranded auto-redirected them to `intent://` and never completed their
+    // web sign-in: they landed on a "Signed in" page that could not open any
+    // app and were never actually authenticated.
+    //
+    // The signal was a query parameter (`?native=1`) until it was found not to
+    // survive: Clerk reconstructs the redirect from the URL it stored and drops
+    // the extra query, so the flag never arrived and every app sign-in finished
+    // in Chrome. The path survives because Clerk has to navigate to it — see
+    // NATIVE_CALLBACK_PATH in lib/auth.js. An ordinary web sign-in returns to
+    // `/sso-callback` and finishes here, in the browser it started in.
     if (!isNativeApp() && callbackWantsNativeApp()) {
       return handOffToNativeApp();
     }

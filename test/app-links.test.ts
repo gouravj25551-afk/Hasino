@@ -141,8 +141,14 @@ describe('the hand-off back to the app', () => {
     assert.match(handoff, /completeRedirectCallback\(\)/);
   });
 
-  it('marks a sign-in that started in the app', () => {
-    assert.match(auth, /isNativeApp\(\) \? `\?\$\{NATIVE_FLAG\}=1` : ''/);
+  it('marks a sign-in that started in the app by its return path', () => {
+    // The marker is the redirect path, not a query parameter. Clerk preserves
+    // the path it must navigate to on completion, but drops the extra
+    // `?native=1` we used to append — which is why the hand-off never fired and
+    // the user was left signed in inside Chrome.
+    assert.match(auth, /NATIVE_CALLBACK_PATH = '\/sso-callback\/native'/);
+    assert.match(auth, /isNativeApp\(\) \? NATIVE_CALLBACK_PATH : CALLBACK_PATH/);
+    assert.match(auth, /window\.location\.pathname === NATIVE_CALLBACK_PATH/);
   });
 
   it('recognises the app by the user agent the shell appends', () => {
