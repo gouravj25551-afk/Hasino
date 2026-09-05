@@ -197,12 +197,14 @@ export async function signInWithGoogle() {
  * so watchAuthState() in app.js sees the new session and the app routes by role.
  */
 async function signInWithGoogleNative(c) {
-  // The Google *Web* client id Clerk is configured with, published in Clerk's
-  // own environment. The native token has to be minted for this exact audience
-  // or Clerk rejects it. Absent means Google One Tap is not set up on the Clerk
-  // instance yet (see the app's Google setup notes) — there is nothing to sign
-  // in against, so say so rather than opening a sheet that cannot succeed.
-  const serverClientId = c.__unstable__environment?.displayConfig?.googleOneTapClientId;
+  // The Google *Web* OAuth client id the token must be minted for, so Clerk —
+  // configured with the same id — will accept it. Served from /api/config
+  // (GOOGLE_WEB_CLIENT_ID); it is public, the same id set as Clerk's Google
+  // credentials. Absent means the app's Google sign-in is not configured yet
+  // (see the setup notes) — say so rather than opening a sheet that cannot
+  // succeed, and never fall back to a browser.
+  const cfg = await (configPromise ?? fetch('/api/config').then((r) => r.json()));
+  const serverClientId = cfg?.googleClientId;
   if (!serverClientId) {
     throw Object.assign(new Error('Google sign-in is not set up for the app yet'), { code: 'NOT_CONFIGURED' });
   }

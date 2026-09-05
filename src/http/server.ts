@@ -423,6 +423,13 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
       clerk: {
         publishableKey: process.env['CLERK_PUBLISHABLE_KEY'] ?? null,
       },
+      // The Google *Web* OAuth client id, for native Google sign-in in the
+      // Android app: the app asks Credential Manager for a token minted for this
+      // audience and Clerk verifies it against the same id. Public by design (an
+      // OAuth client id ships to every client), and the SAME id configured as
+      // Clerk's Google credentials. Unset on web-only deploys — the browser flow
+      // does not use it. See signInWithGoogle() in lib/auth.js.
+      googleClientId: process.env['GOOGLE_WEB_CLIENT_ID'] || null,
       // The public key id only. The secret signs, and never leaves the server.
       // `provider` so the UI can say "coming soon" rather than "misconfigured"
       // — one of those is a promise and the other is a bug report. keyId is

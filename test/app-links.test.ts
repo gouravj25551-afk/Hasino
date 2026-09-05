@@ -135,7 +135,10 @@ describe('the app signs in natively, with no browser', () => {
     assert.match(auth, /nativeGoogleAuth\(\)\.signIn\(\{ serverClientId \}\)/);
     assert.match(auth, /authenticateWithGoogleOneTap\(\{ token: idToken \}\)/);
     assert.match(auth, /handleGoogleOneTapCallback/);
-    assert.match(auth, /googleOneTapClientId/);
+    // The client id comes from /api/config (GOOGLE_WEB_CLIENT_ID), which the
+    // server serves and the native token is minted for.
+    assert.match(auth, /cfg\?\.googleClientId/);
+    assert.match(read('src/http/server.ts'), /googleClientId: process\.env\['GOOGLE_WEB_CLIENT_ID'\]/);
   });
 
   it('handles cancellation without falling back to a browser', () => {
