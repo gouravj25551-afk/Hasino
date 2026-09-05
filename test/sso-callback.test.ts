@@ -204,11 +204,13 @@ describe('the OAuth return comes back into the Android app', () => {
     assert.match(clientAuth, /HasinoApp\\\//);
   });
 
-  it('returns to one https callback for every platform', () => {
-    // Native and web both return to /sso-callback. There is no app-specific
-    // path or `?native=1` marker: the Custom Tab, not the page, is what brings
-    // the app one home, so the page needs no signal to tell them apart.
-    assert.match(clientAuth, /redirectUrl: window\.location\.origin \+ CALLBACK_PATH/);
+  it('bounces the app callback to the scheme, and leaves the web one alone', () => {
+    // The app returns to /sso-callback/app; the server 302s that to hasino://,
+    // which the browser hands back to the app. The web sign-in returns to
+    // /sso-callback and finishes in the browser it started in.
+    assert.match(clientAuth, /NATIVE_CALLBACK_PATH = '\/sso-callback\/app'/);
+    assert.match(server, /path === '\/sso-callback\/app'/);
+    assert.match(server, /hasino:\/\/sso-callback/);
     assert.doesNotMatch(clientAuth, /sso-callback\/native/);
     assert.doesNotMatch(server, /'\/sso-callback\/native'/);
   });

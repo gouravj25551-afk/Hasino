@@ -115,25 +115,24 @@ export async function watchAuthState(handler) {
 const CALLBACK_PATH = '/sso-callback';
 
 /**
- * Returning to the app after Google: how it works, and why the web code needs
- * no part in it.
+ * The return path for a sign-in that started in the Android app.
  *
- * The sign-in redirect is one ordinary https URL — `/sso-callback` — for every
- * platform. There is deliberately no app-specific callback path or `?native=1`
- * marker any more: both were attempts to have the *page* notice it was stranded
- * in a browser and bounce itself back to the app, and both failed the same way
- * — Clerk rewrites the redirect it round-trips, so the marker never arrived,
- * and a scripted bounce to `hasino://` is a visible interstitial the app is
- * meant not to have.
+ * The whole problem is getting the browser to hand focus back to the app once
+ * Google is done. App Links were supposed to do it, but they depend on an
+ * install-time verification that is flaky in practice — the browser keeps the
+ * user and the app comes to the foreground only when they close the browser by
+ * hand. A custom scheme (`hasino://`) has no such verification and is the one
+ * thing a browser reliably launches the app for. But Clerk will not accept a
+ * custom scheme as a redirect, so the app cannot ask Google to end on one.
  *
- * Instead the return is handled entirely on the native side. Google's OAuth is
- * opened in a Chrome Custom Tab (MainActivity opens it there instead of the
- * full browser — see OAuthTabWebViewClient.java), and a Custom Tab hands the
- * verified App Link `/sso-callback` back to the app automatically, with no
- * page and no tap, which standalone Chrome does not do for an OAuth redirect.
- * The WebView then loads `/sso-callback` and finishes the handshake exactly as
- * the web does. So from here, native and web are identical.
+ * So the app returns to this ordinary https path, and the server answers it
+ * with a 302 to `hasino://sso-callback` (see src/http/server.ts). The browser
+ * follows that into the app — no page to read, no button to press. The path,
+ * unlike a query parameter, survives Clerk's round trip because Clerk has to
+ * navigate to it exactly. The web flow keeps `/sso-callback` and finishes in
+ * the browser it started in.
  */
+const NATIVE_CALLBACK_PATH = '/sso-callback/app';
 
 /**
  * True inside the Hasino Android app, false in any ordinary browser.
@@ -170,12 +169,12 @@ export async function signInWithGoogle() {
   try {
     await c.client.signIn.authenticateWithRedirect({
       strategy: 'oauth_google',
-      // One https callback for every platform. In the Android app this same URL
-      // comes back through a Custom Tab, which returns it to the app on its own
-      // (see the native OAuthTabWebViewClient); the web code does nothing
-      // special. `redirectUrl` must stay a real https URL — Clerk rejects a
-      // custom scheme, and the App Links filter claims exactly this path.
-      redirectUrl: window.location.origin + CALLBACK_PATH,
+      // A sign-in that began in the app returns to /sso-callback/app, which the
+      // server bounces to hasino:// so the browser hands focus back to the app;
+      // the web flow returns to /sso-callback and finishes in the browser. Both
+      // are ordinary https URLs, which is all Clerk accepts — the scheme hop
+      // happens server-side, not here.
+      redirectUrl: window.location.origin + (isNativeApp() ? NATIVE_CALLBACK_PATH : CALLBACK_PATH),
       redirectUrlComplete: window.location.origin + routes.home,
     });
     return null; // navigating away

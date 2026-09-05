@@ -141,21 +141,25 @@ describe('the OAuth hop goes to a Custom Tab, which returns to the app', () => {
     assert.match(buildGradle, /androidx\.browser:browser/);
   });
 
-  it('has no in-page hand-off left — no card, no intent bounce, no native path', () => {
-    // The whole point of the rearchitecture: the page never has to rescue a
-    // stranded sign-in, so none of the old escape hatches remain.
+  it('has no in-page hand-off left — no card, no intent bounce', () => {
+    // The page never has to rescue a stranded sign-in, so none of the old
+    // in-page escape hatches remain.
     assert.doesNotMatch(app, /handOffToNativeApp/);
     assert.doesNotMatch(app, /Continue in this browser instead/);
     assert.doesNotMatch(auth, /intent:\/\//);
-    assert.doesNotMatch(auth, /NATIVE_CALLBACK_PATH/);
-    assert.doesNotMatch(auth, /sso-callback\/native/);
   });
 
-  it('uses one https callback for every platform', () => {
-    // Native and web return to the same /sso-callback; the tab, not the page,
-    // is what makes the app one come home.
-    assert.match(auth, /redirectUrl: window\.location\.origin \+ CALLBACK_PATH/);
-    assert.match(auth, /window\.location\.pathname === CALLBACK_PATH/);
+  it('returns app sign-ins to a path the server bounces to the scheme', () => {
+    const server = read('src/http/server.ts');
+    // The app returns to /sso-callback/app (an https URL Clerk accepts); the
+    // server answers it with a 302 to hasino://, which the browser hands back
+    // to the app. The web flow keeps /sso-callback and finishes in the browser.
+    assert.match(auth, /NATIVE_CALLBACK_PATH = '\/sso-callback\/app'/);
+    assert.match(auth, /isNativeApp\(\) \? NATIVE_CALLBACK_PATH : CALLBACK_PATH/);
+    assert.match(server, /path === '\/sso-callback\/app'/);
+    assert.match(server, /Location: `hasino:\/\/sso-callback\$\{url\.search\}`/);
+    // The old app-specific shell path is gone; the bounce replaces it.
+    assert.doesNotMatch(auth, /sso-callback\/native/);
   });
 });
 

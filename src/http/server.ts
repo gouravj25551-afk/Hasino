@@ -375,6 +375,23 @@ async function route(db: Pool, req: IncomingMessage, res: ServerResponse): Promi
     return json(res, result.status, { received: true, outcome: result.outcome });
   }
 
+  // ---------- Android app: hand the OAuth return back to the app ----------
+  // A sign-in that began in the Android app returns here. Google's OAuth cannot
+  // end on a custom scheme — Clerk only accepts an https redirect — so the app
+  // sends its sign-ins to this https path and we bounce them to hasino://, the
+  // one thing a browser reliably hands back to the installed app. App Links
+  // would do it without the hop, but their install-time verification is flaky,
+  // and the symptom is exactly this bug: the browser keeps the user. The scheme
+  // needs no verification. MainActivity rebuilds the query onto the app's own
+  // origin, so nothing here is trusted beyond being reflected back to the app.
+  //
+  // The query — Clerk's __clerk_handshake and friends — is carried across
+  // verbatim; it is what lets the app's WebView finish the sign-in.
+  if (read && path === '/sso-callback/app') {
+    res.writeHead(302, { Location: `hasino://sso-callback${url.search}` });
+    return void res.end();
+  }
+
   // ---------- pages + assets ----------
   // Pages are served either way — production users sign in with real Google
   // auth. Only the x-dev-user bypass and /api/dev/identities (below) are
