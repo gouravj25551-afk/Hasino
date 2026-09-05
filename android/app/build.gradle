@@ -59,11 +59,12 @@ dependencies {
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
-    // Chrome Custom Tabs. Google's OAuth is opened here rather than in the full
-    // browser, because a Custom Tab returns the verified App Link to the app on
-    // its own — the automatic hand-off that standalone Chrome does not do for an
-    // OAuth redirect. See OAuthTabWebViewClient.java.
-    implementation "androidx.browser:browser:1.8.0"
+    // Native Google sign-in. Credential Manager draws the Google account sheet
+    // over the app and returns a signed ID token, so the login never leaves for
+    // a browser. See GoogleAuthPlugin.java.
+    implementation "androidx.credentials:credentials:1.3.0"
+    implementation "androidx.credentials:credentials-play-services-auth:1.3.0"
+    implementation "com.google.android.libraries.identity.googleid:googleid:1.1.1"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"

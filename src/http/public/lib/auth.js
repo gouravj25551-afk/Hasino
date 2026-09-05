@@ -115,33 +115,26 @@ export async function watchAuthState(handler) {
 const CALLBACK_PATH = '/sso-callback';
 
 /**
- * The return path for a sign-in that started in the Android app.
+ * The native Google-sign-in plugin, when the page is running inside the app.
  *
- * The whole problem is getting the browser to hand focus back to the app once
- * Google is done. App Links were supposed to do it, but they depend on an
- * install-time verification that is flaky in practice — the browser keeps the
- * user and the app comes to the foreground only when they close the browser by
- * hand. A custom scheme (`hasino://`) has no such verification and is the one
- * thing a browser reliably launches the app for. But Clerk will not accept a
- * custom scheme as a redirect, so the app cannot ask Google to end on one.
- *
- * So the app returns to this ordinary https path, and the server answers it
- * with a 302 to `hasino://sso-callback` (see src/http/server.ts). The browser
- * follows that into the app — no page to read, no button to press. The path,
- * unlike a query parameter, survives Clerk's round trip because Clerk has to
- * navigate to it exactly. The web flow keeps `/sso-callback` and finishes in
- * the browser it started in.
+ * The Android shell registers a `GoogleAuth` plugin (see GoogleAuthPlugin.java)
+ * that draws the system Google account sheet over the WebView and returns a
+ * signed Google ID token — no browser, nothing to navigate back from. This
+ * build loads a remote origin, and the bridge Capacitor injects for that case
+ * exposes registered native plugins on `window.Capacitor.Plugins.<Name>` (it
+ * does not expose `registerPlugin`). Resolved lazily so bridge load-order never
+ * matters; null in an ordinary browser, where the web redirect flow is used.
  */
-const NATIVE_CALLBACK_PATH = '/sso-callback/app';
+function nativeGoogleAuth() {
+  return window.Capacitor?.Plugins?.GoogleAuth ?? null;
+}
 
 /**
  * True inside the Hasino Android app, false in any ordinary browser.
  *
- * Not `window.Capacitor`: the site is loaded from the network rather than from
- * the APK, so Capacitor never injects its bridge and that object does not
- * exist here. The app announces itself in the user agent instead — see
- * appendUserAgent in capacitor.config.ts. The Capacitor check stays as a
- * second signal in case the shell ever serves bundled assets.
+ * The app announces itself in the user agent (appendUserAgent in
+ * capacitor.config.ts); `window.Capacitor` is also present in this build and is
+ * checked as a second signal.
  */
 export function isNativeApp() {
   return (
@@ -156,25 +149,32 @@ export function isRedirectCallback() {
 }
 
 /**
- * Google sign-in, step 1 of 2.
+ * Google sign-in.
  *
- * Clerk's OAuth is a full redirect rather than a popup, so this never returns
- * on success — the browser leaves for Google and comes back at CALLBACK_PATH,
- * where completeRedirectCallback() finishes the handshake. That is why the
- * caller must treat a resolved promise as "we are navigating", not "we are
- * signed in".
+ * Two paths, chosen by where this runs:
+ *
+ *  - Android app: native. The system Google account sheet is drawn over the
+ *    WebView (GoogleAuthPlugin), a signed ID token comes back, and it is handed
+ *    to Clerk here, in this same WebView. No browser, no redirect, no return
+ *    trip — signInWithGoogleNative() resolves already signed in.
+ *  - Web / desktop: Clerk's full-page OAuth redirect, unchanged. It never
+ *    returns on success — the browser leaves for Google and comes back at
+ *    CALLBACK_PATH, where completeRedirectCallback() finishes the handshake.
+ *
+ * The caller treats a resolved promise as "sign-in is under way or done, stop
+ * showing the button", and a thrown error as "it failed or was cancelled".
  */
 export async function signInWithGoogle() {
   const c = await ensureClerk();
+
+  if (isNativeApp() && nativeGoogleAuth()) {
+    return signInWithGoogleNative(c);
+  }
+
   try {
     await c.client.signIn.authenticateWithRedirect({
       strategy: 'oauth_google',
-      // A sign-in that began in the app returns to /sso-callback/app, which the
-      // server bounces to hasino:// so the browser hands focus back to the app;
-      // the web flow returns to /sso-callback and finishes in the browser. Both
-      // are ordinary https URLs, which is all Clerk accepts — the scheme hop
-      // happens server-side, not here.
-      redirectUrl: window.location.origin + (isNativeApp() ? NATIVE_CALLBACK_PATH : CALLBACK_PATH),
+      redirectUrl: window.location.origin + CALLBACK_PATH,
       redirectUrlComplete: window.location.origin + routes.home,
     });
     return null; // navigating away
@@ -184,6 +184,52 @@ export async function signInWithGoogle() {
     }
     throw err;
   }
+}
+
+/**
+ * The native token exchange: Google account sheet -> ID token -> Clerk session,
+ * all without leaving the app.
+ *
+ * `authenticateWithGoogleOneTap` verifies the token and creates the session in
+ * this WebView; it also signs up a brand-new user in the same call (Clerk falls
+ * back to signUp on external_account_not_found). handleGoogleOneTapCallback then
+ * activates the session and routes home, the same finish as the web callback —
+ * so watchAuthState() in app.js sees the new session and the app routes by role.
+ */
+async function signInWithGoogleNative(c) {
+  // The Google *Web* client id Clerk is configured with, published in Clerk's
+  // own environment. The native token has to be minted for this exact audience
+  // or Clerk rejects it. Absent means Google One Tap is not set up on the Clerk
+  // instance yet (see the app's Google setup notes) — there is nothing to sign
+  // in against, so say so rather than opening a sheet that cannot succeed.
+  const serverClientId = c.__unstable__environment?.displayConfig?.googleOneTapClientId;
+  if (!serverClientId) {
+    throw Object.assign(new Error('Google sign-in is not set up for the app yet'), { code: 'NOT_CONFIGURED' });
+  }
+
+  let idToken;
+  try {
+    const res = await nativeGoogleAuth().signIn({ serverClientId });
+    idToken = res?.idToken;
+  } catch (err) {
+    // Credential Manager rejects here when the user backs out of the sheet, and
+    // when there is a real failure. A cancellation is not an error to shout.
+    const msg = String(err?.message ?? err);
+    if (/cancel|dismiss|no.?credential|GetCredentialCancellation/i.test(msg)) {
+      throw Object.assign(new Error('Sign-in cancelled'), { code: 'CANCELLED' });
+    }
+    throw Object.assign(new Error('Could not sign in with Google. Please try again.'), { code: 'NATIVE_FAILED' });
+  }
+  if (!idToken) {
+    throw Object.assign(new Error('Google did not return a token'), { code: 'NATIVE_FAILED' });
+  }
+
+  const resource = await c.authenticateWithGoogleOneTap({ token: idToken });
+  await c.handleGoogleOneTapCallback(resource, {
+    signInFallbackRedirectUrl: routes.home,
+    signUpFallbackRedirectUrl: routes.home,
+  });
+  return null; // signed in; Clerk has routed us home
 }
 
 /**

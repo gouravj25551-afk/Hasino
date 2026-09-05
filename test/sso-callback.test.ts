@@ -204,15 +204,16 @@ describe('the OAuth return comes back into the Android app', () => {
     assert.match(clientAuth, /HasinoApp\\\//);
   });
 
-  it('bounces the app callback to the scheme, and leaves the web one alone', () => {
-    // The app returns to /sso-callback/app; the server 302s that to hasino://,
-    // which the browser hands back to the app. The web sign-in returns to
-    // /sso-callback and finishes in the browser it started in.
-    assert.match(clientAuth, /NATIVE_CALLBACK_PATH = '\/sso-callback\/app'/);
-    assert.match(server, /path === '\/sso-callback\/app'/);
-    assert.match(server, /hasino:\/\/sso-callback/);
-    assert.doesNotMatch(clientAuth, /sso-callback\/native/);
-    assert.doesNotMatch(server, /'\/sso-callback\/native'/);
+  it('signs in the app natively, and keeps /sso-callback for the web only', () => {
+    // The app no longer redirects to sign in — it exchanges a native Google
+    // token with Clerk in the WebView. So there is no app-specific callback
+    // path and no scheme bounce; /sso-callback is purely the web flow.
+    assert.match(clientAuth, /authenticateWithGoogleOneTap/);
+    assert.doesNotMatch(clientAuth, /NATIVE_CALLBACK_PATH/);
+    assert.doesNotMatch(server, /hasino:\/\/sso-callback/);
+    assert.doesNotMatch(server, /'\/sso-callback\/(native|app)'/);
+    // The web redirect flow is untouched.
+    assert.match(server, /'\/sso-callback': 'index\.html'/);
   });
 
   it('serves the site half of the agreement, and only when configured', () => {
