@@ -7,17 +7,20 @@
  * jar and the app the user started from is still signed out, because a WebView
  * shares no storage with Chrome.
  *
- * Two mechanisms bring it back, and the whole point of these tests is that the
- * second one exists because the first one can be switched off by a missing
- * environment variable on a server:
+ * The return is automatic, with no page and no tap, and rests on two things:
  *
- *   1. App Links — Android hands https://<host>/sso-callback straight to the
- *      app, but only if /.well-known/assetlinks.json vouches for the APK's
- *      signing certificate. Unset fingerprints => 404 => no verification =>
- *      Chrome keeps the link. That is what was happening in production.
- *   2. The hand-off page — the callback page, when it finds itself in an
- *      Android browser, offers the sign-in back to the app by intent: URL.
- *      Nothing about it depends on server configuration.
+ *   1. The Google hop is opened in a Chrome Custom Tab, not the full browser
+ *      (OAuthTabWebViewClient). A Custom Tab hands the verified App Link back
+ *      to the app on its own; standalone Chrome does not, for an OAuth redirect.
+ *   2. App Links — Android hands https://<host>/sso-callback to the app, but
+ *      only if /.well-known/assetlinks.json vouches for the APK's signing
+ *      certificate. Unset fingerprints => 404 => no verification => the tab
+ *      cannot return to the app. That is what was 404'ing in production.
+ *
+ * There is deliberately no in-page hand-off any more: no "open the app" card,
+ * no intent:// bounce, no app-specific callback path. Those were attempts to
+ * have the page rescue a sign-in stranded in the full browser, and the fix is
+ * to never strand it — the tab returns first.
  */
 import assert from 'node:assert/strict';
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -109,53 +112,50 @@ describe('the app claims exactly the callback it is sent to', () => {
   });
 });
 
-describe('the hand-off back to the app', () => {
+describe('the OAuth hop goes to a Custom Tab, which returns to the app', () => {
   const app = read('src/http/public/app.js');
   const auth = read('src/http/public/lib/auth.js');
+  const tabClient = read('android/app/src/main/java/com/hasino/app/OAuthTabWebViewClient.java');
+  const mainActivity = read('android/app/src/main/java/com/hasino/app/MainActivity.java');
+  const buildGradle = read('android/app/build.gradle');
 
-  it('offers an intent: URL, which is the form Chrome honours', () => {
-    // A scripted navigation to a bare custom scheme is routinely refused by
-    // Chrome, silently — which leaves the user parked on the callback page.
-    assert.match(auth, /export function nativeCallbackIntentUrl/);
-    assert.match(auth, /intent:\/\//);
-    assert.match(auth, /package=com\.hasino\.app/);
-    assert.match(app, /nativeCallbackIntentUrl\(\)/);
+  it('opens off-origin navigations in a Custom Tab, not the full browser', () => {
+    // A Custom Tab returns the verified App Link to the app on its own; the
+    // full Chrome app does not, for an OAuth redirect. So the client diverts
+    // exactly the navigation Capacitor would otherwise send to ACTION_VIEW.
+    assert.match(tabClient, /extends BridgeWebViewClient/);
+    assert.match(tabClient, /CustomTabsIntent/);
+    assert.match(tabClient, /shouldOverrideUrlLoading/);
+    // Same-origin navigations (including the /sso-callback the tab hands back)
+    // must fall through to Capacitor unchanged.
+    assert.match(tabClient, /isForMainFrame\(\)/);
+    assert.match(tabClient, /equalsIgnoreCase\(host\)/);
+    assert.match(tabClient, /return super\.shouldOverrideUrlLoading/);
   });
 
-  it('hands off only for a sign-in that started in the app', () => {
-    // The hand-off is gated on the precise signal alone: `?native=1`, set only
-    // when the sign-in began in the app. A broad `isAndroidBrowser()` fallback
-    // used to stand in for it, but that matches every Android phone on the
-    // mobile web — and the app tags its own WebView with `HasinoApp/`, so an
-    // Android UA without that tag is an ordinary web visitor, not a stranded
-    // app user. Diverting them auto-redirected to intent:// and never completed
-    // their web sign-in: "Signed in" on screen, no session, no redirect.
-    assert.match(app, /!isNativeApp\(\) && callbackWantsNativeApp\(\)/);
-    // And the old user-agent-only divert must be gone from the live condition.
-    assert.doesNotMatch(app, /callbackWantsNativeApp\(\) \|\| isAndroidBrowser/);
+  it('is installed on the WebView at startup', () => {
+    assert.match(mainActivity, /setWebViewClient\(new OAuthTabWebViewClient\(getBridge\(\)\)\)/);
   });
 
-  it('leaves a way to finish in the browser, for a phone with no app', () => {
-    assert.match(app, /Continue in this browser instead/);
-    const handoff = /function handOffToNativeApp\(\)[\s\S]*?\n}/.exec(app)?.[0] ?? '';
-    assert.match(handoff, /completeRedirectCallback\(\)/);
+  it('depends on the Custom Tabs library', () => {
+    assert.match(buildGradle, /androidx\.browser:browser/);
   });
 
-  it('marks a sign-in that started in the app by its return path', () => {
-    // The marker is the redirect path, not a query parameter. Clerk preserves
-    // the path it must navigate to on completion, but drops the extra
-    // `?native=1` we used to append — which is why the hand-off never fired and
-    // the user was left signed in inside Chrome.
-    assert.match(auth, /NATIVE_CALLBACK_PATH = '\/sso-callback\/native'/);
-    assert.match(auth, /isNativeApp\(\) \? NATIVE_CALLBACK_PATH : CALLBACK_PATH/);
-    assert.match(auth, /window\.location\.pathname === NATIVE_CALLBACK_PATH/);
+  it('has no in-page hand-off left — no card, no intent bounce, no native path', () => {
+    // The whole point of the rearchitecture: the page never has to rescue a
+    // stranded sign-in, so none of the old escape hatches remain.
+    assert.doesNotMatch(app, /handOffToNativeApp/);
+    assert.doesNotMatch(app, /Continue in this browser instead/);
+    assert.doesNotMatch(auth, /intent:\/\//);
+    assert.doesNotMatch(auth, /NATIVE_CALLBACK_PATH/);
+    assert.doesNotMatch(auth, /sso-callback\/native/);
   });
 
-  it('recognises the app by the user agent the shell appends', () => {
-    // The site is loaded from the network, so Capacitor never injects its
-    // bridge and window.Capacitor does not exist — the UA is the only signal.
-    assert.match(auth, /HasinoApp\\\//);
-    assert.match(read('capacitor.config.ts'), /appendUserAgent: 'HasinoApp\/1'/);
+  it('uses one https callback for every platform', () => {
+    // Native and web return to the same /sso-callback; the tab, not the page,
+    // is what makes the app one come home.
+    assert.match(auth, /redirectUrl: window\.location\.origin \+ CALLBACK_PATH/);
+    assert.match(auth, /window\.location\.pathname === CALLBACK_PATH/);
   });
 });
 

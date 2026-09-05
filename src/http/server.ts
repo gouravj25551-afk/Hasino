@@ -160,12 +160,6 @@ const PAGES: Record<string, string> = {
   // never be completed. Serves the app shell, which finishes the handshake
   // and then navigates on — see app.js and lib/auth.js.
   '/sso-callback': 'index.html',
-  // The same shell, for a sign-in that started in the Android app. Clerk drops
-  // an extra query parameter on the round trip but preserves the redirect path,
-  // so the app marks its sign-ins by returning here instead of to /sso-callback.
-  // The shell reads the path (callbackWantsNativeApp in lib/auth.js) and hands
-  // the session back to the app rather than finishing it in the browser.
-  '/sso-callback/native': 'index.html',
 };
 
 function requireDevAuth(): void {

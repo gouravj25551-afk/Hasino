@@ -10,27 +10,42 @@ import androidx.activity.OnBackPressedCallback;
 import com.getcapacitor.BridgeActivity;
 
 /**
- * The Hasino shell, plus the one thing Capacitor does not do for an App Link.
+ * The Hasino shell, plus the two ends of the Google sign-in round trip that
+ * Capacitor does not handle on its own.
  *
- * AndroidManifest.xml claims https://<host>/sso-callback, so Android hands the
- * OAuth return to this activity instead of leaving the user in Chrome. What
- * Capacitor then does with that intent is notify plugins — Bridge.onNewIntent
- * calls handleOnNewIntent on each one and stops. Nothing navigates the
- * WebView. With no @capacitor/app plugin installed there is not even a
- * listener, so the app would come to the foreground showing whatever it showed
- * before, having silently dropped the sign-in it was handed. That is a worse
- * failure than staying in Chrome, because it looks like the app is working.
+ * Outbound: Google refuses OAuth in an embedded WebView, so the Google step
+ * has to leave for a browser. Capacitor's default is the full Chrome app, from
+ * which the sign-in never comes back (standalone Chrome does not hand the
+ * verified App Link to the app when it arrives as an OAuth redirect). So
+ * onCreate installs OAuthTabWebViewClient, which sends that hop to a Chrome
+ * Custom Tab instead — a tab that returns the App Link to this activity by
+ * itself, with no page and no tap.
  *
- * So the URL is loaded here. The page at /sso-callback is the app shell, which
- * already knows to finish a redirect callback (isRedirectCallback() in
- * lib/auth.js) — the WebView holds the client state that started the sign-in,
- * which is the whole reason the return has to land here rather than in Chrome.
+ * Inbound: AndroidManifest.xml claims https://<host>/sso-callback, so Android
+ * hands the OAuth return to this activity. What Capacitor does with that intent
+ * is notify plugins and stop — nothing navigates the WebView, and with no
+ * @capacitor/app plugin there is not even a listener, so the sign-in would be
+ * silently dropped. So the URL is loaded here (loadAppLink). The page at
+ * /sso-callback is the app shell, which finishes the handshake
+ * (isRedirectCallback() in lib/auth.js) in the WebView that started it — the
+ * one place holding the client state, which is why the return must land here.
  */
 public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        // Open the Google OAuth hop in a Custom Tab instead of the full Chrome
+        // app. This is what makes the sign-in return to the app on its own: a
+        // Custom Tab hands the verified App Link back to us, standalone Chrome
+        // does not. Capacitor's default WebViewClient sends every off-origin
+        // navigation to the full browser, so swap in one that diverts just
+        // those to a tab; it delegates everything else to Capacitor unchanged.
+        if (getBridge() != null && getBridge().getWebView() != null) {
+            getBridge().getWebView().setWebViewClient(new OAuthTabWebViewClient(getBridge()));
+        }
+
         getOnBackPressedDispatcher().addCallback(this, backCallback);
         // Cold start: the link launched the app, so the initial load is
         // server.url and the callback would be lost without this.

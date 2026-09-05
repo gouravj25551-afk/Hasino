@@ -93,8 +93,10 @@ const config: CapacitorConfig = {
     url: APP_URL,
     // Anything the site itself navigates to stays inside the app. The OAuth
     // hop to accounts.google.com deliberately does NOT — Google refuses OAuth
-    // from an embedded WebView, so the browser takes that step. What comes
-    // back is caught by the App Links filter in AndroidManifest.xml and
+    // from an embedded WebView, so a browser takes that step. It is opened in
+    // a Chrome Custom Tab (OAuthTabWebViewClient.java), not the full browser,
+    // because a Custom Tab returns the App Link to the app on its own; what
+    // comes back is caught by the App Links filter in AndroidManifest.xml and
     // handed to MainActivity, which is what stops the browser keeping the
     // session. See README-ANDROID.md.
     allowNavigation: ADMIN_URL ? [new URL(APP_URL).host, new URL(ADMIN_URL).host] : [new URL(APP_URL).host],

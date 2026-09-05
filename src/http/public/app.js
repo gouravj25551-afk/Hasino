@@ -14,10 +14,6 @@ import {
   isRedirectCallback,
   completeRedirectCallback,
   signOut,
-  isNativeApp,
-  callbackWantsNativeApp,
-  nativeCallbackUrl,
-  nativeCallbackIntentUrl,
 } from './lib/auth.js';
 import { TopBar, highlightTopBarNav } from './components/TopBar.js';
 import { LocationSheet } from './components/LocationSheet.js';
@@ -420,78 +416,6 @@ installBackHandler({
   homeHash: '#/home',
 });
 
-/**
- * Give the callback back to the Android app, and never leave the person
- * looking at a blank page if that does not take.
- *
- * The navigation is attempted immediately, because the good case should feel
- * like the browser blinked. But it can fail in ways this page cannot detect —
- * a dialog the user dismisses, a browser that refuses an unprompted scheme
- * navigation — and the failure is silent: the page simply stays. So the page
- * is also *rendered* first, with a button that runs the same navigation from a
- * real tap, which browsers treat far more permissively than a scripted one.
- *
- * Signing in again here would be the wrong answer. This browser can complete
- * the handshake perfectly well; the session would just be in the wrong place.
- */
-function handOffToNativeApp() {
-  const intentUrl = nativeCallbackIntentUrl();
-  const schemeUrl = nativeCallbackUrl();
-
-  viewRoot.innerHTML = '';
-  const card = el('div', 'panel');
-  card.style.cssText = 'max-width:440px; margin:48px auto; padding:36px 28px; text-align:center';
-  card.append(el('h1', null, 'Signed in'));
-  card.append(el('p', 'sub', 'Returning you to the Hasino app…'));
-
-  // The intent: form first — it is the one Chrome on Android is built to
-  // honour. The scheme link below it is for the browsers that are not Chrome.
-  const back = el('a', 'btn primary', 'Open the Hasino app');
-  back.href = intentUrl;
-  back.style.marginTop = '20px';
-  card.append(back);
-
-  const alt = el('a', 'btn sm', 'Open with hasino://');
-  alt.href = schemeUrl;
-  alt.style.cssText = 'margin-top:10px; display:inline-block';
-  card.append(alt);
-
-  card.append(
-    Object.assign(
-      el('div', 'note',
-        'If nothing happens, tap the button above. You are signed in — this last step just '
-        + 'moves you back to the app, because the app and the browser keep separate sessions.'),
-      { style: 'margin-top:20px; text-align:left' },
-    ),
-  );
-
-  // The way out for someone who has no Hasino app on this device: an Android
-  // browser is only a hint that the app might be there, so this page must not
-  // be a dead end for a person who signed in on the web. It finishes the
-  // handshake here instead, which is what would have happened anyway.
-  const stay = el('button', 'btn sm');
-  stay.type = 'button';
-  stay.textContent = 'Continue in this browser instead';
-  stay.style.marginTop = '14px';
-  stay.onclick = async () => {
-    stay.disabled = true;
-    try {
-      await completeRedirectCallback();
-    } catch (err) {
-      console.error('sign-in could not be completed', err);
-      sessionStorage.setItem('ssoError', err?.message ?? 'Sign-in could not be completed');
-      location.replace('/#/login');
-    }
-  };
-  card.append(stay);
-
-  viewRoot.append(card);
-
-  // location.replace, not assign: the callback URL must not sit in history
-  // where Back would replay a consumed one-time code.
-  window.location.replace(intentUrl);
-}
-
 async function boot() {
   // Fetched before the first route so no view has to guess whether there is a
   // payment step. Public endpoint; failure is not fatal to browsing.
@@ -503,40 +427,12 @@ async function boot() {
   // Booting the router here instead would leave the sign-in half-finished,
   // which is the loop this replaced.
   if (isRedirectCallback()) {
-    // This callback belongs to a sign-in that started in the Android app, and
-    // it is being read by a browser instead. That is the stranded case: Chrome
-    // would finish the handshake in its own cookie jar, and the app the user
-    // started from would still be showing a sign-in button, because a WebView
-    // shares no storage with the browser.
-    //
-    // App Links are supposed to stop us ever getting here — Android would hand
-    // the URL straight to the app. In practice they do not fire for an OAuth
-    // return: it arrives as the tail of a redirect chain (Google -> Clerk ->
-    // here) rather than a fresh navigation, which Android does not intercept,
-    // and verification can also simply not hold. So the browser lands here and
-    // has to hand the callback on itself, by scheme — which needs no
-    // verification and cannot fail that way.
-    //
-    // Gate the hand-off on the precise signal ONLY: the callback PATH is
-    // `/sso-callback/native`, which the app sets as its redirect (lib/auth.js).
-    // `isAndroidBrowser()` used to stand in as a second signal, but it matches
-    // *every* Android phone on the mobile web — the app tags its own WebView
-    // with `HasinoApp/` (capacitor.config.ts), so an Android UA without that
-    // tag is an ordinary web visitor, not a stranded app user. Treating them as
-    // stranded auto-redirected them to `intent://` and never completed their
-    // web sign-in: they landed on a "Signed in" page that could not open any
-    // app and were never actually authenticated.
-    //
-    // The signal was a query parameter (`?native=1`) until it was found not to
-    // survive: Clerk reconstructs the redirect from the URL it stored and drops
-    // the extra query, so the flag never arrived and every app sign-in finished
-    // in Chrome. The path survives because Clerk has to navigate to it — see
-    // NATIVE_CALLBACK_PATH in lib/auth.js. An ordinary web sign-in returns to
-    // `/sso-callback` and finishes here, in the browser it started in.
-    if (!isNativeApp() && callbackWantsNativeApp()) {
-      return handOffToNativeApp();
-    }
-
+    // Finish the handshake wherever this runs. In the Android app the Custom
+    // Tab has already handed this URL back to the app (see the native
+    // OAuthTabWebViewClient), so "here" is the app's own WebView, which is the
+    // one place holding the client state that started the sign-in. On the web
+    // it is the tab the person started in. Either way the session lands where
+    // it belongs; there is no browser-vs-app hand-off left for the page to do.
     try {
       await completeRedirectCallback();
       return; // navigating away
